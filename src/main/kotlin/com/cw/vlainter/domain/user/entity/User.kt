@@ -1,11 +1,11 @@
-package com.cw.vlainter.domain.users.entity
+package com.cw.vlainter.domain.user.entity
 
 import jakarta.persistence.*
 import java.time.OffsetDateTime
 
 @Entity
 @Table(name = "users")
-class Users (
+class User (
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -31,7 +31,7 @@ class Users (
     var point: Long = 0,
 
     @Column(name = "created_at", nullable = false)
-    val createdAt: OffsetDateTime? = null,
+    var createdAt: OffsetDateTime? = null,
 
     @Column(name = "updated_at", nullable = false)
     var updatedAt: OffsetDateTime? = null
