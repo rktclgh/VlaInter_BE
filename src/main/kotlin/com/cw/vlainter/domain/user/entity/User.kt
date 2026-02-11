@@ -1,11 +1,11 @@
-package com.cw.vlainter.domain.users.entity
+package com.cw.vlainter.domain.user.entity
 
 import jakarta.persistence.*
 import java.time.OffsetDateTime
 
 @Entity
 @Table(name = "users")
-class Users (
+class User (
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

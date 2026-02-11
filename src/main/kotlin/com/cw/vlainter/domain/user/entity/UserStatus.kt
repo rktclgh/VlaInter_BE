@@ -1,4 +1,4 @@
-package com.cw.vlainter.domain.users.entity
+package com.cw.vlainter.domain.user.entity
 
 enum class UserStatus {
     ACTIVE, DELETED, BLOCKED
