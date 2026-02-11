@@ -1,0 +1,4 @@
+language: "ko"
+tone_instructions: "Be direct and concise."
+reviews:
+  profile: "balanced"
