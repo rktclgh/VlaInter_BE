@@ -1,12 +1,4 @@
-defaults:
-  language: "ko"
-
-review:
-  language: "ko"
-  tone: "direct"
-
-chat:
-  language: "ko"
-
-pull_request:
-  language: "ko"
+language: "ko"
+tone_instructions: "Be direct and concise."
+reviews:
+  profile: "balanced"
