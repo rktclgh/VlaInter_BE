@@ -31,7 +31,7 @@ class User (
     var point: Long = 0,
 
     @Column(name = "created_at", nullable = false)
-    val createdAt: OffsetDateTime? = null,
+    var createdAt: OffsetDateTime? = null,
 
     @Column(name = "updated_at", nullable = false)
     var updatedAt: OffsetDateTime? = null
