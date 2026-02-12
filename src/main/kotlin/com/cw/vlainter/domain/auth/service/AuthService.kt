@@ -41,11 +41,10 @@ class AuthService(
         val user = userRepository.findByEmail(request.email)
             .orElseThrow { unauthorizedException() }
 
-        validateUserForLogin(user)
-
         if (!passwordEncoder.matches(request.password, user.password)) {
             throw unauthorizedException()
         }
+        validateUserForLogin(user)
 
         val sessionId = UUID.randomUUID().toString()
         val accessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId)
@@ -111,7 +110,7 @@ class AuthService(
      */
     private fun validateUserForLogin(user: User) {
         if (user.status != UserStatus.ACTIVE) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "사용할 수 없는 계정입니다.")
+            throw unauthorizedException()
         }
     }
 
