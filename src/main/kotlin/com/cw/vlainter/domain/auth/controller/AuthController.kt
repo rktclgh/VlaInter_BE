@@ -42,8 +42,7 @@ class AuthController(
         return ResponseEntity.ok(
             mapOf(
                 "userId" to principal.userId,
-                "email" to principal.email,
-                "sessionId" to principal.sessionId
+                "email" to principal.email
             )
         )
     }
@@ -66,9 +65,9 @@ class AuthController(
 
         return ResponseEntity.ok(
             LoginResponse(
-                userId = result.user.id,
-                email = result.user.email,
-                name = result.user.name,
+                userId = result.userId,
+                email = result.email,
+                name = result.name,
                 redirectUri = result.redirectUri
             )
         )

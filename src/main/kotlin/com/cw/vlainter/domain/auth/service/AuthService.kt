@@ -53,7 +53,9 @@ class AuthService(
         loginSessionStore.create(sessionId, user.id, refreshToken)
 
         return LoginResult(
-            user = user,
+            userId = user.id,
+            email = user.email,
+            name = user.name,
             accessToken = accessToken,
             refreshToken = refreshToken,
             redirectUri = redirectUriValidator.validate(request.redirectUri)
@@ -127,7 +129,9 @@ class AuthService(
  * 로그인 성공 시 컨트롤러로 전달되는 내부 결과 객체.
  */
 data class LoginResult(
-    val user: User,
+    val userId: Long,
+    val email: String,
+    val name: String,
     val accessToken: String,
     val refreshToken: String,
     val redirectUri: String?

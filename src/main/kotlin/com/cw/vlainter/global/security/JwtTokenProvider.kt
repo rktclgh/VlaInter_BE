@@ -100,6 +100,7 @@ class JwtTokenProvider(
     private fun parseRefreshClaims(token: String): Claims {
         return Jwts.parser()
             .verifyWith(refreshKey)
+            .requireIssuer(jwtProperties.issuer)
             .build()
             .parseSignedClaims(token)
             .payload
@@ -111,6 +112,7 @@ class JwtTokenProvider(
     private fun parseAccessClaims(token: String): Claims {
         return Jwts.parser()
             .verifyWith(accessKey)
+            .requireIssuer(jwtProperties.issuer)
             .build()
             .parseSignedClaims(token)
             .payload
