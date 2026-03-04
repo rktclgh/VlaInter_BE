@@ -6,7 +6,6 @@ import com.cw.vlainter.global.mail.EmailTemplateService
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.http.HttpStatus
-import org.springframework.mail.MailException
 import org.springframework.mail.javamail.JavaMailSender
 import org.springframework.mail.javamail.MimeMessageHelper
 import org.springframework.security.crypto.password.PasswordEncoder
@@ -55,11 +54,12 @@ class PasswordRecoveryService(
 
         try {
             sendTemporaryPasswordEmail(email, temporaryPassword)
-        } catch (_: MailException) {
+        } catch (ex: Exception) {
             rollbackIssueRateLimit(email)
             throw ResponseStatusException(
                 HttpStatus.SERVICE_UNAVAILABLE,
-                "임시 비밀번호 메일 발송에 실패했습니다. 잠시 후 다시 시도해 주세요."
+                "임시 비밀번호 메일 발송에 실패했습니다. 잠시 후 다시 시도해 주세요.",
+                ex
             )
         }
     }
@@ -117,6 +117,7 @@ class PasswordRecoveryService(
         }
         if (issuedCount > dailyIssueLimit) {
             valueOps.decrement(dailyKey)
+            redisTemplate.delete(temporaryPasswordCooldownKey(email))
             throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "오늘의 임시 비밀번호 요청 횟수를 초과했습니다.")
         }
     }
