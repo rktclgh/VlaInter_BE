@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.auth.service
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.user.entity.User
+import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.JwtTokenProvider
@@ -48,7 +49,7 @@ class AuthService(
         val validatedRedirectUri = redirectUriValidator.validate(request.redirectUri)
 
         val sessionId = UUID.randomUUID().toString()
-        val accessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId)
+        val accessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId, user.role)
         val refreshToken = jwtTokenProvider.createRefreshToken(user.id, sessionId)
         loginSessionStore.create(sessionId, user.id, refreshToken)
 
@@ -56,6 +57,7 @@ class AuthService(
             userId = user.id,
             email = user.email,
             name = user.name,
+            role = user.role,
             accessToken = accessToken,
             refreshToken = refreshToken,
             redirectUri = validatedRedirectUri
@@ -85,7 +87,7 @@ class AuthService(
         val user = userRepository.findById(userId).orElseThrow { unauthorizedException() }
         validateUserForLogin(user)
 
-        val newAccessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId)
+        val newAccessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId, user.role)
         val newRefreshToken = jwtTokenProvider.createRefreshToken(user.id, sessionId)
         loginSessionStore.rotateRefreshToken(sessionId, newRefreshToken)
 
@@ -132,6 +134,7 @@ data class LoginResult(
     val userId: Long,
     val email: String,
     val name: String,
+    val role: UserRole,
     val accessToken: String,
     val refreshToken: String,
     val redirectUri: String?

@@ -1,9 +1,11 @@
 package com.cw.vlainter.global.security
 
+import com.cw.vlainter.domain.user.entity.UserRole
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
+import org.springframework.security.core.authority.SimpleGrantedAuthority
 import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.stereotype.Component
 import org.springframework.web.filter.OncePerRequestFilter
@@ -50,9 +52,11 @@ class JwtAuthenticationFilter(
         val principal = AuthPrincipal(
             userId = claims.userId,
             email = claims.email,
-            sessionId = claims.sessionId
+            sessionId = claims.sessionId,
+            role = claims.role
         )
-        val authentication = UsernamePasswordAuthenticationToken(principal, null, emptyList())
+        val authority = SimpleGrantedAuthority("ROLE_${claims.role.name}")
+        val authentication = UsernamePasswordAuthenticationToken(principal, null, listOf(authority))
         SecurityContextHolder.getContext().authentication = authentication
         filterChain.doFilter(request, response)
     }
@@ -76,5 +80,6 @@ class JwtAuthenticationFilter(
 data class AuthPrincipal(
     val userId: Long,
     val email: String,
-    val sessionId: String
+    val sessionId: String,
+    val role: UserRole = UserRole.USER
 )

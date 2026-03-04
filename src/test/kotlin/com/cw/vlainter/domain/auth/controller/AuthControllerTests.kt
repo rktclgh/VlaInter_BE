@@ -3,6 +3,7 @@ package com.cw.vlainter.domain.auth.controller
 import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.auth.service.AuthService
 import com.cw.vlainter.domain.auth.service.LoginResult
+import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.global.security.AuthCookieManager
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.junit.jupiter.api.BeforeEach
@@ -43,7 +44,7 @@ class AuthControllerTests {
     }
 
     @Test
-    fun `login 성공 시 사용자 정보와 인증 쿠키를 반환한다`() {
+    fun `login returns user info and auth cookies`() {
         val request = LoginRequest(
             email = "tester@vlainter.com",
             password = "Password123!",
@@ -52,7 +53,8 @@ class AuthControllerTests {
         val loginResult = LoginResult(
             userId = 1L,
             email = request.email,
-            name = "테스터",
+            name = "Tester",
+            role = UserRole.ADMIN,
             accessToken = "access-token",
             refreshToken = "refresh-token",
             redirectUri = request.redirectUri
@@ -72,7 +74,8 @@ class AuthControllerTests {
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.userId").value(1L))
             .andExpect(jsonPath("$.email").value(request.email))
-            .andExpect(jsonPath("$.name").value("테스터"))
+            .andExpect(jsonPath("$.name").value("Tester"))
+            .andExpect(jsonPath("$.role").value("ADMIN"))
             .andExpect(jsonPath("$.redirectUri").value(request.redirectUri))
             .andExpect(header().stringValues(HttpHeaders.SET_COOKIE, accessCookie.toString(), refreshCookie.toString()))
 
@@ -82,7 +85,7 @@ class AuthControllerTests {
     }
 
     @Test
-    fun `login 요청 JSON 필드가 누락되면 400을 반환한다`() {
+    fun `login returns 400 when required json field is missing`() {
         mockMvc.perform(
             post("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -94,10 +97,10 @@ class AuthControllerTests {
     }
 
     @Test
-    fun `login 인증 실패는 401을 반환한다`() {
+    fun `login returns 401 on auth failure`() {
         val request = LoginRequest(email = "tester@vlainter.com", password = "WrongPassword!")
         given(authService.login(request))
-            .willThrow(ResponseStatusException(HttpStatus.UNAUTHORIZED, "이메일 또는 비밀번호가 올바르지 않습니다."))
+            .willThrow(ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid email or password."))
 
         mockMvc.perform(
             post("/api/auth/login")

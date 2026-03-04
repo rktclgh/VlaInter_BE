@@ -3,6 +3,7 @@ package com.cw.vlainter.domain.user.entity
 import jakarta.persistence.*
 import java.time.OffsetDateTime
 
+@Suppress("JpaDataSourceORMInspection")
 @Entity
 @Table(name = "users")
 class User (
@@ -23,6 +24,10 @@ class User (
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     var status: UserStatus = UserStatus.ACTIVE,
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    var role: UserRole = UserRole.USER,
 
     @Column(nullable = false)
     var free: Int = 0,

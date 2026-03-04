@@ -50,7 +50,7 @@ class LoginSessionStoreUpstashIntegrationTests {
     fun checkUpstashConfiguration() {
         assumeTrue(
             redisUrl.isNotBlank(),
-            "spring.data.redis.url 이 없어서 Upstash 통합 테스트를 건너뜁니다."
+            "Skip Upstash integration test because spring.data.redis.url is empty."
         )
     }
 
@@ -63,7 +63,7 @@ class LoginSessionStoreUpstashIntegrationTests {
     }
 
     @Test
-    fun `Upstash - create 후 isActive와 validateRefreshToken이 true를 반환한다`() {
+    fun `Upstash - create returns true for isActive and validateRefreshToken`() {
         val sessionId = uniqueSessionId("create")
         val key = registerSessionKey(sessionId)
         val userId = 101L
@@ -86,7 +86,7 @@ class LoginSessionStoreUpstashIntegrationTests {
     }
 
     @Test
-    fun `Upstash - validateRefreshToken은 사용자 또는 토큰이 다르면 false다`() {
+    fun `Upstash - validateRefreshToken returns false for different user or token`() {
         val sessionId = uniqueSessionId("validate")
         registerSessionKey(sessionId)
         val userId = 202L
@@ -99,7 +99,7 @@ class LoginSessionStoreUpstashIntegrationTests {
     }
 
     @Test
-    fun `Upstash - rotateRefreshToken 후 이전 토큰은 무효화된다`() {
+    fun `Upstash - rotateRefreshToken invalidates previous token`() {
         val sessionId = uniqueSessionId("rotate")
         val key = registerSessionKey(sessionId)
         val userId = 303L
@@ -115,19 +115,16 @@ class LoginSessionStoreUpstashIntegrationTests {
         assertThat(loginSessionStore.validateRefreshToken(sessionId, userId, newRefreshToken)).isTrue()
 
         val afterTtl = redisTemplate.getExpire(key)
-        assertThat(beforeTtl).isNotNull()
-        assertThat(afterTtl).isNotNull()
-
-        val beforeTtlValue = beforeTtl
-        val afterTtlValue = afterTtl
+        val beforeTtlValue = requireNotNull(beforeTtl) { "beforeTtl must not be null" }
+        val afterTtlValue = requireNotNull(afterTtl) { "afterTtl must not be null" }
 
         assertThat(afterTtlValue).isGreaterThan(0L)
         assertThat(afterTtlValue).isLessThanOrEqualTo(jwtProperties.refreshTokenExpSeconds)
-        assertThat(afterTtlValue).isGreaterThanOrEqualTo(beforeTtlValue - 1)
+        assertThat(afterTtlValue).isGreaterThanOrEqualTo(beforeTtlValue - 1L)
     }
 
     @Test
-    fun `Upstash - delete 후 세션은 비활성화된다`() {
+    fun `Upstash - delete deactivates the session`() {
         val sessionId = uniqueSessionId("delete")
         val key = registerSessionKey(sessionId)
         val userId = 404L

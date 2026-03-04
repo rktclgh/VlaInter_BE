@@ -1,0 +1,14 @@
+<div class="message-box">
+    <p>
+        안녕하세요! <strong class="highlight">{{service_name}}</strong>를 이용해주셔서 감사합니다.<br/>
+        아래 <strong class="code-highlight">인증 코드</strong>를 입력해<br/>
+        이메일 인증을 완료해 주세요.
+    </p>
+</div>
+<div class="verification-code">{{verification_code}}</div>
+<div class="warning-box">
+    <ul>
+        <li>인증 코드는 <strong>{{expires_in_seconds}}초</strong> 동안 유효합니다.</li>
+        <li>문의: <a href="mailto:{{contact_email}}" class="contact-link">{{contact_email}}</a></li>
+    </ul>
+</div>
