@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.auth.controller
 
 import com.cw.vlainter.domain.auth.dto.SendVerificationEmailRequest
+import com.cw.vlainter.domain.auth.dto.VerifyEmailCodeRequest
 import com.cw.vlainter.domain.auth.service.EmailVerificationService
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.PostMapping
@@ -22,6 +23,19 @@ class EmailVerificationController(
             mapOf(
                 "message" to "인증 코드가 발송되었습니다.",
                 "expiresInSeconds" to result.expiresInSeconds
+            )
+        )
+    }
+
+    @PostMapping("/verify")
+    fun verifyCode(
+        @RequestBody request: VerifyEmailCodeRequest
+    ): ResponseEntity<Map<String, Any>> {
+        val result = emailVerificationService.verifyCode(request.email, request.code)
+        return ResponseEntity.ok(
+            mapOf(
+                "message" to "이메일 인증이 완료되었습니다.",
+                "verified" to result.verified
             )
         )
     }

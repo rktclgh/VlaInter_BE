@@ -60,6 +60,23 @@ class EmailVerificationService(
         return SendVerificationResult(expiresInSeconds = emailVerificationProperties.codeExpSeconds)
     }
 
+    fun verifyCode(rawEmail: String, rawCode: String): VerifyCodeResult {
+        val email = normalizeEmail(rawEmail)
+        validateEmail(email)
+        val code = normalizeCode(rawCode)
+        validateCode(code)
+
+        val storedHash = redisTemplate.opsForValue().get(verificationCodeKey(email))
+        val inputHash = hash(code)
+        if (storedHash.isNullOrBlank() || !MessageDigest.isEqual(storedHash.toByteArray(StandardCharsets.UTF_8), inputHash.toByteArray(StandardCharsets.UTF_8))) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효하지 않거나 만료된 인증 코드입니다.")
+        }
+
+        redisTemplate.delete(verificationCodeKey(email))
+        redisTemplate.delete(resendCooldownKey(email))
+        return VerifyCodeResult(verified = true)
+    }
+
     private fun sendEmail(email: String, code: String) {
         val message = SimpleMailMessage()
         if (senderEmail.isNotBlank()) {
@@ -101,7 +118,16 @@ class EmailVerificationService(
         }
     }
 
+    private fun validateCode(code: String) {
+        val isValid = code.length == emailVerificationProperties.codeLength && code.all { it.isDigit() }
+        if (!isValid) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "인증 코드 형식이 올바르지 않습니다.")
+        }
+    }
+
     private fun normalizeEmail(rawEmail: String): String = rawEmail.trim().lowercase()
+
+    private fun normalizeCode(rawCode: String): String = rawCode.trim()
 
     private fun verificationCodeKey(email: String): String = "auth:email-verification:code:$email"
 
@@ -116,4 +142,8 @@ class EmailVerificationService(
 
 data class SendVerificationResult(
     val expiresInSeconds: Long
+)
+
+data class VerifyCodeResult(
+    val verified: Boolean
 )

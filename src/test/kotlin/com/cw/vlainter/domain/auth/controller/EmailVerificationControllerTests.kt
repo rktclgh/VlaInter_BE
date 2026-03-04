@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.auth.controller
 
 import com.cw.vlainter.domain.auth.service.EmailVerificationService
 import com.cw.vlainter.domain.auth.service.SendVerificationResult
+import com.cw.vlainter.domain.auth.service.VerifyCodeResult
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -78,5 +79,53 @@ class EmailVerificationControllerTests {
             .andExpect(status().isTooManyRequests)
 
         then(emailVerificationService).should().sendVerificationCode(email)
+    }
+
+    @Test
+    fun verifyRequestReturns200AndVerifiedTrue() {
+        val email = "songchih@icloud.com"
+        val code = "123456"
+        given(emailVerificationService.verifyCode(email, code))
+            .willReturn(VerifyCodeResult(verified = true))
+
+        mockMvc.perform(
+            post("/api/auth/email-verification/verify")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jacksonObjectMapper().writeValueAsString(mapOf("email" to email, "code" to code)))
+        )
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.message").isNotEmpty)
+            .andExpect(jsonPath("$.verified").value(true))
+
+        then(emailVerificationService).should().verifyCode(email, code)
+    }
+
+    @Test
+    fun verifyRequestMissingFieldsReturns400() {
+        mockMvc.perform(
+            post("/api/auth/email-verification/verify")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"email":"songchih@icloud.com"}""")
+        )
+            .andExpect(status().isBadRequest)
+
+        verifyNoInteractions(emailVerificationService)
+    }
+
+    @Test
+    fun invalidOrExpiredCodeReturns400() {
+        val email = "songchih@icloud.com"
+        val code = "123456"
+        given(emailVerificationService.verifyCode(email, code))
+            .willThrow(ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid or expired code"))
+
+        mockMvc.perform(
+            post("/api/auth/email-verification/verify")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jacksonObjectMapper().writeValueAsString(mapOf("email" to email, "code" to code)))
+        )
+            .andExpect(status().isBadRequest)
+
+        then(emailVerificationService).should().verifyCode(email, code)
     }
 }

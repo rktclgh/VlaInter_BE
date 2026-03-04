@@ -24,6 +24,8 @@ import org.springframework.mail.MailSendException
 import org.springframework.mail.SimpleMailMessage
 import org.springframework.mail.javamail.JavaMailSender
 import org.springframework.web.server.ResponseStatusException
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Duration
 
 @ExtendWith(MockitoExtension::class)
@@ -143,6 +145,61 @@ class EmailVerificationServiceTests {
         then(redisTemplate).should().delete("auth:email-verification:cooldown:$email")
     }
 
+    @Test
+    fun verifyCodeSucceedsAndDeletesCodeAndCooldownKeys() {
+        val rawEmail = " SongChiH@icloud.com "
+        val normalizedEmail = "songchih@icloud.com"
+        val inputCode = "123456"
+        given(redisTemplate.opsForValue()).willReturn(valueOperations)
+        given(valueOperations.get("auth:email-verification:code:$normalizedEmail")).willReturn(sha256(inputCode))
+
+        val result = service().verifyCode(rawEmail, inputCode)
+
+        assertThat(result.verified).isTrue()
+        then(redisTemplate).should().delete("auth:email-verification:code:$normalizedEmail")
+        then(redisTemplate).should().delete("auth:email-verification:cooldown:$normalizedEmail")
+    }
+
+    @Test
+    fun verifyCodeThrowsBadRequestWhenCodeKeyIsMissing() {
+        val email = "songchih@icloud.com"
+        given(redisTemplate.opsForValue()).willReturn(valueOperations)
+        given(valueOperations.get("auth:email-verification:code:$email")).willReturn(null)
+
+        val exception = assertThrows<ResponseStatusException> {
+            service().verifyCode(email, "123456")
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
+        then(redisTemplate).should(never()).delete("auth:email-verification:code:$email")
+    }
+
+    @Test
+    fun verifyCodeThrowsBadRequestWhenCodeDoesNotMatch() {
+        val email = "songchih@icloud.com"
+        given(redisTemplate.opsForValue()).willReturn(valueOperations)
+        given(valueOperations.get("auth:email-verification:code:$email")).willReturn(sha256("654321"))
+
+        val exception = assertThrows<ResponseStatusException> {
+            service().verifyCode(email, "123456")
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
+        then(redisTemplate).should(never()).delete("auth:email-verification:code:$email")
+    }
+
+    @Test
+    fun verifyCodeThrowsBadRequestForInvalidCodeFormat() {
+        val email = "songchih@icloud.com"
+
+        val exception = assertThrows<ResponseStatusException> {
+            service().verifyCode(email, "12ab")
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
+        verifyNoInteractions(valueOperations)
+    }
+
     private fun service(): EmailVerificationService {
         return EmailVerificationService(
             mailSender = mailSender,
@@ -150,5 +207,11 @@ class EmailVerificationServiceTests {
             emailVerificationProperties = properties,
             senderEmail = "mailer@vlainter.com"
         )
+    }
+
+    private fun sha256(raw: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(raw.toByteArray(StandardCharsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
     }
 }

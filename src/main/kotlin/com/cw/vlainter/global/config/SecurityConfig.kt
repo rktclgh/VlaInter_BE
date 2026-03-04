@@ -51,6 +51,7 @@ class SecurityConfig(
                     "/api/auth/refresh",
                     "/api/auth/logout",
                     "/api/auth/email-verification/send",
+                    "/api/auth/email-verification/verify",
                     "/swagger-ui/**",
                     "/v3/api-docs/**"
                 ).permitAll()
