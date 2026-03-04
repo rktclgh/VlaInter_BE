@@ -3,6 +3,7 @@ package com.cw.vlainter.domain.user.service
 import com.cw.vlainter.domain.user.dto.AdminMemberDetailResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberListResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberSummaryResponse
+import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
 import com.cw.vlainter.domain.user.dto.UpdateMyProfileRequest
 import com.cw.vlainter.domain.user.dto.UpdateMemberByAdminRequest
 import com.cw.vlainter.domain.user.dto.UserProfileResponse
@@ -47,17 +48,20 @@ class UserService(
             if (request.currentPassword.isNullOrBlank() || request.newPassword.isNullOrBlank()) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Both currentPassword and newPassword are required.")
             }
-            if (!passwordEncoder.matches(request.currentPassword, user.password)) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Current password is incorrect.")
-            }
-            if (request.newPassword.length < 8) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "New password must be at least 8 characters.")
-            }
-            user.password = passwordEncoder.encode(request.newPassword)
+            applyPasswordChange(user, request.currentPassword, request.newPassword)
         }
 
         val saved = userRepository.save(user)
         return toProfileResponse(saved.id, saved.email, saved.name, saved.status)
+    }
+
+    @Transactional
+    fun changeMyPassword(principal: AuthPrincipal, request: ChangeMyPasswordRequest) {
+        val user = userRepository.findById(principal.userId)
+            .orElseThrow { unauthorizedException() }
+        ensureActiveUser(user.status)
+        applyPasswordChange(user, request.currentPassword, request.newPassword)
+        userRepository.save(user)
     }
 
     @Transactional
@@ -157,6 +161,19 @@ class UserService(
 
     private fun unauthorizedException(): ResponseStatusException {
         return ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authentication is required.")
+    }
+
+    private fun applyPasswordChange(user: User, currentPassword: String, newPassword: String) {
+        if (!passwordEncoder.matches(currentPassword, user.password)) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Current password is incorrect.")
+        }
+        if (newPassword.length < 8) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "New password must be at least 8 characters.")
+        }
+        if (currentPassword == newPassword) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "New password must be different from current password.")
+        }
+        user.password = passwordEncoder.encode(newPassword)
     }
 
     private fun findUserOrNotFound(userId: Long): User {

@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.user.service
 
 import com.cw.vlainter.domain.user.dto.UpdateMemberByAdminRequest
 import com.cw.vlainter.domain.user.dto.UpdateMyProfileRequest
+import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
@@ -89,6 +90,63 @@ class UserServiceTests {
         assertThat(user.status).isEqualTo(UserStatus.DELETED)
         then(userRepository).should().save(user)
         then(loginSessionStore).should().delete(principal.sessionId)
+    }
+
+    @Test
+    fun changeMyPasswordUpdatesPassword() {
+        val user = createUser(password = "encoded-old-password")
+        val principal = createPrincipal(user)
+        val request = ChangeMyPasswordRequest(
+            currentPassword = "old-password",
+            newPassword = "new-password-123"
+        )
+        given(userRepository.findById(user.id)).willReturn(Optional.of(user))
+        given(passwordEncoder.matches("old-password", "encoded-old-password")).willReturn(true)
+        given(passwordEncoder.encode("new-password-123")).willReturn("encoded-new-password")
+        given(userRepository.save(user)).willReturn(user)
+
+        userService().changeMyPassword(principal, request)
+
+        assertThat(user.password).isEqualTo("encoded-new-password")
+        then(userRepository).should().save(user)
+    }
+
+    @Test
+    fun changeMyPasswordRejectsWrongCurrentPassword() {
+        val user = createUser(password = "encoded-old-password")
+        val principal = createPrincipal(user)
+        val request = ChangeMyPasswordRequest(
+            currentPassword = "wrong-password",
+            newPassword = "new-password-123"
+        )
+        given(userRepository.findById(user.id)).willReturn(Optional.of(user))
+        given(passwordEncoder.matches("wrong-password", "encoded-old-password")).willReturn(false)
+
+        val exception = assertThrows<ResponseStatusException> {
+            userService().changeMyPassword(principal, request)
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
+        then(userRepository).should(never()).save(user)
+    }
+
+    @Test
+    fun changeMyPasswordRejectsSamePassword() {
+        val user = createUser(password = "encoded-password")
+        val principal = createPrincipal(user)
+        val request = ChangeMyPasswordRequest(
+            currentPassword = "same-password",
+            newPassword = "same-password"
+        )
+        given(userRepository.findById(user.id)).willReturn(Optional.of(user))
+        given(passwordEncoder.matches("same-password", "encoded-password")).willReturn(true)
+
+        val exception = assertThrows<ResponseStatusException> {
+            userService().changeMyPassword(principal, request)
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
+        then(userRepository).should(never()).save(user)
     }
 
     @Test

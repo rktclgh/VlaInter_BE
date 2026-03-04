@@ -1,5 +1,6 @@
 package com.cw.vlainter.domain.user.controller
 
+import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
 import com.cw.vlainter.domain.user.dto.UpdateMyProfileRequest
 import com.cw.vlainter.domain.user.dto.UserProfileResponse
 import com.cw.vlainter.domain.user.service.UserService
@@ -35,6 +36,15 @@ class UserController(
         @RequestBody request: UpdateMyProfileRequest
     ): ResponseEntity<UserProfileResponse> {
         return ResponseEntity.ok(userService.updateMyProfile(principal, request))
+    }
+
+    @PatchMapping("/me/password")
+    fun changeMyPassword(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @RequestBody request: ChangeMyPasswordRequest
+    ): ResponseEntity<Map<String, String>> {
+        userService.changeMyPassword(principal, request)
+        return ResponseEntity.ok(mapOf("message" to "Password has been changed."))
     }
 
     @DeleteMapping("/me")
