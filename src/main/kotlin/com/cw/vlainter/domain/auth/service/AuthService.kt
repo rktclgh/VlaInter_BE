@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.auth.service
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.user.entity.User
+import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.JwtTokenProvider
@@ -56,6 +57,7 @@ class AuthService(
             userId = user.id,
             email = user.email,
             name = user.name,
+            role = user.role,
             accessToken = accessToken,
             refreshToken = refreshToken,
             redirectUri = validatedRedirectUri
@@ -132,6 +134,7 @@ data class LoginResult(
     val userId: Long,
     val email: String,
     val name: String,
+    val role: UserRole,
     val accessToken: String,
     val refreshToken: String,
     val redirectUri: String?

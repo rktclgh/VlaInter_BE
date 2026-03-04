@@ -1,0 +1,55 @@
+package com.cw.vlainter.domain.user.controller
+
+import com.cw.vlainter.domain.user.dto.AdminMemberDetailResponse
+import com.cw.vlainter.domain.user.dto.AdminMemberListResponse
+import com.cw.vlainter.domain.user.dto.UpdateMemberByAdminRequest
+import com.cw.vlainter.domain.user.service.UserService
+import com.cw.vlainter.global.security.AuthPrincipal
+import org.springframework.http.ResponseEntity
+import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PatchMapping
+import org.springframework.web.bind.annotation.DeleteMapping
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+@RequestMapping("/api/admin/members")
+class AdminUserController(
+    private val userService: UserService
+) {
+    @GetMapping
+    fun getMembers(
+        @AuthenticationPrincipal principal: AuthPrincipal
+    ): ResponseEntity<AdminMemberListResponse> {
+        return ResponseEntity.ok(userService.getMembersByAdmin(principal))
+    }
+
+    @GetMapping("/{memberId}")
+    fun getMember(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable memberId: Long
+    ): ResponseEntity<AdminMemberDetailResponse> {
+        return ResponseEntity.ok(userService.getMemberByAdmin(principal, memberId))
+    }
+
+    @PatchMapping("/{memberId}")
+    fun updateMember(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable memberId: Long,
+        @RequestBody request: UpdateMemberByAdminRequest
+    ): ResponseEntity<AdminMemberDetailResponse> {
+        return ResponseEntity.ok(userService.updateMemberByAdmin(principal, memberId, request))
+    }
+
+    @DeleteMapping("/{memberId}")
+    fun hardDeleteMember(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable memberId: Long
+    ): ResponseEntity<Map<String, String>> {
+        userService.hardDeleteMemberByAdmin(principal, memberId)
+        return ResponseEntity.ok(mapOf("message" to "User has been permanently deleted."))
+    }
+}

@@ -1,5 +1,7 @@
 package com.cw.vlainter.domain.auth.dto
 
+import com.cw.vlainter.domain.user.entity.UserRole
+
 /**
  * 로그인 성공 응답 DTO.
  *
@@ -10,5 +12,6 @@ data class LoginResponse(
     val userId: Long,
     val email: String,
     val name: String,
+    val role: UserRole,
     val redirectUri: String? = null
 )

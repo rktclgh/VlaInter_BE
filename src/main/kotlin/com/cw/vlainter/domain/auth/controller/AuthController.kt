@@ -68,6 +68,7 @@ class AuthController(
                 userId = result.userId,
                 email = result.email,
                 name = result.name,
+                role = result.role,
                 redirectUri = result.redirectUri
             )
         )

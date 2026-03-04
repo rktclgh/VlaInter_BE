@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.auth.service
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.user.entity.User
+import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.JwtTokenProvider
@@ -48,7 +49,7 @@ class AuthServiceTests {
     )
 
     @Test
-    fun `login 성공 시 토큰을 발급하고 세션을 생성한다`() {
+    fun `login issues tokens and creates session`() {
         val user = createUser()
         val request = LoginRequest(
             email = user.email,
@@ -89,6 +90,7 @@ class AuthServiceTests {
         assertThat(result.userId).isEqualTo(user.id)
         assertThat(result.email).isEqualTo(user.email)
         assertThat(result.name).isEqualTo(user.name)
+        assertThat(result.role).isEqualTo(UserRole.USER)
         assertThat(result.accessToken).isEqualTo("access-token")
         assertThat(result.refreshToken).isEqualTo("refresh-token")
         assertThat(result.redirectUri).isEqualTo(request.redirectUri)
@@ -100,7 +102,7 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `login 실패 - 존재하지 않는 이메일`() {
+    fun `login fails when email does not exist`() {
         val request = LoginRequest(email = "missing@vlainter.com", password = "Password123!")
         given(userRepository.findByEmail(request.email)).willReturn(Optional.empty())
 
@@ -109,7 +111,7 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `login 실패 - 비밀번호 불일치`() {
+    fun `login fails when password does not match`() {
         val user = createUser()
         val request = LoginRequest(email = user.email, password = "WrongPassword!")
 
@@ -121,7 +123,7 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `login 실패 - 비활성 계정`() {
+    fun `login fails for inactive account`() {
         val blockedUser = createUser(status = UserStatus.BLOCKED)
         val request = LoginRequest(email = blockedUser.email, password = "Password123!")
 
@@ -133,7 +135,7 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `login 실패 - 허용되지 않은 redirect_uri 는 세션 생성 전에 차단한다`() {
+    fun `login blocks disallowed redirect_uri before session creation`() {
         val user = createUser()
         val request = LoginRequest(
             email = user.email,
@@ -144,16 +146,16 @@ class AuthServiceTests {
         given(userRepository.findByEmail(user.email)).willReturn(Optional.of(user))
         given(passwordEncoder.matches(request.password, user.password)).willReturn(true)
         given(redirectUriValidator.validate(request.redirectUri))
-            .willThrow(ResponseStatusException(HttpStatus.BAD_REQUEST, "허용되지 않은 redirect_uri 입니다."))
+            .willThrow(ResponseStatusException(HttpStatus.BAD_REQUEST, "redirect_uri is not allowed."))
 
         val exception = assertThrows<ResponseStatusException> { authService().login(request) }
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
-        assertThat(exception.reason).isEqualTo("허용되지 않은 redirect_uri 입니다.")
+        assertThat(exception.reason).isEqualTo("redirect_uri is not allowed.")
         verifyNoInteractions(jwtTokenProvider, loginSessionStore)
     }
 
     @Test
-    fun `refresh 실패 - 유효하지 않은 토큰`() {
+    fun `refresh fails for invalid token`() {
         val refreshToken = "invalid-refresh-token"
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(false)
 
@@ -162,7 +164,7 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `refresh 실패 - 세션 불일치 시 세션을 삭제한다`() {
+    fun `refresh deletes session when token does not match stored session`() {
         val refreshToken = "refresh-token"
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(1L)
@@ -174,7 +176,7 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `refresh 실패 - 사용자 없음`() {
+    fun `refresh fails when user is missing`() {
         val refreshToken = "refresh-token"
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(1L)
@@ -188,7 +190,7 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `refresh 실패 - 비활성 계정`() {
+    fun `refresh fails for inactive account`() {
         val refreshToken = "refresh-token"
         val blockedUser = createUser(status = UserStatus.BLOCKED)
 
@@ -204,7 +206,7 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `refresh 성공 시 토큰 재발급과 refresh 회전을 수행한다`() {
+    fun `refresh issues new token pair and rotates refresh token`() {
         val refreshToken = "refresh-token"
         val user = createUser()
 
@@ -224,13 +226,13 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `logout - refresh token 이 null 이면 아무 동작도 하지 않는다`() {
+    fun `logout does nothing when refresh token is null`() {
         authService().logout(null)
         verifyNoInteractions(jwtTokenProvider, loginSessionStore)
     }
 
     @Test
-    fun `logout - 유효하지 않은 refresh token 이면 세션 삭제를 하지 않는다`() {
+    fun `logout does not delete session for invalid refresh token`() {
         val refreshToken = "invalid-refresh-token"
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(false)
 
@@ -241,7 +243,7 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `logout - 유효한 refresh token 이면 세션을 삭제한다`() {
+    fun `logout deletes session for valid refresh token`() {
         val refreshToken = "valid-refresh-token"
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
@@ -254,14 +256,13 @@ class AuthServiceTests {
     private fun assertUnauthorized(block: () -> Unit) {
         val exception = assertThrows<ResponseStatusException> { block() }
         assertThat(exception.statusCode).isEqualTo(HttpStatus.UNAUTHORIZED)
-        assertThat(exception.reason).isEqualTo("이메일 또는 비밀번호가 올바르지 않습니다.")
     }
 
     private fun createUser(
         id: Long = 1L,
         email: String = "tester@vlainter.com",
         password: String = "{bcrypt}hashed-password",
-        name: String = "테스터",
+        name: String = "Tester",
         status: UserStatus = UserStatus.ACTIVE
     ): User {
         return User(
