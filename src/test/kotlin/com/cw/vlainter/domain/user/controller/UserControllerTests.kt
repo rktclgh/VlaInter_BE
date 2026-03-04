@@ -4,6 +4,7 @@ import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
 import com.cw.vlainter.domain.user.service.UserService
 import com.cw.vlainter.global.security.AuthCookieManager
 import com.cw.vlainter.global.security.AuthPrincipal
+import com.cw.vlainter.global.security.LoginSessionStore
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -24,6 +25,9 @@ class UserControllerTests {
     @Mock
     private lateinit var authCookieManager: AuthCookieManager
 
+    @Mock
+    private lateinit var loginSessionStore: LoginSessionStore
+
     @Test
     fun changeMyPasswordReturns200() {
         val principal = AuthPrincipal(
@@ -33,14 +37,15 @@ class UserControllerTests {
         )
         val request = ChangeMyPasswordRequest(
             currentPassword = "old-password",
-            newPassword = "new-password-123"
+            newPassword = "New-password-123!"
         )
 
-        val response = UserController(userService, authCookieManager).changeMyPassword(principal, request)
+        val response = UserController(userService, authCookieManager, loginSessionStore).changeMyPassword(principal, request)
 
         assertThat(response.statusCode.value()).isEqualTo(200)
         assertThat(response.body?.get("message")).isNotBlank()
         then(userService).should().changeMyPassword(principal, request)
+        then(loginSessionStore).should().delete(principal.sessionId)
     }
 
     @Test
@@ -52,14 +57,14 @@ class UserControllerTests {
         )
         val request = ChangeMyPasswordRequest(
             currentPassword = "wrong-password",
-            newPassword = "new-password-123"
+            newPassword = "New-password-123!"
         )
         willThrow(ResponseStatusException(HttpStatus.BAD_REQUEST, "Current password is incorrect."))
             .given(userService)
             .changeMyPassword(principal, request)
 
         val exception = assertThrows<ResponseStatusException> {
-            UserController(userService, authCookieManager).changeMyPassword(principal, request)
+            UserController(userService, authCookieManager, loginSessionStore).changeMyPassword(principal, request)
         }
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)

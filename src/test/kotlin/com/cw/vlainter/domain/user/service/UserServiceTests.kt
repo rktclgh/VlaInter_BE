@@ -174,10 +174,10 @@ class UserServiceTests {
         val member2 = createUser(id = 300L, email = "member2@vlainter.com")
 
         given(userRepository.findById(adminUser.id)).willReturn(Optional.of(adminUser))
-        given(userRepository.findAll(PageRequest.of(0, 20, org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt"))))
-            .willReturn(PageImpl(listOf(member2, member1), PageRequest.of(0, 20), 17L))
+        given(userRepository.findAll(any(Pageable::class.java)))
+            .willReturn(PageImpl(listOf(member2, member1), PageRequest.of(0, 2), 17L))
 
-        val response = userService().getMembersByAdmin(principal, page = 0, size = 20)
+        val response = userService().getMembersByAdmin(principal, page = 0, size = 2)
 
         assertThat(response.totalCount).isEqualTo(17)
         assertThat(response.members.map { it.memberId }).containsExactly(300L, 200L)

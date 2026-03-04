@@ -67,7 +67,8 @@ class AuthServiceTests {
             jwtTokenProvider.createAccessToken(
                 anyLongMatcher(),
                 anyStringMatcher(),
-                anyStringMatcher()
+                anyStringMatcher(),
+                anyUserRoleMatcher()
             )
         )
             .willAnswer { invocation ->
@@ -215,7 +216,7 @@ class AuthServiceTests {
         given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
         given(loginSessionStore.validateRefreshToken("sid-1", user.id, refreshToken)).willReturn(true)
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
-        given(jwtTokenProvider.createAccessToken(user.id, user.email, "sid-1")).willReturn("new-access-token")
+        given(jwtTokenProvider.createAccessToken(user.id, user.email, "sid-1", user.role)).willReturn("new-access-token")
         given(jwtTokenProvider.createRefreshToken(user.id, "sid-1")).willReturn("new-refresh-token")
 
         val tokenPair = authService().refresh(refreshToken)
@@ -263,14 +264,16 @@ class AuthServiceTests {
         email: String = "tester@vlainter.com",
         password: String = "{bcrypt}hashed-password",
         name: String = "Tester",
-        status: UserStatus = UserStatus.ACTIVE
+        status: UserStatus = UserStatus.ACTIVE,
+        role: UserRole = UserRole.USER
     ): User {
         return User(
             id = id,
             email = email,
             password = password,
             name = name,
-            status = status
+            status = status,
+            role = role
         )
     }
 
@@ -282,5 +285,10 @@ class AuthServiceTests {
     private fun anyLongMatcher(): Long {
         org.mockito.ArgumentMatchers.anyLong()
         return 0L
+    }
+
+    private fun anyUserRoleMatcher(): UserRole {
+        org.mockito.ArgumentMatchers.any(UserRole::class.java)
+        return UserRole.USER
     }
 }

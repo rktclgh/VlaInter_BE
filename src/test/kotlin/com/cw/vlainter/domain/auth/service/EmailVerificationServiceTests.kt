@@ -22,6 +22,7 @@ import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.junit.jupiter.MockitoExtension
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.ValueOperations
+import org.springframework.data.redis.core.script.DefaultRedisScript
 import org.springframework.http.HttpStatus
 import org.springframework.mail.MailSendException
 import org.springframework.mail.javamail.JavaMailSender
@@ -167,42 +168,76 @@ class EmailVerificationServiceTests {
         val rawEmail = " SongChiH@icloud.com "
         val normalizedEmail = "songchih@icloud.com"
         val inputCode = "123456"
+        val keys = listOf(
+            "auth:email-verification:code:$normalizedEmail",
+            "auth:email-verification:cooldown:$normalizedEmail",
+            "auth:email-verification:attempts:$normalizedEmail"
+        )
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
-        given(valueOperations.get("auth:email-verification:code:$normalizedEmail")).willReturn(sha256(inputCode))
+        given(valueOperations.get("auth:email-verification:attempts:$normalizedEmail")).willReturn(null)
+        given(redisTemplate.execute(any(DefaultRedisScript::class.java), eq(keys), anyString())).willReturn(1L)
 
         val result = service().verifyCode(rawEmail, inputCode)
 
         assertThat(result.verified).isTrue()
-        then(redisTemplate).should().delete("auth:email-verification:code:$normalizedEmail")
-        then(redisTemplate).should().delete("auth:email-verification:cooldown:$normalizedEmail")
+        then(redisTemplate).should().execute(any(DefaultRedisScript::class.java), eq(keys), eq(sha256(inputCode)))
     }
 
     @Test
     fun verifyCodeThrowsBadRequestWhenCodeKeyIsMissing() {
         val email = "songchih@icloud.com"
+        val keys = listOf(
+            "auth:email-verification:code:$email",
+            "auth:email-verification:cooldown:$email",
+            "auth:email-verification:attempts:$email"
+        )
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
-        given(valueOperations.get("auth:email-verification:code:$email")).willReturn(null)
+        given(valueOperations.get("auth:email-verification:attempts:$email")).willReturn(null)
+        given(redisTemplate.execute(any(DefaultRedisScript::class.java), eq(keys), anyString())).willReturn(0L)
+        given(valueOperations.increment("auth:email-verification:attempts:$email")).willReturn(1L)
+        given(redisTemplate.getExpire("auth:email-verification:code:$email")).willReturn(120L)
 
         val exception = assertThrows<ResponseStatusException> {
             service().verifyCode(email, "123456")
         }
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
-        then(redisTemplate).should(never()).delete("auth:email-verification:code:$email")
+        then(redisTemplate).should().expire("auth:email-verification:attempts:$email", Duration.ofSeconds(120))
     }
 
     @Test
     fun verifyCodeThrowsBadRequestWhenCodeDoesNotMatch() {
         val email = "songchih@icloud.com"
+        val keys = listOf(
+            "auth:email-verification:code:$email",
+            "auth:email-verification:cooldown:$email",
+            "auth:email-verification:attempts:$email"
+        )
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
-        given(valueOperations.get("auth:email-verification:code:$email")).willReturn(sha256("654321"))
+        given(valueOperations.get("auth:email-verification:attempts:$email")).willReturn(null)
+        given(redisTemplate.execute(any(DefaultRedisScript::class.java), eq(keys), anyString())).willReturn(-1L)
+        given(valueOperations.increment("auth:email-verification:attempts:$email")).willReturn(2L)
+        given(redisTemplate.getExpire("auth:email-verification:code:$email")).willReturn(90L)
 
         val exception = assertThrows<ResponseStatusException> {
             service().verifyCode(email, "123456")
         }
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
-        then(redisTemplate).should(never()).delete("auth:email-verification:code:$email")
+        then(redisTemplate).should().expire("auth:email-verification:attempts:$email", Duration.ofSeconds(90))
+    }
+
+    @Test
+    fun verifyCodeThrowsTooManyRequestsWhenAttemptsExceeded() {
+        val email = "songchih@icloud.com"
+        given(redisTemplate.opsForValue()).willReturn(valueOperations)
+        given(valueOperations.get("auth:email-verification:attempts:$email")).willReturn("5")
+
+        val exception = assertThrows<ResponseStatusException> {
+            service().verifyCode(email, "123456")
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.TOO_MANY_REQUESTS)
     }
 
     @Test

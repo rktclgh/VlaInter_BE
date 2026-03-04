@@ -103,7 +103,7 @@ class EmailVerificationService(
             verifyAndConsumeScript,
             listOf(verificationKey, cooldownKey, attemptsKey),
             hash(code)
-        ) ?: 0L
+        )
 
         if (result == VERIFY_SUCCESS) {
             return VerifyCodeResult(verified = true)
@@ -166,7 +166,7 @@ class EmailVerificationService(
     private fun increaseFailedAttempts(verificationKey: String, attemptsKey: String): Long {
         val attempts = redisTemplate.opsForValue().increment(attemptsKey) ?: 1L
         val codeTtl = redisTemplate.getExpire(verificationKey)
-        val attemptsTtl = if (codeTtl != null && codeTtl > 0L) {
+        val attemptsTtl = if (codeTtl > 0L) {
             codeTtl
         } else {
             emailVerificationProperties.codeExpSeconds
