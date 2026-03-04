@@ -37,7 +37,7 @@ class UserService(
         val hasNameUpdate = !request.name.isNullOrBlank()
         val hasPasswordUpdate = !request.currentPassword.isNullOrBlank() || !request.newPassword.isNullOrBlank()
         if (!hasNameUpdate && !hasPasswordUpdate) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "No profile changes were requested.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "수정할 프로필 정보가 없습니다.")
         }
 
         if (hasNameUpdate) {
@@ -46,7 +46,7 @@ class UserService(
 
         if (hasPasswordUpdate) {
             if (request.currentPassword.isNullOrBlank() || request.newPassword.isNullOrBlank()) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Both currentPassword and newPassword are required.")
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "현재 비밀번호와 새 비밀번호를 모두 입력해 주세요.")
             }
             applyPasswordChange(user, request.currentPassword, request.newPassword)
         }
@@ -106,10 +106,10 @@ class UserService(
         val normalizedName = request.name?.trim()
         if (normalizedName != null) {
             if (normalizedName.isBlank()) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Name cannot be blank.")
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이름은 비어 있을 수 없습니다.")
             }
             if (normalizedName.length > 100) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Name cannot exceed 100 characters.")
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이름은 100자를 초과할 수 없습니다.")
             }
             member.name = normalizedName
             changed = true
@@ -126,7 +126,7 @@ class UserService(
         }
 
         if (!changed) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "At least one field must be updated.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "최소 하나 이상의 항목을 수정해야 합니다.")
         }
 
         val saved = userRepository.save(member)
@@ -137,7 +137,7 @@ class UserService(
     fun hardDeleteMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
         val adminUser = authorizeAdmin(adminPrincipal)
         if (adminUser.id == targetUserId) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Admin cannot permanently delete own account.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 완전 삭제할 수 없습니다.")
         }
 
         val targetUser = findUserOrNotFound(targetUserId)
@@ -160,25 +160,25 @@ class UserService(
     }
 
     private fun unauthorizedException(): ResponseStatusException {
-        return ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authentication is required.")
+        return ResponseStatusException(HttpStatus.UNAUTHORIZED, "인증이 필요합니다.")
     }
 
     private fun applyPasswordChange(user: User, currentPassword: String, newPassword: String) {
         if (!passwordEncoder.matches(currentPassword, user.password)) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Current password is incorrect.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "현재 비밀번호가 일치하지 않습니다.")
         }
         if (newPassword.length < 8) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "New password must be at least 8 characters.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "새 비밀번호는 8자 이상이어야 합니다.")
         }
         if (currentPassword == newPassword) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "New password must be different from current password.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "새 비밀번호는 현재 비밀번호와 달라야 합니다.")
         }
         user.password = passwordEncoder.encode(newPassword)
     }
 
     private fun findUserOrNotFound(userId: Long): User {
         return userRepository.findById(userId)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "User not found.") }
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "사용자를 찾을 수 없습니다.") }
     }
 
     private fun authorizeAdmin(principal: AuthPrincipal): User {
@@ -186,10 +186,10 @@ class UserService(
             .orElseThrow { unauthorizedException() }
 
         if (user.status != UserStatus.ACTIVE) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Inactive account cannot access admin APIs.")
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "비활성 계정은 관리자 API에 접근할 수 없습니다.")
         }
         if (user.role != UserRole.ADMIN) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Admin role is required.")
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "관리자 권한이 필요합니다.")
         }
         return user
     }

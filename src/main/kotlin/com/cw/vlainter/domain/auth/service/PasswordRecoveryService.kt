@@ -46,17 +46,17 @@ class PasswordRecoveryService(
         } catch (_: MailException) {
             throw ResponseStatusException(
                 HttpStatus.SERVICE_UNAVAILABLE,
-                "Failed to send temporary password email. Please try again later."
+                "임시 비밀번호 메일 발송에 실패했습니다. 잠시 후 다시 시도해 주세요."
             )
         }
     }
 
     private fun validateInputs(email: String, name: String) {
         if (email.isBlank() || !emailRegex.matches(email)) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "A valid email is required.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효한 이메일을 입력해 주세요.")
         }
         if (name.isBlank()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Name is required.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이름을 입력해 주세요.")
         }
     }
 
@@ -93,6 +93,6 @@ class PasswordRecoveryService(
     private fun normalizeName(rawName: String): String = rawName.trim()
 
     private fun invalidIdentityException(): ResponseStatusException {
-        return ResponseStatusException(HttpStatus.BAD_REQUEST, "Email and name do not match our records.")
+        return ResponseStatusException(HttpStatus.BAD_REQUEST, "입력한 이메일과 이름이 일치하는 계정을 찾을 수 없습니다.")
     }
 }

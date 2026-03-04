@@ -2,6 +2,8 @@ package com.cw.vlainter.global.config
 
 import com.cw.vlainter.global.config.properties.CorsProperties
 import com.cw.vlainter.global.security.JwtAuthenticationFilter
+import com.cw.vlainter.global.security.RestAccessDeniedHandler
+import com.cw.vlainter.global.security.RestAuthenticationEntryPoint
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.security.config.annotation.web.builders.HttpSecurity
@@ -26,7 +28,9 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource
 @EnableWebSecurity
 class SecurityConfig(
     private val jwtAuthenticationFilter: JwtAuthenticationFilter,
-    private val corsProperties: CorsProperties
+    private val corsProperties: CorsProperties,
+    private val restAuthenticationEntryPoint: RestAuthenticationEntryPoint,
+    private val restAccessDeniedHandler: RestAccessDeniedHandler
 ) {
     /**
      * 회원 비밀번호 검증에 사용할 PasswordEncoder.
@@ -45,6 +49,10 @@ class SecurityConfig(
             .httpBasic { it.disable() }
             .formLogin { it.disable() }
             .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
+            .exceptionHandling {
+                it.authenticationEntryPoint(restAuthenticationEntryPoint)
+                it.accessDeniedHandler(restAccessDeniedHandler)
+            }
             .authorizeHttpRequests {
                 it.requestMatchers(
                     "/api/auth/login",
