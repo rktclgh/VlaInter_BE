@@ -183,6 +183,7 @@ class AuthServiceTests {
         given(userRepository.findById(1L)).willReturn(Optional.empty())
 
         assertUnauthorized { authService().refresh(refreshToken) }
+        then(loginSessionStore).should().validateRefreshToken("sid-1", 1L, refreshToken)
         then(loginSessionStore).shouldHaveNoMoreInteractions()
     }
 
@@ -198,6 +199,7 @@ class AuthServiceTests {
         given(userRepository.findById(blockedUser.id)).willReturn(Optional.of(blockedUser))
 
         assertUnauthorized { authService().refresh(refreshToken) }
+        then(loginSessionStore).should().validateRefreshToken("sid-1", blockedUser.id, refreshToken)
         then(loginSessionStore).shouldHaveNoMoreInteractions()
     }
 

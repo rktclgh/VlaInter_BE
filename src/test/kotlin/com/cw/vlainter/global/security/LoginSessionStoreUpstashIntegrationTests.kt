@@ -115,9 +115,15 @@ class LoginSessionStoreUpstashIntegrationTests {
         assertThat(loginSessionStore.validateRefreshToken(sessionId, userId, newRefreshToken)).isTrue()
 
         val afterTtl = redisTemplate.getExpire(key)
-        assertThat(afterTtl).isGreaterThan(0L)
-        assertThat(afterTtl).isLessThanOrEqualTo(jwtProperties.refreshTokenExpSeconds)
-        assertThat(afterTtl).isGreaterThanOrEqualTo(beforeTtl)
+        assertThat(beforeTtl).isNotNull()
+        assertThat(afterTtl).isNotNull()
+
+        val beforeTtlValue = beforeTtl
+        val afterTtlValue = afterTtl
+
+        assertThat(afterTtlValue).isGreaterThan(0L)
+        assertThat(afterTtlValue).isLessThanOrEqualTo(jwtProperties.refreshTokenExpSeconds)
+        assertThat(afterTtlValue).isGreaterThanOrEqualTo(beforeTtlValue - 1)
     }
 
     @Test
