@@ -5,9 +5,12 @@ import org.springframework.stereotype.Component
 import org.springframework.web.util.HtmlUtils
 import java.nio.charset.StandardCharsets
 import java.time.Year
+import java.util.concurrent.ConcurrentHashMap
 
 @Component
 class EmailTemplateService {
+    private val templateCache = ConcurrentHashMap<String, String>()
+
     fun buildVerificationCodeEmail(code: String, expiresInSeconds: Long): String {
         val model = mapOf(
             "mail_title" to "이메일 인증 코드",
@@ -36,8 +39,8 @@ class EmailTemplateService {
     private abstract inner class BaseTemplate {
         fun render(rawModel: Map<String, String>): String {
             val escapedModel = rawModel.mapValues { HtmlUtils.htmlEscape(it.value) }
-            val content = applyModel(load(contentPath()), escapedModel)
-            var frame = applyModel(load(framePath()), escapedModel)
+            val content = applyModel(loadCached(contentPath()), escapedModel)
+            var frame = applyModel(loadCached(framePath()), escapedModel)
             frame = frame.replace("{{content}}", content)
             return frame
         }
@@ -48,6 +51,10 @@ class EmailTemplateService {
         private fun load(path: String): String {
             val resource = ClassPathResource(path)
             return resource.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+        }
+
+        private fun loadCached(path: String): String {
+            return templateCache.computeIfAbsent(path) { load(it) }
         }
 
         private fun applyModel(template: String, model: Map<String, String>): String {

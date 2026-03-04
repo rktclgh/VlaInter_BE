@@ -14,11 +14,14 @@ import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.domain.userFile.repository.UserFileRepository
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.cw.vlainter.global.security.LoginSessionStore
-import org.springframework.http.HttpStatus
+import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
+import org.springframework.http.HttpStatus
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException
 
 @Service
@@ -28,6 +31,8 @@ class UserService(
     private val passwordEncoder: PasswordEncoder,
     private val loginSessionStore: LoginSessionStore
 ) {
+    private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
+
     @Transactional
     fun updateMyProfile(principal: AuthPrincipal, request: UpdateMyProfileRequest): UserProfileResponse {
         val user = userRepository.findById(principal.userId)
@@ -41,7 +46,9 @@ class UserService(
         }
 
         if (hasNameUpdate) {
-            user.name = request.name!!.trim()
+            val trimmedName = request.name!!.trim()
+            validateNameLength(trimmedName)
+            user.name = trimmedName
         }
 
         if (hasPasswordUpdate) {
@@ -72,16 +79,20 @@ class UserService(
 
         user.status = UserStatus.DELETED
         userRepository.save(user)
-        loginSessionStore.delete(principal.sessionId)
+        runAfterCommit {
+            loginSessionStore.delete(principal.sessionId)
+        }
     }
 
     @Transactional(readOnly = true)
-    fun getMembersByAdmin(adminPrincipal: AuthPrincipal): AdminMemberListResponse {
+    fun getMembersByAdmin(adminPrincipal: AuthPrincipal, page: Int, size: Int): AdminMemberListResponse {
         authorizeAdmin(adminPrincipal)
-        val members = userRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"))
-            .map { toAdminMemberSummaryResponse(it) }
+        validatePageRequest(page, size)
+        val pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"))
+        val memberPage = userRepository.findAll(pageable)
+        val members = memberPage.content.map { toAdminMemberSummaryResponse(it) }
         return AdminMemberListResponse(
-            totalCount = members.size,
+            totalCount = memberPage.totalElements.toInt(),
             members = members
         )
     }
@@ -167,13 +178,43 @@ class UserService(
         if (!passwordEncoder.matches(currentPassword, user.password)) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "현재 비밀번호가 일치하지 않습니다.")
         }
-        if (newPassword.length < 8) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "새 비밀번호는 8자 이상이어야 합니다.")
+        if (!passwordComplexityRegex.matches(newPassword)) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "새 비밀번호는 8~100자이며 대문자, 소문자, 숫자, 특수문자를 각각 1개 이상 포함해야 합니다."
+            )
         }
         if (currentPassword == newPassword) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "새 비밀번호는 현재 비밀번호와 달라야 합니다.")
         }
         user.password = passwordEncoder.encode(newPassword)
+    }
+
+    private fun validateNameLength(name: String) {
+        if (name.length > 100) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이름은 100자를 초과할 수 없습니다.")
+        }
+    }
+
+    private fun validatePageRequest(page: Int, size: Int) {
+        if (page < 0) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "page는 0 이상이어야 합니다.")
+        }
+        if (size !in 1..100) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "size는 1 이상 100 이하여야 합니다.")
+        }
+    }
+
+    private fun runAfterCommit(action: () -> Unit) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            action()
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCommit() {
+                action()
+            }
+        })
     }
 
     private fun findUserOrNotFound(userId: Long): User {

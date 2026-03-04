@@ -6,6 +6,8 @@ import com.cw.vlainter.domain.user.dto.UserProfileResponse
 import com.cw.vlainter.domain.user.service.UserService
 import com.cw.vlainter.global.security.AuthCookieManager
 import com.cw.vlainter.global.security.AuthPrincipal
+import com.cw.vlainter.global.security.LoginSessionStore
+import jakarta.validation.Valid
 import org.springframework.http.HttpHeaders
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -21,7 +23,8 @@ import jakarta.servlet.http.HttpServletResponse
 @RequestMapping("/api/users")
 class UserController(
     private val userService: UserService,
-    private val authCookieManager: AuthCookieManager
+    private val authCookieManager: AuthCookieManager,
+    private val loginSessionStore: LoginSessionStore
 ) {
     @GetMapping("/me")
     fun getMyProfile(
@@ -41,9 +44,11 @@ class UserController(
     @PatchMapping("/me/password")
     fun changeMyPassword(
         @AuthenticationPrincipal principal: AuthPrincipal,
+        @Valid
         @RequestBody request: ChangeMyPasswordRequest
     ): ResponseEntity<Map<String, String>> {
         userService.changeMyPassword(principal, request)
+        loginSessionStore.delete(principal.sessionId)
         return ResponseEntity.ok(mapOf("message" to "비밀번호가 변경되었습니다."))
     }
 

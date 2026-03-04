@@ -49,7 +49,7 @@ class AuthService(
         val validatedRedirectUri = redirectUriValidator.validate(request.redirectUri)
 
         val sessionId = UUID.randomUUID().toString()
-        val accessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId)
+        val accessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId, user.role)
         val refreshToken = jwtTokenProvider.createRefreshToken(user.id, sessionId)
         loginSessionStore.create(sessionId, user.id, refreshToken)
 
@@ -87,7 +87,7 @@ class AuthService(
         val user = userRepository.findById(userId).orElseThrow { unauthorizedException() }
         validateUserForLogin(user)
 
-        val newAccessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId)
+        val newAccessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId, user.role)
         val newRefreshToken = jwtTokenProvider.createRefreshToken(user.id, sessionId)
         loginSessionStore.rotateRefreshToken(sessionId, newRefreshToken)
 

@@ -3,6 +3,7 @@ package com.cw.vlainter.domain.auth.controller
 import com.cw.vlainter.domain.auth.dto.SendVerificationEmailRequest
 import com.cw.vlainter.domain.auth.dto.VerifyEmailCodeRequest
 import com.cw.vlainter.domain.auth.service.EmailVerificationService
+import jakarta.validation.Valid
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -16,6 +17,7 @@ class EmailVerificationController(
 ) {
     @PostMapping("/send")
     fun sendVerificationEmail(
+        @Valid
         @RequestBody request: SendVerificationEmailRequest
     ): ResponseEntity<Map<String, Any>> {
         val result = emailVerificationService.sendVerificationCode(request.email)
@@ -29,12 +31,18 @@ class EmailVerificationController(
 
     @PostMapping("/verify")
     fun verifyCode(
+        @Valid
         @RequestBody request: VerifyEmailCodeRequest
     ): ResponseEntity<Map<String, Any>> {
         val result = emailVerificationService.verifyCode(request.email, request.code)
+        val message = if (result.verified) {
+            "이메일 인증이 완료되었습니다."
+        } else {
+            "이메일 인증에 실패했습니다."
+        }
         return ResponseEntity.ok(
             mapOf(
-                "message" to "이메일 인증이 완료되었습니다.",
+                "message" to message,
                 "verified" to result.verified
             )
         )

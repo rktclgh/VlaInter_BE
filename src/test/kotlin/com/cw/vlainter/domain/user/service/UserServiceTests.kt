@@ -21,7 +21,9 @@ import org.mockito.Mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.junit.jupiter.MockitoExtension
-import org.springframework.data.domain.Sort
+import org.springframework.data.domain.PageImpl
+import org.springframework.data.domain.PageRequest
+import org.springframework.data.domain.Pageable
 import org.springframework.http.HttpStatus
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.web.server.ResponseStatusException
@@ -63,7 +65,7 @@ class UserServiceTests {
         val principal = createPrincipal(user)
         val request = UpdateMyProfileRequest(
             currentPassword = "wrong-password",
-            newPassword = "new-password-123"
+            newPassword = "New-password-123!"
         )
 
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
@@ -98,11 +100,11 @@ class UserServiceTests {
         val principal = createPrincipal(user)
         val request = ChangeMyPasswordRequest(
             currentPassword = "old-password",
-            newPassword = "new-password-123"
+            newPassword = "New-password-123!"
         )
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
         given(passwordEncoder.matches("old-password", "encoded-old-password")).willReturn(true)
-        given(passwordEncoder.encode("new-password-123")).willReturn("encoded-new-password")
+        given(passwordEncoder.encode("New-password-123!")).willReturn("encoded-new-password")
         given(userRepository.save(user)).willReturn(user)
 
         userService().changeMyPassword(principal, request)
@@ -117,7 +119,7 @@ class UserServiceTests {
         val principal = createPrincipal(user)
         val request = ChangeMyPasswordRequest(
             currentPassword = "wrong-password",
-            newPassword = "new-password-123"
+            newPassword = "New-password-123!"
         )
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
         given(passwordEncoder.matches("wrong-password", "encoded-old-password")).willReturn(false)
@@ -157,11 +159,11 @@ class UserServiceTests {
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
 
         val exception = assertThrows<ResponseStatusException> {
-            userService().getMembersByAdmin(principal)
+            userService().getMembersByAdmin(principal, page = 0, size = 20)
         }
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.FORBIDDEN)
-        then(userRepository).should(never()).findAll(any(Sort::class.java))
+        then(userRepository).should(never()).findAll(any(Pageable::class.java))
     }
 
     @Test
@@ -172,12 +174,12 @@ class UserServiceTests {
         val member2 = createUser(id = 300L, email = "member2@vlainter.com")
 
         given(userRepository.findById(adminUser.id)).willReturn(Optional.of(adminUser))
-        given(userRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")))
-            .willReturn(listOf(member2, member1))
+        given(userRepository.findAll(PageRequest.of(0, 20, org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt"))))
+            .willReturn(PageImpl(listOf(member2, member1), PageRequest.of(0, 20), 17L))
 
-        val response = userService().getMembersByAdmin(principal)
+        val response = userService().getMembersByAdmin(principal, page = 0, size = 20)
 
-        assertThat(response.totalCount).isEqualTo(2)
+        assertThat(response.totalCount).isEqualTo(17)
         assertThat(response.members.map { it.memberId }).containsExactly(300L, 200L)
     }
 

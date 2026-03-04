@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.auth.controller
 
 import com.cw.vlainter.domain.auth.dto.SendTemporaryPasswordRequest
 import com.cw.vlainter.domain.auth.service.PasswordRecoveryService
+import jakarta.validation.Valid
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -15,6 +16,7 @@ class PasswordRecoveryController(
 ) {
     @PostMapping("/temporary")
     fun sendTemporaryPassword(
+        @Valid
         @RequestBody request: SendTemporaryPasswordRequest
     ): ResponseEntity<Map<String, String>> {
         passwordRecoveryService.sendTemporaryPassword(request.email, request.name)

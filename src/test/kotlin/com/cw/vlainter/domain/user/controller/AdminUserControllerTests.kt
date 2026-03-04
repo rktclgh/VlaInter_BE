@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.BDDMockito.given
 import org.mockito.BDDMockito.then
+import org.mockito.BDDMockito.willDoNothing
 import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
 import java.time.OffsetDateTime
@@ -24,7 +25,7 @@ class AdminUserControllerTests {
     private lateinit var userService: UserService
 
     @Test
-    fun getMembersReturnsNotionPathSpecResponse() {
+    fun `get members returns notion path spec response`() {
         val principal = adminPrincipal()
         val responsePayload = AdminMemberListResponse(
             totalCount = 1,
@@ -39,13 +40,13 @@ class AdminUserControllerTests {
                 )
             )
         )
-        given(userService.getMembersByAdmin(principal)).willReturn(responsePayload)
+        given(userService.getMembersByAdmin(principal, 0, 20)).willReturn(responsePayload)
 
-        val response = AdminUserController(userService).getMembers(principal)
+        val response = AdminUserController(userService).getMembers(principal, 0, 20)
 
         assertThat(response.statusCode.value()).isEqualTo(200)
         assertThat(response.body).isEqualTo(responsePayload)
-        then(userService).should().getMembersByAdmin(principal)
+        then(userService).should().getMembersByAdmin(principal, 0, 20)
     }
 
     @Test
@@ -98,6 +99,7 @@ class AdminUserControllerTests {
     @Test
     fun hardDeleteMemberReturnsSuccessMessage() {
         val principal = adminPrincipal()
+        willDoNothing().given(userService).hardDeleteMemberByAdmin(principal, 50L)
 
         val response = AdminUserController(userService).hardDeleteMember(principal, 50L)
 

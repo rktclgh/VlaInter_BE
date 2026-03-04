@@ -5,6 +5,7 @@ import jakarta.validation.ConstraintViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.http.converter.HttpMessageNotReadableException
+import org.slf4j.LoggerFactory
 import org.springframework.validation.FieldError
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.MissingServletRequestParameterException
@@ -14,6 +15,7 @@ import org.springframework.web.server.ResponseStatusException
 
 @RestControllerAdvice
 class GlobalExceptionHandler {
+    private val logger = LoggerFactory.getLogger(GlobalExceptionHandler::class.java)
     private val missingFieldRegex = Regex("missing (?:creator )?property '([^']+)'", RegexOption.IGNORE_CASE)
 
     @ExceptionHandler(ResponseStatusException::class)
@@ -21,14 +23,16 @@ class GlobalExceptionHandler {
         ex: ResponseStatusException,
         request: HttpServletRequest
     ): ResponseEntity<ApiErrorResponse> {
-        val status = HttpStatus.valueOf(ex.statusCode.value())
+        val resolvedStatus = HttpStatus.resolve(ex.statusCode.value())
+        val statusValue = ex.statusCode.value()
+        val statusCodeName = resolvedStatus?.name ?: "HTTP_$statusValue"
         return ResponseEntity
-            .status(status)
+            .status(ex.statusCode)
             .body(
                 ApiErrorResponse(
-                    status = status.value(),
-                    code = status.name,
-                    message = ex.reason?.takeIf { it.isNotBlank() } ?: defaultMessage(status),
+                    status = statusValue,
+                    code = statusCodeName,
+                    message = ex.reason?.takeIf { it.isNotBlank() } ?: defaultMessage(resolvedStatus),
                     path = request.requestURI
                 )
             )
@@ -112,8 +116,10 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception::class)
     fun handleUnhandledException(
+        ex: Exception,
         request: HttpServletRequest
     ): ResponseEntity<ApiErrorResponse> {
+        logger.error("Unhandled exception while processing request path={}", request.requestURI, ex)
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
             ApiErrorResponse(
                 status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
@@ -142,7 +148,7 @@ class GlobalExceptionHandler {
         return null
     }
 
-    private fun defaultMessage(status: HttpStatus): String {
+    private fun defaultMessage(status: HttpStatus?): String {
         return when (status) {
             HttpStatus.BAD_REQUEST -> "잘못된 요청입니다."
             HttpStatus.UNAUTHORIZED -> "인증이 필요합니다. 다시 로그인해 주세요."

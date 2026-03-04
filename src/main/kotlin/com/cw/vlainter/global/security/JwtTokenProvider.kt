@@ -1,5 +1,6 @@
 package com.cw.vlainter.global.security
 
+import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.global.config.properties.JwtProperties
 import io.jsonwebtoken.Claims
 import io.jsonwebtoken.Jwts
@@ -32,7 +33,7 @@ class JwtTokenProvider(
     /**
      * Access Token 생성.
      */
-    fun createAccessToken(userId: Long, email: String, sessionId: String): String {
+    fun createAccessToken(userId: Long, email: String, sessionId: String, role: UserRole): String {
         val now = Instant.now()
         val expiry = now.plusSeconds(jwtProperties.accessTokenExpSeconds)
 
@@ -43,6 +44,7 @@ class JwtTokenProvider(
             .expiration(Date.from(expiry))
             .claim("email", email)
             .claim("sid", sessionId)
+            .claim("role", role.name)
             .signWith(accessKey)
             .compact()
     }
@@ -90,8 +92,14 @@ class JwtTokenProvider(
         return AccessTokenClaims(
             userId = claims.subject.toLong(),
             email = claims.get("email", String::class.java),
-            sessionId = claims.get("sid", String::class.java)
+            sessionId = claims.get("sid", String::class.java),
+            role = parseRole(claims.get("role", String::class.java))
         )
+    }
+
+    private fun parseRole(rawRole: String?): UserRole {
+        if (rawRole.isNullOrBlank()) return UserRole.USER
+        return runCatching { UserRole.valueOf(rawRole) }.getOrDefault(UserRole.USER)
     }
 
     /**
@@ -125,5 +133,6 @@ class JwtTokenProvider(
 data class AccessTokenClaims(
     val userId: Long,
     val email: String,
-    val sessionId: String
+    val sessionId: String,
+    val role: UserRole
 )
