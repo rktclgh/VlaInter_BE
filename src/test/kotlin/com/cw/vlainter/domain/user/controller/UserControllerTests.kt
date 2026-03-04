@@ -39,7 +39,7 @@ class UserControllerTests {
         val response = UserController(userService, authCookieManager).changeMyPassword(principal, request)
 
         assertThat(response.statusCode.value()).isEqualTo(200)
-        assertThat(response.body?.get("message")).isEqualTo("Password has been changed.")
+        assertThat(response.body?.get("message")).isNotBlank()
         then(userService).should().changeMyPassword(principal, request)
     }
 

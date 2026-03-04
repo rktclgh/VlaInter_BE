@@ -2,22 +2,25 @@ package com.cw.vlainter.domain.auth.service
 
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.global.mail.EmailTemplateService
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.mail.MailException
-import org.springframework.mail.SimpleMailMessage
 import org.springframework.mail.javamail.JavaMailSender
+import org.springframework.mail.javamail.MimeMessageHelper
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import java.security.SecureRandom
+import java.nio.charset.StandardCharsets
 
 @Service
 class PasswordRecoveryService(
     private val userRepository: UserRepository,
     private val passwordEncoder: PasswordEncoder,
     private val mailSender: JavaMailSender,
+    private val emailTemplateService: EmailTemplateService,
     @Value("\${spring.mail.username:}")
     private val senderEmail: String
 ) {
@@ -74,17 +77,15 @@ class PasswordRecoveryService(
     }
 
     private fun sendTemporaryPasswordEmail(email: String, temporaryPassword: String) {
-        val message = SimpleMailMessage()
+        val html = emailTemplateService.buildTemporaryPasswordEmail(temporaryPassword)
+        val message = mailSender.createMimeMessage()
+        val helper = MimeMessageHelper(message, StandardCharsets.UTF_8.name())
         if (senderEmail.isNotBlank()) {
-            message.from = senderEmail
+            helper.setFrom(senderEmail)
         }
-        message.setTo(email)
-        message.subject = "[VlaInter] Temporary Password"
-        message.text = """
-            Your temporary password: $temporaryPassword
-
-            Please log in and change your password immediately.
-        """.trimIndent()
+        helper.setTo(email)
+        helper.setSubject("[VlaInter] 임시 비밀번호")
+        helper.setText(html, true)
         mailSender.send(message)
     }
 

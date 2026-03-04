@@ -44,7 +44,7 @@ class UserController(
         @RequestBody request: ChangeMyPasswordRequest
     ): ResponseEntity<Map<String, String>> {
         userService.changeMyPassword(principal, request)
-        return ResponseEntity.ok(mapOf("message" to "Password has been changed."))
+        return ResponseEntity.ok(mapOf("message" to "비밀번호가 변경되었습니다."))
     }
 
     @DeleteMapping("/me")

@@ -1,14 +1,15 @@
 package com.cw.vlainter.domain.auth.service
 
 import com.cw.vlainter.global.config.properties.EmailVerificationProperties
+import com.cw.vlainter.global.mail.EmailTemplateService
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.http.HttpStatus
 import org.springframework.mail.MailException
-import org.springframework.mail.SimpleMailMessage
 import org.springframework.mail.javamail.JavaMailSender
 import org.springframework.stereotype.Service
 import org.springframework.web.server.ResponseStatusException
+import org.springframework.mail.javamail.MimeMessageHelper
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -18,6 +19,7 @@ import java.time.Duration
 class EmailVerificationService(
     private val mailSender: JavaMailSender,
     private val redisTemplate: StringRedisTemplate,
+    private val emailTemplateService: EmailTemplateService,
     private val emailVerificationProperties: EmailVerificationProperties,
     @Value("\${spring.mail.username:}")
     private val senderEmail: String
@@ -78,18 +80,15 @@ class EmailVerificationService(
     }
 
     private fun sendEmail(email: String, code: String) {
-        val message = SimpleMailMessage()
+        val html = emailTemplateService.buildVerificationCodeEmail(code, emailVerificationProperties.codeExpSeconds)
+        val message = mailSender.createMimeMessage()
+        val helper = MimeMessageHelper(message, StandardCharsets.UTF_8.name())
         if (senderEmail.isNotBlank()) {
-            message.from = senderEmail
+            helper.setFrom(senderEmail)
         }
-        message.setTo(email)
-        message.subject = "[VlaInter] 이메일 인증 코드"
-        message.text = """
-            인증 코드: $code
-            
-            이 코드는 ${emailVerificationProperties.codeExpSeconds}초 동안 유효합니다.
-            본인이 요청하지 않았다면 이 메일을 무시해 주세요.
-        """.trimIndent()
+        helper.setTo(email)
+        helper.setSubject("[VlaInter] 이메일 인증 코드")
+        helper.setText(html, true)
 
         mailSender.send(message)
     }

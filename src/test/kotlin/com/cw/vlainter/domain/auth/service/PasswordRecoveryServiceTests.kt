@@ -3,12 +3,16 @@ package com.cw.vlainter.domain.auth.service
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.global.mail.EmailTemplateService
+import jakarta.mail.Session
+import jakarta.mail.internet.MimeMessage
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.anyString
 import org.mockito.BDDMockito.given
 import org.mockito.BDDMockito.then
 import org.mockito.BDDMockito.willThrow
@@ -16,11 +20,11 @@ import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
 import org.springframework.http.HttpStatus
 import org.springframework.mail.MailSendException
-import org.springframework.mail.SimpleMailMessage
 import org.springframework.mail.javamail.JavaMailSender
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.web.server.ResponseStatusException
 import java.util.Optional
+import java.util.Properties
 
 @ExtendWith(MockitoExtension::class)
 class PasswordRecoveryServiceTests {
@@ -34,12 +38,19 @@ class PasswordRecoveryServiceTests {
     @Mock
     private lateinit var mailSender: JavaMailSender
 
+    @Mock
+    private lateinit var emailTemplateService: EmailTemplateService
+
     @Test
     fun sendTemporaryPasswordUpdatesPasswordAndSendsEmail() {
         val user = createUser()
+        val mimeMessage = MimeMessage(Session.getInstance(Properties()))
         given(userRepository.findByEmail("user@vlainter.com")).willReturn(Optional.of(user))
         given(passwordEncoder.encode(any(String::class.java))).willReturn("encoded-temp-password")
         given(userRepository.save(user)).willReturn(user)
+        given(mailSender.createMimeMessage()).willReturn(mimeMessage)
+        given(emailTemplateService.buildTemporaryPasswordEmail(anyString()))
+            .willReturn("<html>temporary-password-template</html>")
 
         service().sendTemporaryPassword(" USER@vlainter.com ", "User Name")
 
@@ -51,12 +62,12 @@ class PasswordRecoveryServiceTests {
         assertThat(rawTemporaryPassword.any { it.isLetter() }).isTrue()
         assertThat(user.password).isEqualTo("encoded-temp-password")
 
-        val messageCaptor = ArgumentCaptor.forClass(SimpleMailMessage::class.java)
-        then(mailSender).should().send(messageCaptor.capture())
-        val sentMessage = messageCaptor.value
-        assertThat(sentMessage.to).containsExactly("user@vlainter.com")
-        assertThat(sentMessage.from).isEqualTo("mailer@vlainter.com")
-        assertThat(sentMessage.text).contains(rawTemporaryPassword)
+        then(mailSender).should().send(mimeMessage)
+        assertThat(mimeMessage.subject).isNotBlank()
+        assertThat(mimeMessage.allRecipients.map { it.toString() }).containsExactly("user@vlainter.com")
+        assertThat(mimeMessage.from).isNotNull
+        assertThat(mimeMessage.from.map { it.toString() }).containsExactly("mailer@vlainter.com")
+        assertThat(mimeMessage.content.toString()).contains("temporary-password-template")
     }
 
     @Test
@@ -74,12 +85,16 @@ class PasswordRecoveryServiceTests {
     @Test
     fun sendTemporaryPasswordThrowsServiceUnavailableWhenMailFails() {
         val user = createUser()
+        val mimeMessage = MimeMessage(Session.getInstance(Properties()))
         given(userRepository.findByEmail("user@vlainter.com")).willReturn(Optional.of(user))
         given(passwordEncoder.encode(any(String::class.java))).willReturn("encoded-temp-password")
         given(userRepository.save(user)).willReturn(user)
+        given(mailSender.createMimeMessage()).willReturn(mimeMessage)
+        given(emailTemplateService.buildTemporaryPasswordEmail(anyString()))
+            .willReturn("<html>temporary-password-template</html>")
         willThrow(MailSendException("smtp failed"))
             .given(mailSender)
-            .send(any(SimpleMailMessage::class.java))
+            .send(mimeMessage)
 
         val exception = assertThrows<ResponseStatusException> {
             service().sendTemporaryPassword("user@vlainter.com", "User Name")
@@ -93,6 +108,7 @@ class PasswordRecoveryServiceTests {
             userRepository = userRepository,
             passwordEncoder = passwordEncoder,
             mailSender = mailSender,
+            emailTemplateService = emailTemplateService,
             senderEmail = "mailer@vlainter.com"
         )
     }

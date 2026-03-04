@@ -1,12 +1,15 @@
 package com.cw.vlainter.domain.auth.service
 
 import com.cw.vlainter.global.config.properties.EmailVerificationProperties
+import com.cw.vlainter.global.mail.EmailTemplateService
+import jakarta.mail.Session
+import jakarta.mail.internet.MimeMessage
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.extension.ExtendWith
-import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.anyString
 import org.mockito.ArgumentMatchers.argThat
 import org.mockito.ArgumentMatchers.eq
 import org.mockito.BDDMockito.given
@@ -21,12 +24,12 @@ import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.ValueOperations
 import org.springframework.http.HttpStatus
 import org.springframework.mail.MailSendException
-import org.springframework.mail.SimpleMailMessage
 import org.springframework.mail.javamail.JavaMailSender
 import org.springframework.web.server.ResponseStatusException
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Duration
+import java.util.Properties
 
 @ExtendWith(MockitoExtension::class)
 class EmailVerificationServiceTests {
@@ -40,6 +43,9 @@ class EmailVerificationServiceTests {
     @Mock
     private lateinit var valueOperations: ValueOperations<String, String>
 
+    @Mock
+    private lateinit var emailTemplateService: EmailTemplateService
+
     private val properties = EmailVerificationProperties(
         codeExpSeconds = 300,
         resendCooldownSeconds = 60,
@@ -50,8 +56,12 @@ class EmailVerificationServiceTests {
     fun sendVerificationCodeStoresCodeAndCooldownAndSendsMail() {
         val rawEmail = "  SongChiH@iCloud.com  "
         val normalizedEmail = "songchih@icloud.com"
+        val mimeMessage = MimeMessage(Session.getInstance(Properties()))
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
         given(redisTemplate.hasKey("auth:email-verification:cooldown:$normalizedEmail")).willReturn(false)
+        given(mailSender.createMimeMessage()).willReturn(mimeMessage)
+        given(emailTemplateService.buildVerificationCodeEmail(anyString(), eq(300L)))
+            .willReturn("<html>verification-code-template</html>")
 
         val result = service().sendVerificationCode(rawEmail)
 
@@ -68,13 +78,12 @@ class EmailVerificationServiceTests {
             eq(Duration.ofSeconds(60))
         )
 
-        val messageCaptor = ArgumentCaptor.forClass(SimpleMailMessage::class.java)
-        then(mailSender).should().send(messageCaptor.capture())
-        val sentMessage = messageCaptor.value
-        assertThat(sentMessage.to).containsExactly(normalizedEmail)
-        assertThat(sentMessage.from).isEqualTo("mailer@vlainter.com")
-        assertThat(sentMessage.subject).contains("VlaInter")
-        assertThat(sentMessage.text).contains("300")
+        then(mailSender).should().send(mimeMessage)
+        assertThat(mimeMessage.subject).contains("VlaInter")
+        assertThat(mimeMessage.allRecipients.map { it.toString() }).containsExactly(normalizedEmail)
+        assertThat(mimeMessage.from).isNotNull
+        assertThat(mimeMessage.from.map { it.toString() }).containsExactly("mailer@vlainter.com")
+        assertThat(mimeMessage.content.toString()).contains("verification-code-template")
     }
 
     @Test
@@ -86,7 +95,7 @@ class EmailVerificationServiceTests {
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
         assertThat(exception.reason).isNotBlank()
         then(redisTemplate).should(never()).hasKey(any(String::class.java))
-        verifyNoInteractions(valueOperations, mailSender)
+        verifyNoInteractions(valueOperations, mailSender, emailTemplateService)
     }
 
     @Test
@@ -100,15 +109,19 @@ class EmailVerificationServiceTests {
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.TOO_MANY_REQUESTS)
         assertThat(exception.reason).isNotBlank()
-        verifyNoInteractions(valueOperations, mailSender)
+        verifyNoInteractions(valueOperations, mailSender, emailTemplateService)
     }
 
     @Test
     fun secondRequestWithinOneMinuteCooldownThrowsTooManyRequests() {
         val email = "songchih@icloud.com"
+        val firstMimeMessage = MimeMessage(Session.getInstance(Properties()))
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
         given(redisTemplate.hasKey("auth:email-verification:cooldown:$email"))
             .willReturn(false, true)
+        given(mailSender.createMimeMessage()).willReturn(firstMimeMessage)
+        given(emailTemplateService.buildVerificationCodeEmail(anyString(), eq(300L)))
+            .willReturn("<html>verification-code-template</html>")
 
         service().sendVerificationCode(email)
 
@@ -123,17 +136,21 @@ class EmailVerificationServiceTests {
             eq("1"),
             eq(Duration.ofSeconds(60))
         )
-        then(mailSender).should(times(1)).send(any(SimpleMailMessage::class.java))
+        then(mailSender).should(times(1)).send(firstMimeMessage)
     }
 
     @Test
     fun smtpFailureRollsBackRedisKeysAndThrowsServiceUnavailable() {
         val email = "songchih@icloud.com"
+        val mimeMessage = MimeMessage(Session.getInstance(Properties()))
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
         given(redisTemplate.hasKey("auth:email-verification:cooldown:$email")).willReturn(false)
+        given(mailSender.createMimeMessage()).willReturn(mimeMessage)
+        given(emailTemplateService.buildVerificationCodeEmail(anyString(), eq(300L)))
+            .willReturn("<html>verification-code-template</html>")
         willThrow(MailSendException("smtp failed"))
             .given(mailSender)
-            .send(any(SimpleMailMessage::class.java))
+            .send(mimeMessage)
 
         val exception = assertThrows<ResponseStatusException> {
             service().sendVerificationCode(email)
@@ -204,6 +221,7 @@ class EmailVerificationServiceTests {
         return EmailVerificationService(
             mailSender = mailSender,
             redisTemplate = redisTemplate,
+            emailTemplateService = emailTemplateService,
             emailVerificationProperties = properties,
             senderEmail = "mailer@vlainter.com"
         )

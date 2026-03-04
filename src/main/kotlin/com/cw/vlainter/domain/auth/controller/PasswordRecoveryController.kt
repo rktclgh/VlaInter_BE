@@ -18,6 +18,6 @@ class PasswordRecoveryController(
         @RequestBody request: SendTemporaryPasswordRequest
     ): ResponseEntity<Map<String, String>> {
         passwordRecoveryService.sendTemporaryPassword(request.email, request.name)
-        return ResponseEntity.ok(mapOf("message" to "Temporary password has been sent."))
+        return ResponseEntity.ok(mapOf("message" to "임시 비밀번호를 이메일로 발송했습니다."))
     }
 }
