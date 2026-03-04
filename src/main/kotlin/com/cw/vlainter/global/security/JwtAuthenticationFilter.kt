@@ -1,5 +1,6 @@
 package com.cw.vlainter.global.security
 
+import com.cw.vlainter.domain.user.entity.UserRole
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
@@ -51,7 +52,8 @@ class JwtAuthenticationFilter(
         val principal = AuthPrincipal(
             userId = claims.userId,
             email = claims.email,
-            sessionId = claims.sessionId
+            sessionId = claims.sessionId,
+            role = claims.role
         )
         val authority = SimpleGrantedAuthority("ROLE_${claims.role.name}")
         val authentication = UsernamePasswordAuthenticationToken(principal, null, listOf(authority))
@@ -78,5 +80,6 @@ class JwtAuthenticationFilter(
 data class AuthPrincipal(
     val userId: Long,
     val email: String,
-    val sessionId: String
+    val sessionId: String,
+    val role: UserRole = UserRole.USER
 )

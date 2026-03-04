@@ -45,10 +45,13 @@ class UserController(
     fun changeMyPassword(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @Valid
-        @RequestBody request: ChangeMyPasswordRequest
+        @RequestBody request: ChangeMyPasswordRequest,
+        response: HttpServletResponse
     ): ResponseEntity<Map<String, String>> {
         userService.changeMyPassword(principal, request)
         loginSessionStore.delete(principal.sessionId)
+        response.addHeader(HttpHeaders.SET_COOKIE, authCookieManager.clearAccessTokenCookie().toString())
+        response.addHeader(HttpHeaders.SET_COOKIE, authCookieManager.clearRefreshTokenCookie().toString())
         return ResponseEntity.ok(mapOf("message" to "비밀번호가 변경되었습니다."))
     }
 

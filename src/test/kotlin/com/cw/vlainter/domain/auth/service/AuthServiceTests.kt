@@ -68,7 +68,7 @@ class AuthServiceTests {
                 anyLongMatcher(),
                 anyStringMatcher(),
                 anyStringMatcher(),
-                anyUserRoleMatcher()
+                eqUserRoleMatcher(user.role)
             )
         )
             .willAnswer { invocation ->
@@ -91,7 +91,7 @@ class AuthServiceTests {
         assertThat(result.userId).isEqualTo(user.id)
         assertThat(result.email).isEqualTo(user.email)
         assertThat(result.name).isEqualTo(user.name)
-        assertThat(result.role).isEqualTo(UserRole.USER)
+        assertThat(result.role).isEqualTo(user.role)
         assertThat(result.accessToken).isEqualTo("access-token")
         assertThat(result.refreshToken).isEqualTo("refresh-token")
         assertThat(result.redirectUri).isEqualTo(request.redirectUri)
@@ -99,6 +99,7 @@ class AuthServiceTests {
         assertThat(refreshTokenSessionId).isNotBlank()
         assertThat(accessTokenSessionId).isEqualTo(refreshTokenSessionId)
 
+        then(jwtTokenProvider).should().createAccessToken(user.id, user.email, accessTokenSessionId!!, user.role)
         then(loginSessionStore).should().create(accessTokenSessionId!!, user.id, "refresh-token")
     }
 
@@ -287,8 +288,8 @@ class AuthServiceTests {
         return 0L
     }
 
-    private fun anyUserRoleMatcher(): UserRole {
-        org.mockito.ArgumentMatchers.any(UserRole::class.java)
-        return UserRole.USER
+    private fun eqUserRoleMatcher(expectedRole: UserRole): UserRole {
+        org.mockito.ArgumentMatchers.eq(expectedRole)
+        return expectedRole
     }
 }

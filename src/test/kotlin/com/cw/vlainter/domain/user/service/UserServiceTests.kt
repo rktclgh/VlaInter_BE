@@ -296,7 +296,8 @@ class UserServiceTests {
         return AuthPrincipal(
             userId = user.id,
             email = user.email,
-            sessionId = "session-${user.id}"
+            sessionId = "session-${user.id}",
+            role = user.role
         )
     }
 

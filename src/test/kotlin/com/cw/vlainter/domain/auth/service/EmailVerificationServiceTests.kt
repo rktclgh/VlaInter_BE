@@ -27,8 +27,6 @@ import org.springframework.http.HttpStatus
 import org.springframework.mail.MailSendException
 import org.springframework.mail.javamail.JavaMailSender
 import org.springframework.web.server.ResponseStatusException
-import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
 import java.time.Duration
 import java.util.Properties
 
@@ -180,7 +178,7 @@ class EmailVerificationServiceTests {
         val result = service().verifyCode(rawEmail, inputCode)
 
         assertThat(result.verified).isTrue()
-        then(redisTemplate).should().execute(any(DefaultRedisScript::class.java), eq(keys), eq(sha256(inputCode)))
+        then(redisTemplate).should().execute(any(DefaultRedisScript::class.java), eq(keys), eq(SHA256_123456))
     }
 
     @Test
@@ -238,6 +236,8 @@ class EmailVerificationServiceTests {
         }
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.TOO_MANY_REQUESTS)
+        then(valueOperations).should(never()).increment(anyString())
+        then(redisTemplate).should(never()).expire(anyString(), any(Duration::class.java))
     }
 
     @Test
@@ -250,6 +250,7 @@ class EmailVerificationServiceTests {
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
         verifyNoInteractions(valueOperations)
+        then(redisTemplate).should(never()).expire(anyString(), any(Duration::class.java))
     }
 
     private fun service(): EmailVerificationService {
@@ -262,9 +263,7 @@ class EmailVerificationServiceTests {
         )
     }
 
-    private fun sha256(raw: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(raw.toByteArray(StandardCharsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }
+    companion object {
+        private const val SHA256_123456 = "8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92"
     }
 }

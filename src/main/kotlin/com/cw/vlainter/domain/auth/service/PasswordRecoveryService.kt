@@ -46,6 +46,7 @@ class PasswordRecoveryService(
         if (user.name != name || user.status != UserStatus.ACTIVE) {
             throw invalidIdentityException()
         }
+
         enforceIssueRateLimit(email)
 
         val temporaryPassword = generateTemporaryPassword()
@@ -55,6 +56,7 @@ class PasswordRecoveryService(
         try {
             sendTemporaryPasswordEmail(email, temporaryPassword)
         } catch (_: MailException) {
+            rollbackIssueRateLimit(email)
             throw ResponseStatusException(
                 HttpStatus.SERVICE_UNAVAILABLE,
                 "임시 비밀번호 메일 발송에 실패했습니다. 잠시 후 다시 시도해 주세요."
@@ -114,7 +116,18 @@ class PasswordRecoveryService(
             redisTemplate.expire(dailyKey, durationUntilNextUtcDay())
         }
         if (issuedCount > dailyIssueLimit) {
+            valueOps.decrement(dailyKey)
             throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "오늘의 임시 비밀번호 요청 횟수를 초과했습니다.")
+        }
+    }
+
+    private fun rollbackIssueRateLimit(email: String) {
+        redisTemplate.delete(temporaryPasswordCooldownKey(email))
+        val valueOps = redisTemplate.opsForValue()
+        val dailyKey = temporaryPasswordDailyCountKey(email)
+        val remain = valueOps.decrement(dailyKey) ?: 0L
+        if (remain <= 0L) {
+            redisTemplate.delete(dailyKey)
         }
     }
 
