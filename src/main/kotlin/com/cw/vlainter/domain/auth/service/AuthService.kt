@@ -45,6 +45,7 @@ class AuthService(
             throw unauthorizedException()
         }
         validateUserForLogin(user)
+        val validatedRedirectUri = redirectUriValidator.validate(request.redirectUri)
 
         val sessionId = UUID.randomUUID().toString()
         val accessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId)
@@ -57,7 +58,7 @@ class AuthService(
             name = user.name,
             accessToken = accessToken,
             refreshToken = refreshToken,
-            redirectUri = redirectUriValidator.validate(request.redirectUri)
+            redirectUri = validatedRedirectUri
         )
     }
 
