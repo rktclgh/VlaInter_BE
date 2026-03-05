@@ -6,6 +6,7 @@ import com.cw.vlainter.global.security.RestAccessDeniedHandler
 import com.cw.vlainter.global.security.RestAuthenticationEntryPoint
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.http.HttpMethod
 import org.springframework.security.config.annotation.web.builders.HttpSecurity
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
 import org.springframework.security.config.http.SessionCreationPolicy
@@ -54,20 +55,13 @@ class SecurityConfig(
                 it.accessDeniedHandler(restAccessDeniedHandler)
             }
             .authorizeHttpRequests {
-                it.requestMatchers(
-                    "/api/auth/signup",
-                    "/api/auth/login",
-                    "/api/auth/kakao/login",
-                    "/api/auth/refresh",
-                    "/api/auth/logout",
-                    "/api/auth/email-verification/send",
-                    "/api/auth/email-verification/verify",
-                    "/api/auth/password/temporary",
-                    "/swagger-ui/**",
-                    "/v3/api-docs/**"
-                ).permitAll()
+                it.requestMatchers(*PUBLIC_API_PATHS, *PUBLIC_DOCS_PATHS).permitAll()
+                    // FE 라우트 추가 시 아래 PUBLIC_FRONTEND_ROUTES/PUBLIC_STATIC_PATHS를 함께 갱신한다.
+                    .requestMatchers(*PUBLIC_FRONTEND_ROUTES, *PUBLIC_STATIC_PATHS).permitAll()
+                    .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                     .requestMatchers("/api/admin/**").hasRole("ADMIN")
-                    .anyRequest().authenticated()
+                    .requestMatchers("/api/**").authenticated()
+                    .anyRequest().denyAll()
             }
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
 
@@ -88,5 +82,43 @@ class SecurityConfig(
         val source = UrlBasedCorsConfigurationSource()
         source.registerCorsConfiguration("/**", configuration)
         return source
+    }
+
+    private companion object {
+        val PUBLIC_API_PATHS = arrayOf(
+            "/api/auth/signup",
+            "/api/auth/login",
+            "/api/auth/kakao/login",
+            "/api/auth/refresh",
+            "/api/auth/logout",
+            "/api/auth/email-verification/send",
+            "/api/auth/email-verification/verify",
+            "/api/auth/password/temporary"
+        )
+
+        val PUBLIC_DOCS_PATHS = arrayOf(
+            "/swagger-ui/**",
+            "/v3/api-docs/**"
+        )
+
+        // SPA 엔트리로 직접 접근 가능한 FE 페이지 화이트리스트
+        val PUBLIC_FRONTEND_ROUTES = arrayOf(
+            "/",
+            "/index.html",
+            "/login",
+            "/join",
+            "/auth/kakao/callback",
+            "/content/interview",
+            "/content/files",
+            "/content/mypage",
+            "/content/point-charge"
+        )
+
+        val PUBLIC_STATIC_PATHS = arrayOf(
+            "/assets/**",
+            "/favicon.ico",
+            "/vite.svg",
+            "/icon/**"
+        )
     }
 }

@@ -136,7 +136,6 @@ jobs:
           fi
 
           cat > docker-compose.yml <<YAML2
-          version: "3.8"
           services:
             app:
               image: ${IMAGE_TAG}
