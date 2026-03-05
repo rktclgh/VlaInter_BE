@@ -20,7 +20,8 @@ class RestAuthenticationEntryPoint(
         authException: AuthenticationException?
     ) {
         val requestPath = resolveRequestPath(request)
-        if (!requestPath.startsWith("/api/")) {
+        val isApiPath = requestPath == "/api" || requestPath.startsWith("/api/")
+        if (!isApiPath) {
             response.sendRedirect("${request.contextPath}/errors/403")
             return
         }
