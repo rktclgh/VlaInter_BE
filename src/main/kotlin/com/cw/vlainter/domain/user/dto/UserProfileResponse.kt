@@ -6,5 +6,6 @@ data class UserProfileResponse(
     val userId: Long,
     val email: String,
     val name: String,
-    val status: UserStatus
+    val status: UserStatus,
+    val point: Long
 )

@@ -1,5 +1,5 @@
 package com.cw.vlainter.domain.userFile.entity
 
 enum class FileType {
-    INTRODUCE, RESUME, PORTFOLIO
+    INTRODUCE, RESUME, PORTFOLIO, PROFILE_IMAGE
 }

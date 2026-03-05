@@ -27,6 +27,7 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-security")
 	implementation("org.springframework.boot:spring-boot-starter-mail")
 	implementation("org.springframework.boot:spring-boot-starter-web")
+	implementation("software.amazon.awssdk:s3:2.33.0")
 	implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 	implementation("org.apache.commons:commons-lang3:3.18.0")
 	implementation("io.jsonwebtoken:jjwt-api:0.12.6")

@@ -59,7 +59,7 @@ class UserService(
         }
 
         val saved = userRepository.save(user)
-        return toProfileResponse(saved.id, saved.email, saved.name, saved.status)
+        return toProfileResponse(saved.id, saved.email, saved.name, saved.status, saved.point)
     }
 
     @Transactional
@@ -161,7 +161,7 @@ class UserService(
     fun getMyProfile(principal: AuthPrincipal): UserProfileResponse {
         val user = userRepository.findById(principal.userId)
             .orElseThrow { unauthorizedException() }
-        return toProfileResponse(user.id, user.email, user.name, user.status)
+        return toProfileResponse(user.id, user.email, user.name, user.status, user.point)
     }
 
     private fun ensureActiveUser(status: UserStatus) {
@@ -239,13 +239,15 @@ class UserService(
         userId: Long,
         email: String,
         name: String,
-        status: UserStatus
+        status: UserStatus,
+        point: Long
     ): UserProfileResponse {
         return UserProfileResponse(
             userId = userId,
             email = email,
             name = name,
-            status = status
+            status = status,
+            point = point
         )
     }
 

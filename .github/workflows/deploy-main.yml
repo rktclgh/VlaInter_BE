@@ -1,0 +1,164 @@
+name: deploy-on-main
+
+on:
+  push:
+    branches: ["main"]
+  repository_dispatch:
+    types: [fe-updated]
+  workflow_dispatch:
+
+env:
+  BACKEND_DIR: .
+  FE_REPO: rktclgh/VlaInter_FE
+  IMAGE_NAME: songchih/vlainter-backend
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout BE (this repo)
+        uses: actions/checkout@v4
+
+      - name: Checkout FE (main)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FE_REPO }}
+          ref: main
+          path: fe-src
+          token: ${{ secrets.CI_GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: fe-src/package-lock.json
+
+      - name: Install FE dependencies
+        working-directory: fe-src
+        run: npm ci
+
+      - name: Create FE .env from secrets (optional)
+        working-directory: fe-src
+        run: |
+          rm -f .env
+          {
+            echo "VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}"
+            echo "VITE_KAKAO_AUTH_URI=${{ secrets.VITE_KAKAO_AUTH_URI }}"
+            echo "VITE_KAKAO_CLIENT_ID=${{ secrets.VITE_KAKAO_CLIENT_ID }}"
+            echo "VITE_KAKAO_REDIRECT_URI=${{ secrets.VITE_KAKAO_REDIRECT_URI }}"
+            echo "VITE_FRONTEND_BASE_URL=${{ secrets.VITE_FRONTEND_BASE_URL }}"
+          } >> .env
+
+      - name: Build FE
+        working-directory: fe-src
+        run: npm run build
+
+      - name: Inject FE dist into BE static
+        run: |
+          rm -rf src/main/resources/static
+          mkdir -p src/main/resources/static
+          cp -r fe-src/dist/* src/main/resources/static/
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Build Spring Boot jar
+        run: |
+          chmod +x gradlew
+          ./gradlew clean bootJar --no-daemon
+
+      - name: Verify DockerHub secrets
+        run: |
+          [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] || (echo "Missing DOCKERHUB_USERNAME" && exit 1)
+          [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ] || (echo "Missing DOCKERHUB_TOKEN" && exit 1)
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  deploy-ec2:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Add EC2 host to known_hosts
+        run: ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to EC2
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          IMAGE_TAG: ${{ env.IMAGE_NAME }}:latest
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          ssh ${EC2_USER:-ubuntu}@${EC2_HOST} "bash -se" <<EOF
+          set -euo pipefail
+
+          DEPLOY_DIR=\$HOME/vlainter
+          mkdir -p "\$DEPLOY_DIR"
+          cd "\$DEPLOY_DIR"
+
+          if [ ! -f .env ]; then
+            echo "[ERROR] \$DEPLOY_DIR/.env 가 없습니다. 애플리케이션 환경변수를 먼저 생성하세요."
+            exit 1
+          fi
+
+          cat > docker-compose.yml <<YAML2
+          version: "3.8"
+          services:
+            app:
+              image: \${IMAGE_TAG}
+              container_name: vlainter-app
+              restart: always
+              env_file:
+                - .env
+              ports:
+                - "8080:8080"
+          YAML2
+
+          echo "\${DOCKERHUB_TOKEN}" | docker login -u "\${DOCKERHUB_USERNAME}" --password-stdin
+
+          if docker compose version >/dev/null 2>&1; then
+            DC="docker compose"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            DC="docker-compose"
+          else
+            echo "Docker Compose not installed"
+            exit 1
+          fi
+
+          \$DC pull
+          \$DC up -d --remove-orphans
+          \$DC ps
+          EOF
