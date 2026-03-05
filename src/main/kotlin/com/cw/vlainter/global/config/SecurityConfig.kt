@@ -107,14 +107,18 @@ class SecurityConfig(
             "/index.html",
             "/login",
             "/join",
+            "/password/forgot",
             "/auth/kakao/callback",
             "/content/interview",
             "/content/files",
             "/content/mypage",
-            "/content/point-charge"
+            "/content/point-charge",
+            "/errors/403",
+            "/errors/404"
         )
 
         val PUBLIC_STATIC_PATHS = arrayOf(
+            "/error/**",
             "/assets/**",
             "/favicon.ico",
             "/vite.svg",

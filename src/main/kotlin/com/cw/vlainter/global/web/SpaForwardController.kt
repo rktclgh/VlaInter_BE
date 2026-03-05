@@ -1,5 +1,7 @@
 package com.cw.vlainter.global.web
 
+import org.springframework.security.authentication.AnonymousAuthenticationToken
+import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.stereotype.Controller
 import org.springframework.web.bind.annotation.GetMapping
 
@@ -10,8 +12,22 @@ import org.springframework.web.bind.annotation.GetMapping
  */
 @Controller
 class SpaForwardController {
+    @GetMapping("/")
+    fun root(): String {
+        val authentication = SecurityContextHolder.getContext().authentication
+        val isAuthenticated =
+            authentication != null &&
+                authentication.isAuthenticated &&
+                authentication !is AnonymousAuthenticationToken
+
+        return if (isAuthenticated) {
+            "redirect:/content/interview"
+        } else {
+            "forward:/index.html"
+        }
+    }
+
     @GetMapping(
-        "/",
         "/login",
         "/join",
         "/auth/kakao/callback",

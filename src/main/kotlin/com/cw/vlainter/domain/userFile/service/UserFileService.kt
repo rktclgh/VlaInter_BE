@@ -34,6 +34,7 @@ class UserFileService(
     private val s3Properties: S3Properties
 ) {
     private val logger = LoggerFactory.getLogger(UserFileService::class.java)
+    private val originalFileNameMaxLength = 255
 
     @Transactional(readOnly = true)
     fun getMyFiles(principal: AuthPrincipal): List<UserFileResponse> {
@@ -48,19 +49,21 @@ class UserFileService(
         validateUploadFile(fileType, file)
         ensureS3Configured()
 
-        val sanitizedFileName = sanitizeFileName(file.originalFilename)
-        val objectKey = buildObjectKey(actor.id, fileType, sanitizedFileName)
+        val originalFileName = extractOriginalFileName(file.originalFilename)
+        val storageFileName = buildStorageFileName(originalFileName)
+        val objectKey = buildObjectKey(actor.id, fileType, storageFileName)
         val storedPath = buildStoredPath(objectKey)
         val contentType = file.contentType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
 
         putObject(objectKey, contentType, file.bytes)
 
-        var oldStoredPath: String? = null
+        var oldDeletionKey: String? = null
         val saved = try {
             val existing = userFileRepository.findByUser_IdAndFileType(actor.id, fileType)
             if (existing != null) {
-                oldStoredPath = existing.fileUrl
+                oldDeletionKey = resolveDeletionKey(existing.storageKey, existing.fileUrl)
                 userFileRepository.delete(existing)
+                userFileRepository.flush()
             }
 
             userFileRepository.save(
@@ -68,20 +71,23 @@ class UserFileService(
                     user = actor,
                     fileType = fileType,
                     fileUrl = storedPath,
-                    fileName = sanitizedFileName
+                    fileName = originalFileName,
+                    originalFileName = originalFileName,
+                    storageFileName = storageFileName,
+                    storageKey = objectKey,
+                    contentType = contentType,
+                    fileSizeBytes = file.size,
+                    updatedAt = OffsetDateTime.now()
                 )
             )
         } catch (ex: Exception) {
-            deleteObjectQuietly(storedPath)
+            deleteObjectQuietly(objectKey)
             throw ex
         }
 
-        if (!oldStoredPath.isNullOrBlank() && oldStoredPath != storedPath) {
-            val oldPath = oldStoredPath
+        if (!oldDeletionKey.isNullOrBlank() && oldDeletionKey != objectKey) {
             runAfterCommit {
-                if (!oldPath.isNullOrBlank()) {
-                    deleteObjectQuietly(oldPath)
-                }
+                deleteObjectQuietly(oldDeletionKey)
             }
         }
 
@@ -98,9 +104,11 @@ class UserFileService(
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 파일만 삭제할 수 있습니다.")
         }
 
+        val deletionKey = resolveDeletionKey(target.storageKey, target.fileUrl)
+
         userFileRepository.delete(target)
         runAfterCommit {
-            deleteObjectQuietly(target.fileUrl)
+            deleteObjectQuietly(deletionKey)
         }
     }
 
@@ -169,7 +177,7 @@ class UserFileService(
             FileType.PORTFOLIO -> "portfolio"
             FileType.PROFILE_IMAGE -> "profile-image"
         }
-        return "$prefix/users/$userId/$typeSegment/${now.year}/$month/${UUID.randomUUID()}-$fileName"
+        return "$prefix/users/$userId/$typeSegment/${now.year}/$month/$fileName"
     }
 
     private fun buildStoredPath(objectKey: String): String {
@@ -177,12 +185,37 @@ class UserFileService(
         return "s3://$bucket/$objectKey"
     }
 
-    private fun sanitizeFileName(originalFileName: String?): String {
+    private fun extractOriginalFileName(originalFileName: String?): String {
         val candidate = originalFileName?.trim().orEmpty()
         val withoutPath = candidate.substringAfterLast('/').substringAfterLast('\\')
-        val compactWhitespace = withoutPath.replace(Regex("\\s+"), "_")
-        val sanitized = compactWhitespace.replace(Regex("[^A-Za-z0-9._-]"), "")
-        return sanitized.ifBlank { "file" }
+        val normalizedWhitespace = withoutPath
+            .replace(Regex("[\\r\\n\\t]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .replace("\u0000", "")
+            .trim()
+
+        val safeName = normalizedWhitespace.ifBlank { "file" }
+        return safeName.take(originalFileNameMaxLength)
+    }
+
+    private fun buildStorageFileName(originalFileName: String): String {
+        val extension = originalFileName.substringAfterLast('.', "")
+            .lowercase()
+            .replace(Regex("[^a-z0-9]"), "")
+
+        val objectId = UUID.randomUUID().toString()
+        return if (extension.isBlank()) objectId else "$objectId.$extension"
+    }
+
+    private fun resolveDeletionKey(storageKey: String?, storedPath: String?): String? {
+        if (!storageKey.isNullOrBlank()) {
+            return storageKey.trim()
+        }
+        if (storedPath.isNullOrBlank()) {
+            return null
+        }
+        val parsed = resolveObjectKey(storedPath)
+        return parsed.ifBlank { null }
     }
 
     private fun resolveObjectKey(storedPath: String): String {
@@ -205,11 +238,8 @@ class UserFileService(
         return trimmed
     }
 
-    private fun deleteObjectQuietly(storedPath: String) {
-        if (storedPath.isBlank() || s3Properties.bucket.isBlank()) return
-
-        val objectKey = resolveObjectKey(storedPath)
-        if (objectKey.isBlank()) return
+    private fun deleteObjectQuietly(objectKey: String?) {
+        if (objectKey.isNullOrBlank() || s3Properties.bucket.isBlank()) return
 
         val request = DeleteObjectRequest.builder()
             .bucket(s3Properties.bucket.trim())
@@ -236,13 +266,16 @@ class UserFileService(
     }
 
     private fun toResponse(file: UserFile): UserFileResponse {
+        val displayFileName = file.originalFileName.takeIf { it.isNotBlank() } ?: file.fileName
         return UserFileResponse(
             fileId = file.id,
             userId = file.user.id,
             fileType = file.fileType,
-            fileName = file.fileName,
+            fileName = displayFileName,
             fileUrl = file.fileUrl,
-            createdAt = file.createdAt
+            createdAt = file.createdAt,
+            originalFileName = file.originalFileName,
+            storageFileName = file.storageFileName
         )
     }
 }
