@@ -31,7 +31,7 @@ class KakaoAuthService(
             ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카카오 이메일 동의가 필요합니다.")
         val profileName = userInfo.kakaoAccount.profile.nickname
 
-        return authService.loginOrSignupWithEmail(kakaoEmail, profileName, null)
+        return authService.loginOrSignupWithEmail(kakaoEmail, profileName, effectiveRedirectUri)
     }
 
     private fun resolveClientId(clientIdFromClient: String?): String {

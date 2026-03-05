@@ -54,6 +54,23 @@ class EmailVerificationService(
         )
         resultType = Long::class.java
     }
+    private val consumeVerifiedEmailScript = DefaultRedisScript<Long>().apply {
+        setScriptText(
+            """
+            local verifiedKey = KEYS[1]
+            local expectedValue = ARGV[1]
+            local stored = redis.call('GET', verifiedKey)
+
+            if (stored == expectedValue) then
+                redis.call('DEL', verifiedKey)
+                return 1
+            end
+
+            return 0
+            """.trimIndent()
+        )
+        resultType = Long::class.java
+    }
 
     fun sendVerificationCode(rawEmail: String): SendVerificationResult {
         val email = normalizeEmail(rawEmail)
@@ -130,11 +147,14 @@ class EmailVerificationService(
         validateEmail(email)
 
         val verifiedKey = verifiedEmailKey(email)
-        val isVerified = redisTemplate.opsForValue().get(verifiedKey) == "1"
-        if (!isVerified) {
+        val consumed = redisTemplate.execute(
+            consumeVerifiedEmailScript,
+            listOf(verifiedKey),
+            VERIFIED_EMAIL_FLAG
+        )
+        if (consumed != VERIFY_SUCCESS) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이메일 인증을 먼저 완료해 주세요.")
         }
-        redisTemplate.delete(verifiedKey)
     }
 
     private fun sendEmail(email: String, code: String) {
@@ -235,6 +255,7 @@ class EmailVerificationService(
     companion object {
         private const val VERIFY_SUCCESS = 1L
         private const val VERIFIED_EMAIL_TTL_MINUTES = 30L
+        private const val VERIFIED_EMAIL_FLAG = "1"
     }
 }
 

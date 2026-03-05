@@ -9,6 +9,7 @@ import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.JwtTokenProvider
 import com.cw.vlainter.global.security.LoginSessionStore
 import com.cw.vlainter.global.security.RedirectUriValidator
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
@@ -132,7 +133,11 @@ class AuthService(
             status = UserStatus.ACTIVE,
             role = UserRole.USER
         )
-        return userRepository.save(user)
+        return try {
+            userRepository.save(user)
+        } catch (_: DataIntegrityViolationException) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "이미 가입된 이메일입니다.")
+        }
     }
 
     /**
