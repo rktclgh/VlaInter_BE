@@ -22,22 +22,25 @@ class KakaoAuthService(
     private val restClient: RestClient = restClientBuilder.build()
 
     fun loginOrSignupWithKakao(code: String, redirectUri: String?, clientIdFromClient: String?): LoginResult {
-        val clientId = resolveClientId(clientIdFromClient)
+        val clientId = resolveClientId()
         val effectiveRedirectUri = resolveRedirectUri(redirectUri)
         val accessToken = requestAccessToken(clientId, effectiveRedirectUri, code)
         val userInfo = requestUserInfo(accessToken)
 
-        val kakaoEmail = userInfo.kakaoAccount?.email?.trim()?.lowercase()
+        val account = userInfo.kakaoAccount
+            ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카카오 계정 정보가 유효하지 않습니다.")
+        val kakaoEmail = account.email?.trim()?.lowercase()
             ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카카오 이메일 동의가 필요합니다.")
-        val profileName = userInfo.kakaoAccount.profile.nickname
+        val profileName = account.profile.nickname
+
+        if (!clientIdFromClient.isNullOrBlank()) {
+            logger.info("Ignoring client-provided Kakao clientId and using server-configured clientId.")
+        }
 
         return authService.loginOrSignupWithEmail(kakaoEmail, profileName, effectiveRedirectUri)
     }
 
-    private fun resolveClientId(clientIdFromClient: String?): String {
-        val fromClient = clientIdFromClient?.trim().orEmpty()
-        if (fromClient.isNotEmpty()) return fromClient
-
+    private fun resolveClientId(): String {
         val configured = kakaoProperties.clientId.trim()
         if (configured.isNotEmpty()) return configured
 
