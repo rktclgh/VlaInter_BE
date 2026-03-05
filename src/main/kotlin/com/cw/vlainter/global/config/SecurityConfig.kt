@@ -93,7 +93,9 @@ class SecurityConfig(
             "/api/auth/logout",
             "/api/auth/email-verification/send",
             "/api/auth/email-verification/verify",
-            "/api/auth/password/temporary"
+            "/api/auth/password/temporary",
+            "/api/payments/portone/webhook",
+            "/api/payments/portone/callback"
         )
 
         val PUBLIC_DOCS_PATHS = arrayOf(
