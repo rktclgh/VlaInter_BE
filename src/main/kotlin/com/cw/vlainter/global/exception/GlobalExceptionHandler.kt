@@ -11,6 +11,8 @@ import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.MissingServletRequestParameterException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
+import org.springframework.web.multipart.MaxUploadSizeExceededException
+import org.springframework.web.servlet.resource.NoResourceFoundException
 import org.springframework.web.server.ResponseStatusException
 
 @RestControllerAdvice
@@ -114,6 +116,36 @@ class GlobalExceptionHandler {
         )
     }
 
+
+    @ExceptionHandler(MaxUploadSizeExceededException::class)
+    fun handleMaxUploadSizeExceeded(
+        ex: MaxUploadSizeExceededException,
+        request: HttpServletRequest
+    ): ResponseEntity<ApiErrorResponse> {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(
+            ApiErrorResponse(
+                status = HttpStatus.PAYLOAD_TOO_LARGE.value(),
+                code = "PAYLOAD_TOO_LARGE",
+                message = "업로드 가능한 파일 크기를 초과했습니다.",
+                path = request.requestURI
+            )
+        )
+    }
+
+    @ExceptionHandler(NoResourceFoundException::class)
+    fun handleNoResourceFound(
+        ex: NoResourceFoundException,
+        request: HttpServletRequest
+    ): ResponseEntity<ApiErrorResponse> {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+            ApiErrorResponse(
+                status = HttpStatus.NOT_FOUND.value(),
+                code = "NOT_FOUND",
+                message = "요청한 리소스를 찾을 수 없습니다.",
+                path = request.requestURI
+            )
+        )
+    }
     @ExceptionHandler(Exception::class)
     fun handleUnhandledException(
         ex: Exception,
