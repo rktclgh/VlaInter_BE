@@ -10,6 +10,7 @@ import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Component
 import org.springframework.web.client.RestClientException
+import org.springframework.web.client.RestClientResponseException
 import org.springframework.web.client.RestTemplate
 import org.springframework.web.server.ResponseStatusException
 import org.springframework.http.HttpStatus
@@ -45,21 +46,23 @@ class PortoneApiClient(
         val entity = HttpEntity<Void>(headers)
         val url = "${portoneProperties.baseUrl.trim().trimEnd('/')}/payments/$impUid"
         val response = exchange(url, HttpMethod.GET, entity, PortoneEnvelope::class.java)
-        val body = response.body ?: throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "결제 조회 응답이 비어 있습니다.")
+        return toPortonePayment(response.body)
+    }
 
-        if (body.code != 0) {
-            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "결제 조회에 실패했습니다: ${body.message ?: "unknown"}")
+    override fun getPaymentByMerchantUid(merchantUid: String): PortonePayment {
+        if (merchantUid.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "결제 주문번호(merchantUid)가 비어 있습니다.")
         }
-        val payload = body.response
-            ?: throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "결제 상세 정보가 누락되었습니다.")
+        validateConfiguration()
 
-        val amount = payload.amount ?: BigDecimal.ZERO
-        return PortonePayment(
-            impUid = payload.impUid.orEmpty(),
-            merchantUid = payload.merchantUid.orEmpty(),
-            status = payload.status.orEmpty(),
-            amount = amount
-        )
+        val headers = HttpHeaders()
+        headers.accept = listOf(MediaType.APPLICATION_JSON)
+        headers.setBearerAuth(getAccessToken())
+
+        val entity = HttpEntity<Void>(headers)
+        val url = "${portoneProperties.baseUrl.trim().trimEnd('/')}/payments/find/$merchantUid"
+        val response = exchange(url, HttpMethod.GET, entity, PortoneEnvelope::class.java)
+        return toPortonePayment(response.body)
     }
 
     private fun getAccessToken(): String {
@@ -116,6 +119,23 @@ class PortoneApiClient(
         }
     }
 
+    private fun toPortonePayment(body: PortoneEnvelope?): PortonePayment {
+        val safeBody = body ?: throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "결제 조회 응답이 비어 있습니다.")
+        if (safeBody.code != 0) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "결제 조회에 실패했습니다: ${safeBody.message ?: "unknown"}")
+        }
+        val payload = safeBody.response
+            ?: throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "결제 상세 정보가 누락되었습니다.")
+
+        val amount = payload.amount ?: BigDecimal.ZERO
+        return PortonePayment(
+            impUid = payload.impUid.orEmpty(),
+            merchantUid = payload.merchantUid.orEmpty(),
+            status = payload.status.orEmpty(),
+            amount = amount
+        )
+    }
+
     private fun <T> exchange(
         url: String,
         method: HttpMethod,
@@ -125,6 +145,23 @@ class PortoneApiClient(
         return runCatching {
             restTemplate.exchange(url, method, entity, responseType)
         }.getOrElse { ex ->
+            val responseException = ex as? RestClientResponseException
+            if (responseException != null) {
+                val statusValue = responseException.statusCode.value()
+                if (statusValue == HttpStatus.NOT_FOUND.value() && url.contains("/payments/")) {
+                    throw ResponseStatusException(
+                        HttpStatus.BAD_REQUEST,
+                        "결제 정보를 찾을 수 없습니다. 결제 직후라면 2~3초 후 다시 시도해 주세요."
+                    )
+                }
+                val body = responseException.responseBodyAsString.orEmpty().replace("\n", " ").trim()
+                val safeBody = if (body.length > 300) body.take(300) else body
+                throw ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                    "PortOne 통신에 실패했습니다: HTTP $statusValue ${safeBody.ifBlank { "" }}".trim()
+                )
+            }
+
             val reason = (ex as? RestClientException)?.mostSpecificCause?.message ?: ex.message
             throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "PortOne 통신에 실패했습니다: $reason")
         }

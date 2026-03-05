@@ -4,6 +4,7 @@ import java.math.BigDecimal
 
 interface PortoneClient {
     fun getPayment(impUid: String): PortonePayment
+    fun getPaymentByMerchantUid(merchantUid: String): PortonePayment
 }
 
 data class PortonePayment(

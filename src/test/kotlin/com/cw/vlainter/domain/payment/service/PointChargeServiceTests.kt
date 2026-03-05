@@ -89,7 +89,7 @@ class PointChargeServiceTests {
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
         given(pointChargeRepository.findByMerchantUid("merchant-1")).willReturn(Optional.of(charge))
         given(pointChargeRepository.findByImpUid("imp-1")).willReturn(Optional.empty())
-        given(portoneClient.getPayment("imp-1")).willReturn(
+        given(portoneClient.getPaymentByMerchantUid("merchant-1")).willReturn(
             PortonePayment(
                 impUid = "imp-1",
                 merchantUid = "merchant-1",
@@ -127,7 +127,7 @@ class PointChargeServiceTests {
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
         given(pointChargeRepository.findByMerchantUid("merchant-1")).willReturn(Optional.of(charge))
         given(pointChargeRepository.findByImpUid("imp-2")).willReturn(Optional.empty())
-        given(portoneClient.getPayment("imp-2")).willReturn(
+        given(portoneClient.getPaymentByMerchantUid("merchant-1")).willReturn(
             PortonePayment(
                 impUid = "imp-2",
                 merchantUid = "merchant-1",

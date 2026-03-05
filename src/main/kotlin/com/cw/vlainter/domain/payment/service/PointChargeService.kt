@@ -116,25 +116,29 @@ class PointChargeService(
             )
         }
 
-        val duplicate = pointChargeRepository.findByImpUid(impUid).orElse(null)
-        if (duplicate != null && duplicate.id != charge.id) {
-            failCharge(charge, impUid, "이미 처리된 결제 식별자입니다.")
+        val payment = getPaymentWithRetry(charge.merchantUid, impUid)
+        val verifiedImpUid = payment.impUid.ifBlank { impUid }
+        if (verifiedImpUid.isBlank()) {
+            failCharge(charge, impUid, "결제 식별자 검증에 실패했습니다.")
+        }
+        val duplicateByVerifiedImpUid = pointChargeRepository.findByImpUid(verifiedImpUid).orElse(null)
+        if (duplicateByVerifiedImpUid != null && duplicateByVerifiedImpUid.id != charge.id) {
+            failCharge(charge, verifiedImpUid, "이미 처리된 결제 식별자입니다.")
         }
 
-        val payment = portoneClient.getPayment(impUid)
         if (!payment.merchantUid.equals(charge.merchantUid, ignoreCase = false)) {
-            failCharge(charge, impUid, "결제 정보의 merchantUid가 일치하지 않습니다.")
+            failCharge(charge, verifiedImpUid, "결제 정보의 merchantUid가 일치하지 않습니다.")
         }
         if (!payment.status.equals("paid", ignoreCase = true)) {
-            failCharge(charge, impUid, "결제 완료 상태가 아닙니다. status=${payment.status}")
+            failCharge(charge, verifiedImpUid, "결제 완료 상태가 아닙니다. status=${payment.status}")
         }
 
         val paidAmount = toPositiveAmount(payment.amount)
         if (paidAmount != charge.requestedAmount) {
-            failCharge(charge, impUid, "결제 금액이 요청 금액과 일치하지 않습니다.")
+            failCharge(charge, verifiedImpUid, "결제 금액이 요청 금액과 일치하지 않습니다.")
         }
 
-        charge.impUid = impUid
+        charge.impUid = verifiedImpUid
         charge.paidAmount = paidAmount
         charge.status = PointChargeStatus.PAID
         charge.failureReason = null
@@ -147,7 +151,7 @@ class PointChargeService(
 
         return ConfirmPointChargeResponse(
             merchantUid = charge.merchantUid,
-            impUid = impUid,
+            impUid = verifiedImpUid,
             paidAmount = paidAmount,
             chargedPoint = charge.rewardPoint,
             currentPoint = user.point
@@ -187,6 +191,34 @@ class PointChargeService(
         }
         return runCatching { amount.intValueExact() }
             .getOrElse { throw ResponseStatusException(HttpStatus.BAD_REQUEST, "결제 금액 범위를 초과했습니다.") }
+    }
+
+    private fun getPaymentWithRetry(
+        merchantUid: String,
+        fallbackImpUid: String
+    ): com.cw.vlainter.domain.payment.client.PortonePayment {
+        var lastException: ResponseStatusException? = null
+        repeat(3) { attempt ->
+            try {
+                return portoneClient.getPaymentByMerchantUid(merchantUid)
+            } catch (ex: ResponseStatusException) {
+                val retryable = ex.statusCode == HttpStatus.BAD_REQUEST &&
+                    ex.reason?.contains("결제 정보를 찾을 수 없습니다") == true &&
+                    attempt < 2
+                if (!retryable) {
+                    if (fallbackImpUid.isNotBlank()) {
+                        return portoneClient.getPayment(fallbackImpUid)
+                    }
+                    throw ex
+                }
+                lastException = ex
+                Thread.sleep(600L)
+            }
+        }
+        if (fallbackImpUid.isNotBlank()) {
+            return portoneClient.getPayment(fallbackImpUid)
+        }
+        throw lastException ?: ResponseStatusException(HttpStatus.BAD_GATEWAY, "결제 조회에 실패했습니다.")
     }
 
     private fun ensurePortoneConfigured() {
