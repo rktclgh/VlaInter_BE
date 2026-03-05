@@ -2,11 +2,13 @@ package com.cw.vlainter.domain.auth.controller
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.auth.dto.LoginResponse
+import com.cw.vlainter.domain.auth.dto.SignupRequest
 import com.cw.vlainter.domain.auth.service.AuthService
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.cw.vlainter.global.security.AuthCookieManager
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
+import jakarta.validation.Valid
 import org.springframework.http.HttpHeaders
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -29,6 +31,22 @@ class AuthController(
     private val authService: AuthService,
     private val authCookieManager: AuthCookieManager
 ) {
+    @PostMapping("/signup")
+    fun signup(
+        @Valid
+        @RequestBody request: SignupRequest
+    ): ResponseEntity<Map<String, Any>> {
+        val createdUser = authService.signup(request)
+        return ResponseEntity.ok(
+            mapOf(
+                "message" to "회원가입이 완료되었습니다.",
+                "userId" to createdUser.id,
+                "email" to createdUser.email,
+                "name" to createdUser.name
+            )
+        )
+    }
+
     /**
      * 현재 인증된 사용자 정보를 조회한다.
      *

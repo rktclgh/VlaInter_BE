@@ -1,5 +1,7 @@
 package com.cw.vlainter.domain.auth.service
 
+import com.cw.vlainter.domain.user.entity.User
+import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.config.properties.EmailVerificationProperties
 import com.cw.vlainter.global.mail.EmailTemplateService
 import jakarta.mail.Session
@@ -28,6 +30,7 @@ import org.springframework.mail.MailSendException
 import org.springframework.mail.javamail.JavaMailSender
 import org.springframework.web.server.ResponseStatusException
 import java.time.Duration
+import java.util.Optional
 import java.util.Properties
 
 @ExtendWith(MockitoExtension::class)
@@ -38,6 +41,9 @@ class EmailVerificationServiceTests {
 
     @Mock
     private lateinit var redisTemplate: StringRedisTemplate
+
+    @Mock
+    private lateinit var userRepository: UserRepository
 
     @Mock
     private lateinit var valueOperations: ValueOperations<String, String>
@@ -57,6 +63,7 @@ class EmailVerificationServiceTests {
         val normalizedEmail = "songchih@icloud.com"
         val mimeMessage = MimeMessage(Session.getInstance(Properties()))
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
+        given(userRepository.findByEmail(normalizedEmail)).willReturn(Optional.empty())
         given(redisTemplate.hasKey("auth:email-verification:cooldown:$normalizedEmail")).willReturn(false)
         given(mailSender.createMimeMessage()).willReturn(mimeMessage)
         given(emailTemplateService.buildVerificationCodeEmail(anyString(), eq(300L)))
@@ -93,13 +100,30 @@ class EmailVerificationServiceTests {
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
         assertThat(exception.reason).isNotBlank()
+        then(userRepository).should(never()).findByEmail(anyString())
         then(redisTemplate).should(never()).hasKey(any(String::class.java))
+        verifyNoInteractions(valueOperations, mailSender, emailTemplateService)
+    }
+
+    @Test
+    fun usedEmailThrowsConflictBeforeSendingCode() {
+        val email = "songchih@icloud.com"
+        given(userRepository.findByEmail(email)).willReturn(Optional.of(createUser(email)))
+
+        val exception = assertThrows<ResponseStatusException> {
+            service().sendVerificationCode(email)
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.CONFLICT)
+        assertThat(exception.reason).isEqualTo("이미 사용중인 이메일입니다.")
+        then(redisTemplate).should(never()).hasKey(anyString())
         verifyNoInteractions(valueOperations, mailSender, emailTemplateService)
     }
 
     @Test
     fun requestDuringCooldownThrowsTooManyRequests() {
         val email = "songchih@icloud.com"
+        given(userRepository.findByEmail(email)).willReturn(Optional.empty())
         given(redisTemplate.hasKey("auth:email-verification:cooldown:$email")).willReturn(true)
 
         val exception = assertThrows<ResponseStatusException> {
@@ -116,6 +140,7 @@ class EmailVerificationServiceTests {
         val email = "songchih@icloud.com"
         val firstMimeMessage = MimeMessage(Session.getInstance(Properties()))
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
+        given(userRepository.findByEmail(email)).willReturn(Optional.empty())
         given(redisTemplate.hasKey("auth:email-verification:cooldown:$email"))
             .willReturn(false, true)
         given(mailSender.createMimeMessage()).willReturn(firstMimeMessage)
@@ -143,6 +168,7 @@ class EmailVerificationServiceTests {
         val email = "songchih@icloud.com"
         val mimeMessage = MimeMessage(Session.getInstance(Properties()))
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
+        given(userRepository.findByEmail(email)).willReturn(Optional.empty())
         given(redisTemplate.hasKey("auth:email-verification:cooldown:$email")).willReturn(false)
         given(mailSender.createMimeMessage()).willReturn(mimeMessage)
         given(emailTemplateService.buildVerificationCodeEmail(anyString(), eq(300L)))
@@ -257,9 +283,19 @@ class EmailVerificationServiceTests {
         return EmailVerificationService(
             mailSender = mailSender,
             redisTemplate = redisTemplate,
+            userRepository = userRepository,
             emailTemplateService = emailTemplateService,
             emailVerificationProperties = properties,
             senderEmail = "mailer@vlainter.com"
+        )
+    }
+
+    private fun createUser(email: String): User {
+        return User(
+            id = 1L,
+            email = email,
+            password = "{bcrypt}hashed-password",
+            name = "Tester"
         )
     }
 

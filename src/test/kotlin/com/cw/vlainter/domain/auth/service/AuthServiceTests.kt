@@ -40,12 +40,16 @@ class AuthServiceTests {
     @Mock
     private lateinit var redirectUriValidator: RedirectUriValidator
 
+    @Mock
+    private lateinit var emailVerificationService: EmailVerificationService
+
     private fun authService(): AuthService = AuthService(
         userRepository = userRepository,
         passwordEncoder = passwordEncoder,
         jwtTokenProvider = jwtTokenProvider,
         loginSessionStore = loginSessionStore,
-        redirectUriValidator = redirectUriValidator
+        redirectUriValidator = redirectUriValidator,
+        emailVerificationService = emailVerificationService
     )
 
     @Test

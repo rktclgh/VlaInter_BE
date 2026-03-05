@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.auth.service
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
+import com.cw.vlainter.domain.auth.dto.SignupRequest
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
@@ -28,8 +29,11 @@ class AuthService(
     private val passwordEncoder: PasswordEncoder,
     private val jwtTokenProvider: JwtTokenProvider,
     private val loginSessionStore: LoginSessionStore,
-    private val redirectUriValidator: RedirectUriValidator
+    private val redirectUriValidator: RedirectUriValidator,
+    private val emailVerificationService: EmailVerificationService
 ) {
+    private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
+
     /**
      * 로그인 처리.
      *
@@ -62,6 +66,44 @@ class AuthService(
             refreshToken = refreshToken,
             redirectUri = validatedRedirectUri
         )
+    }
+
+    /**
+     * 회원가입 처리.
+     *
+     * - 이메일 인증 코드 검증(1회성 소비)
+     * - 중복 이메일 검증
+     * - 비밀번호 정책 검증 후 사용자 생성
+     */
+    fun signup(request: SignupRequest): User {
+        val normalizedEmail = request.email.trim().lowercase()
+        val normalizedName = request.name.trim()
+        val password = request.password
+
+        if (normalizedName.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이름을 입력해 주세요.")
+        }
+        if (!passwordComplexityRegex.matches(password)) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "비밀번호는 8~100자이며 대문자, 소문자, 숫자, 특수문자를 각각 1개 이상 포함해야 합니다."
+            )
+        }
+
+        emailVerificationService.consumeVerifiedEmail(normalizedEmail)
+
+        if (userRepository.findByEmail(normalizedEmail).isPresent) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "이미 가입된 이메일입니다.")
+        }
+
+        val user = User(
+            email = normalizedEmail,
+            password = passwordEncoder.encode(password),
+            name = normalizedName,
+            status = UserStatus.ACTIVE,
+            role = UserRole.USER
+        )
+        return userRepository.save(user)
     }
 
     /**
