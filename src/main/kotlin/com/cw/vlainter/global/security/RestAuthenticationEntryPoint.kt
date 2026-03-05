@@ -19,6 +19,11 @@ class RestAuthenticationEntryPoint(
         response: HttpServletResponse,
         authException: AuthenticationException?
     ) {
+        if (!request.requestURI.startsWith("/api/")) {
+            response.sendRedirect("/errors/403")
+            return
+        }
+
         val body = ApiErrorResponse(
             status = HttpStatus.UNAUTHORIZED.value(),
             code = HttpStatus.UNAUTHORIZED.name,

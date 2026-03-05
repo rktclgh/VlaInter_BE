@@ -61,7 +61,7 @@ class SecurityConfig(
                     .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                     .requestMatchers("/api/admin/**").hasRole("ADMIN")
                     .requestMatchers("/api/**").authenticated()
-                    .anyRequest().denyAll()
+                    .anyRequest().permitAll()
             }
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
 
@@ -111,10 +111,13 @@ class SecurityConfig(
             "/content/interview",
             "/content/files",
             "/content/mypage",
-            "/content/point-charge"
+            "/content/point-charge",
+            "/errors/403",
+            "/errors/404"
         )
 
         val PUBLIC_STATIC_PATHS = arrayOf(
+            "/error/**",
             "/assets/**",
             "/favicon.ico",
             "/vite.svg",

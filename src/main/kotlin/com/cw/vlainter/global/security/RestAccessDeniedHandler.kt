@@ -19,6 +19,11 @@ class RestAccessDeniedHandler(
         response: HttpServletResponse,
         accessDeniedException: AccessDeniedException?
     ) {
+        if (!request.requestURI.startsWith("/api/")) {
+            response.sendRedirect("/errors/403")
+            return
+        }
+
         val body = ApiErrorResponse(
             status = HttpStatus.FORBIDDEN.value(),
             code = HttpStatus.FORBIDDEN.name,
