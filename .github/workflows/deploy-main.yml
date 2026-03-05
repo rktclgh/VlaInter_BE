@@ -127,11 +127,11 @@ jobs:
           set -euo pipefail
 
           DEPLOY_DIR=/home/ubuntu/vlainter
-          mkdir -p "\$DEPLOY_DIR"
-          cd "\$DEPLOY_DIR"
+          mkdir -p "$DEPLOY_DIR"
+          cd "$DEPLOY_DIR"
 
           if [ ! -f .env ]; then
-            echo "[ERROR] \$DEPLOY_DIR/.env 가 없습니다. 애플리케이션 환경변수를 먼저 생성하세요."
+            echo "[ERROR] $DEPLOY_DIR/.env 가 없습니다. 애플리케이션 환경변수를 먼저 생성하세요."
             exit 1
           fi
 
