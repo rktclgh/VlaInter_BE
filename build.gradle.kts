@@ -33,6 +33,7 @@ dependencies {
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 	developmentOnly("org.springframework.boot:spring-boot-devtools")
 	runtimeOnly("com.h2database:h2")
+	runtimeOnly("org.postgresql:postgresql")
 	runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
 	runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
@@ -58,4 +59,10 @@ allOpen {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	systemProperty("spring.datasource.url", "jdbc:h2:mem:vlainter-test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE")
+	systemProperty("spring.datasource.driver-class-name", "org.h2.Driver")
+	systemProperty("spring.datasource.username", "sa")
+	systemProperty("spring.datasource.password", "")
+	systemProperty("spring.jpa.hibernate.ddl-auto", "create-drop")
+	systemProperty("spring.jpa.show-sql", "false")
 }

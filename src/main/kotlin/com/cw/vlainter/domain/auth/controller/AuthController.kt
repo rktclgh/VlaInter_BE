@@ -2,11 +2,16 @@ package com.cw.vlainter.domain.auth.controller
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.auth.dto.LoginResponse
+import com.cw.vlainter.domain.auth.dto.KakaoLoginRequest
+import com.cw.vlainter.domain.auth.dto.SignupRequest
 import com.cw.vlainter.domain.auth.service.AuthService
+import com.cw.vlainter.domain.auth.service.KakaoAuthService
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.cw.vlainter.global.security.AuthCookieManager
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
+import jakarta.validation.Valid
+import org.slf4j.LoggerFactory
 import org.springframework.http.HttpHeaders
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -15,6 +20,7 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.server.ResponseStatusException
 import java.util.LinkedHashMap
 
 /**
@@ -27,8 +33,50 @@ import java.util.LinkedHashMap
 @RequestMapping("/api/auth")
 class AuthController(
     private val authService: AuthService,
+    private val kakaoAuthService: KakaoAuthService,
     private val authCookieManager: AuthCookieManager
 ) {
+    private val logger = LoggerFactory.getLogger(AuthController::class.java)
+
+    @PostMapping("/signup")
+    fun signup(
+        @Valid
+        @RequestBody request: SignupRequest,
+        servletRequest: HttpServletRequest
+    ): ResponseEntity<Map<String, Any>> {
+        val email = request.email.trim().lowercase()
+        val clientIp = extractClientIp(servletRequest)
+        logger.info(
+            "Auth signup attempt email={} name={} passwordLength={} ip={}",
+            email,
+            request.name,
+            request.password.length,
+            clientIp
+        )
+
+        try {
+            val createdUser = authService.signup(request)
+            logger.info("Auth signup success userId={} email={} ip={}", createdUser.id, createdUser.email, clientIp)
+            return ResponseEntity.ok(
+                mapOf(
+                    "message" to "회원가입이 완료되었습니다.",
+                    "userId" to createdUser.id,
+                    "email" to createdUser.email,
+                    "name" to createdUser.name
+                )
+            )
+        } catch (ex: ResponseStatusException) {
+            logger.warn(
+                "Auth signup failed email={} status={} reason={} ip={}",
+                email,
+                ex.statusCode.value(),
+                ex.reason,
+                clientIp
+            )
+            throw ex
+        }
+    }
+
     /**
      * 현재 인증된 사용자 정보를 조회한다.
      *
@@ -58,20 +106,95 @@ class AuthController(
     @PostMapping("/login")
     fun login(
         @RequestBody request: LoginRequest,
-        response: HttpServletResponse
+        response: HttpServletResponse,
+        servletRequest: HttpServletRequest
     ): ResponseEntity<LoginResponse> {
-        val result = authService.login(request)
-        addAuthCookies(response, result.accessToken, result.refreshToken)
-
-        return ResponseEntity.ok(
-            LoginResponse(
-                userId = result.userId,
-                email = result.email,
-                name = result.name,
-                role = result.role,
-                redirectUri = result.redirectUri
-            )
+        val email = request.email.trim().lowercase()
+        val clientIp = extractClientIp(servletRequest)
+        logger.info(
+            "Auth login attempt email={} hasRedirectUri={} passwordLength={} ip={}",
+            email,
+            !request.redirectUri.isNullOrBlank(),
+            request.password.length,
+            clientIp
         )
+
+        try {
+            val result = authService.login(request)
+            addAuthCookies(response, result.accessToken, result.refreshToken)
+            logger.info("Auth login success userId={} email={} ip={}", result.userId, result.email, clientIp)
+
+            return ResponseEntity.ok(
+                LoginResponse(
+                    userId = result.userId,
+                    email = result.email,
+                    name = result.name,
+                    role = result.role,
+                    redirectUri = result.redirectUri
+                )
+            )
+        } catch (ex: ResponseStatusException) {
+            logger.warn(
+                "Auth login failed email={} status={} reason={} ip={}",
+                email,
+                ex.statusCode.value(),
+                ex.reason,
+                clientIp
+            )
+            throw ex
+        }
+    }
+
+    @PostMapping("/kakao/login")
+    fun kakaoLogin(
+        @Valid
+        @RequestBody request: KakaoLoginRequest,
+        response: HttpServletResponse,
+        servletRequest: HttpServletRequest
+    ): ResponseEntity<LoginResponse> {
+        val clientIp = extractClientIp(servletRequest)
+        logger.info(
+            "Auth kakao login attempt hasRedirectUri={} hasClientId={} ip={}",
+            !request.redirectUri.isNullOrBlank(),
+            !request.clientId.isNullOrBlank(),
+            clientIp
+        )
+
+        try {
+            val result = kakaoAuthService.loginOrSignupWithKakao(
+                code = request.code,
+                redirectUri = request.redirectUri,
+                clientIdFromClient = request.clientId
+            )
+            addAuthCookies(response, result.accessToken, result.refreshToken)
+            logger.info("Auth kakao login success userId={} email={} ip={}", result.userId, result.email, clientIp)
+
+            return ResponseEntity.ok(
+                LoginResponse(
+                    userId = result.userId,
+                    email = result.email,
+                    name = result.name,
+                    role = result.role,
+                    redirectUri = result.redirectUri
+                )
+            )
+        } catch (ex: ResponseStatusException) {
+            logger.warn(
+                "Auth kakao login failed status={} reason={} ip={}",
+                ex.statusCode.value(),
+                ex.reason,
+                clientIp
+            )
+            throw ex
+        }
+    }
+
+    private fun extractClientIp(request: HttpServletRequest): String {
+        val forwarded = request.getHeader("X-Forwarded-For")
+        if (!forwarded.isNullOrBlank()) {
+            return forwarded.split(",").first().trim()
+        }
+        return request.remoteAddr ?: "unknown"
     }
 
     /**

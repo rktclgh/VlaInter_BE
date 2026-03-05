@@ -1,6 +1,8 @@
 package com.cw.vlainter.domain.user.entity
 
 import jakarta.persistence.*
+import org.hibernate.annotations.JdbcTypeCode
+import org.hibernate.type.SqlTypes
 import java.time.OffsetDateTime
 
 @Suppress("JpaDataSourceORMInspection")
@@ -22,11 +24,13 @@ class User (
     var name: String,
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @JdbcTypeCode(SqlTypes.NAMED_ENUM)
+    @Column(nullable = false, columnDefinition = "user_status")
     var status: UserStatus = UserStatus.ACTIVE,
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 20)
+    @JdbcTypeCode(SqlTypes.NAMED_ENUM)
+    @Column(nullable = false, length = 20, columnDefinition = "user_role")
     var role: UserRole = UserRole.USER,
 
     @Column(nullable = false)

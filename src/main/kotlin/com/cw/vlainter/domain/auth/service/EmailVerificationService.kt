@@ -1,5 +1,6 @@
 package com.cw.vlainter.domain.auth.service
 
+import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.config.properties.EmailVerificationProperties
 import com.cw.vlainter.global.mail.EmailTemplateService
 import org.springframework.beans.factory.annotation.Value
@@ -20,6 +21,7 @@ import java.time.Duration
 class EmailVerificationService(
     private val mailSender: JavaMailSender,
     private val redisTemplate: StringRedisTemplate,
+    private val userRepository: UserRepository,
     private val emailTemplateService: EmailTemplateService,
     private val emailVerificationProperties: EmailVerificationProperties,
     @Value("\${spring.mail.username:}")
@@ -52,10 +54,30 @@ class EmailVerificationService(
         )
         resultType = Long::class.java
     }
+    private val consumeVerifiedEmailScript = DefaultRedisScript<Long>().apply {
+        setScriptText(
+            """
+            local verifiedKey = KEYS[1]
+            local expectedValue = ARGV[1]
+            local stored = redis.call('GET', verifiedKey)
+
+            if (stored == expectedValue) then
+                redis.call('DEL', verifiedKey)
+                return 1
+            end
+
+            return 0
+            """.trimIndent()
+        )
+        resultType = Long::class.java
+    }
 
     fun sendVerificationCode(rawEmail: String): SendVerificationResult {
         val email = normalizeEmail(rawEmail)
         validateEmail(email)
+        if (userRepository.findByEmail(email).isPresent) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "이미 사용중인 이메일입니다.")
+        }
         checkResendCooldown(email)
 
         val code = generateVerificationCode()
@@ -106,6 +128,7 @@ class EmailVerificationService(
         )
 
         if (result == VERIFY_SUCCESS) {
+            markEmailAsVerified(email)
             return VerifyCodeResult(verified = true)
         }
 
@@ -117,6 +140,21 @@ class EmailVerificationService(
             )
         }
         throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효하지 않거나 만료된 인증 코드입니다.")
+    }
+
+    fun consumeVerifiedEmail(rawEmail: String) {
+        val email = normalizeEmail(rawEmail)
+        validateEmail(email)
+
+        val verifiedKey = verifiedEmailKey(email)
+        val consumed = redisTemplate.execute(
+            consumeVerifiedEmailScript,
+            listOf(verifiedKey),
+            VERIFIED_EMAIL_FLAG
+        )
+        if (consumed != VERIFY_SUCCESS) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이메일 인증을 먼저 완료해 주세요.")
+        }
     }
 
     private fun sendEmail(email: String, code: String) {
@@ -175,6 +213,14 @@ class EmailVerificationService(
         return attempts
     }
 
+    private fun markEmailAsVerified(email: String) {
+        redisTemplate.opsForValue().set(
+            verifiedEmailKey(email),
+            "1",
+            Duration.ofMinutes(VERIFIED_EMAIL_TTL_MINUTES)
+        )
+    }
+
     private fun validateEmail(email: String) {
         if (email.isBlank() || !emailRegex.matches(email)) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효한 이메일 형식이 아닙니다.")
@@ -198,6 +244,8 @@ class EmailVerificationService(
 
     private fun verifyAttemptsKey(email: String): String = "auth:email-verification:attempts:$email"
 
+    private fun verifiedEmailKey(email: String): String = "auth:email-verification:verified:$email"
+
     private fun hash(raw: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(raw.toByteArray(StandardCharsets.UTF_8))
@@ -206,6 +254,8 @@ class EmailVerificationService(
 
     companion object {
         private const val VERIFY_SUCCESS = 1L
+        private const val VERIFIED_EMAIL_TTL_MINUTES = 30L
+        private const val VERIFIED_EMAIL_FLAG = "1"
     }
 }
 

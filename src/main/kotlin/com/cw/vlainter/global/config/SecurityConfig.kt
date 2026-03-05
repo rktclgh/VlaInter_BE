@@ -55,7 +55,9 @@ class SecurityConfig(
             }
             .authorizeHttpRequests {
                 it.requestMatchers(
+                    "/api/auth/signup",
                     "/api/auth/login",
+                    "/api/auth/kakao/login",
                     "/api/auth/refresh",
                     "/api/auth/logout",
                     "/api/auth/email-verification/send",
