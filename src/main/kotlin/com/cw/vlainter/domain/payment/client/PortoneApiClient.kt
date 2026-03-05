@@ -8,13 +8,14 @@ import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpMethod
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
+import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.client.RestClientException
 import org.springframework.web.client.RestClientResponseException
 import org.springframework.web.client.RestTemplate
 import org.springframework.web.server.ResponseStatusException
-import org.springframework.http.HttpStatus
 import java.math.BigDecimal
+import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -24,7 +25,10 @@ class PortoneApiClient(
     restTemplateBuilder: RestTemplateBuilder,
     private val portoneProperties: PortoneProperties
 ) : PortoneClient {
-    private val restTemplate: RestTemplate = restTemplateBuilder.build()
+    private val restTemplate: RestTemplate = restTemplateBuilder
+        .setConnectTimeout(Duration.ofSeconds(3))
+        .setReadTimeout(Duration.ofSeconds(5))
+        .build()
     private val tokenLock = ReentrantLock()
 
     @Volatile

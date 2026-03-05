@@ -26,11 +26,11 @@ import org.springframework.data.domain.Sort
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
 import java.math.BigDecimal
 import java.time.OffsetDateTime
 import java.util.UUID
-import kotlin.math.ceil
 
 @Service
 class PointChargeService(
@@ -38,7 +38,8 @@ class PointChargeService(
     private val pointChargeRepository: PointChargeRepository,
     private val pointChargePolicyRepository: PointChargePolicyRepository,
     private val portoneClient: PortoneClient,
-    private val portoneProperties: PortoneProperties
+    private val portoneProperties: PortoneProperties,
+    private val transactionTemplate: TransactionTemplate
 ) {
     private val defaultPaymentMethod = "CARD"
 
@@ -58,10 +59,7 @@ class PointChargeService(
         val actor = loadActiveUser(principal.userId)
         ensurePortoneConfigured()
 
-        val productId = request.productId?.trim().orEmpty()
-        if (productId.isBlank()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "충전 상품 ID를 입력해 주세요.")
-        }
+        val productId = request.productId.trim()
         val product = pointChargePolicyRepository.findActiveByProductId(productId)
             ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않는 충전 상품입니다.")
         val merchantUid = buildMerchantUid(actor.id)
@@ -87,30 +85,58 @@ class PointChargeService(
         )
     }
 
-    @Transactional
     fun confirmCharge(principal: AuthPrincipal, request: ConfirmPointChargeRequest): ConfirmPointChargeResponse {
         val actor = loadActiveUser(principal.userId)
-        val charge = pointChargeRepository.findByMerchantUid(request.merchantUid.trim())
+        val merchantUid = request.merchantUid.trim()
+        if (merchantUid.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "주문번호(merchantUid)가 비어 있습니다.")
+        }
+        val fallbackImpUid = request.impUid.trim()
+
+        val charge = pointChargeRepository.findByMerchantUid(merchantUid)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "충전 요청 정보를 찾을 수 없습니다.") }
 
         if (charge.user.id != actor.id) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 충전 요청만 확정할 수 있습니다.")
         }
-        return verifyAndApplyCharge(charge, request.impUid.trim())
+        if (charge.status == PointChargeStatus.PAID) {
+            return toConfirmResponse(charge, actor.point)
+        }
+
+        val payment = getPaymentWithRetry(merchantUid, fallbackImpUid)
+        return transactionTemplate.execute {
+            applyVerifiedChargeWithLock(
+                merchantUid = merchantUid,
+                fallbackImpUid = fallbackImpUid,
+                payment = payment,
+                expectedUserId = actor.id
+            )
+        } ?: throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "결제 확정 처리에 실패했습니다.")
     }
 
-    @Transactional
     fun handleWebhook(request: PortoneWebhookRequest): Map<String, String> {
         val merchantUid = request.merchantUid?.trim().orEmpty()
         val impUid = request.impUid?.trim().orEmpty()
         if (merchantUid.isBlank() || impUid.isBlank()) {
-            return mapOf("message" to "ignored")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "merchant_uid, imp_uid, status는 필수입니다.")
         }
 
         val charge = pointChargeRepository.findByMerchantUid(merchantUid).orElse(null)
             ?: return mapOf("message" to "ignored")
 
-        verifyAndApplyCharge(charge, impUid)
+        if (charge.status == PointChargeStatus.PAID) {
+            return mapOf("message" to "ok")
+        }
+
+        val payment = getPaymentWithRetry(merchantUid, impUid)
+        transactionTemplate.executeWithoutResult {
+            applyVerifiedChargeWithLock(
+                merchantUid = merchantUid,
+                fallbackImpUid = impUid,
+                payment = payment,
+                expectedUserId = null
+            )
+        }
         return mapOf("message" to "ok")
     }
 
@@ -157,50 +183,15 @@ class PointChargeService(
     fun getPointLedgerHistory(principal: AuthPrincipal, page: Int, size: Int): PointLedgerHistoryResponse {
         validatePageRequest(page, size)
         val actor = loadActiveUser(principal.userId)
-        val charges = pointChargeRepository.findAllByUser_IdOrderByCreatedAtDesc(actor.id)
-
-        val records = mutableListOf<PointLedgerRecord>()
-        charges.forEach { charge ->
-            when (charge.status) {
-                PointChargeStatus.PAID -> {
-                    records += PointLedgerRecord(
-                        occurredAt = resolveChargeOccurredAt(charge),
-                        pointDelta = charge.rewardPoint,
-                        description = "포인트 충전"
-                    )
-                }
-
-                PointChargeStatus.CANCELLED -> {
-                    records += PointLedgerRecord(
-                        occurredAt = resolveChargeOccurredAt(charge),
-                        pointDelta = charge.rewardPoint,
-                        description = "포인트 충전"
-                    )
-                    records += PointLedgerRecord(
-                        occurredAt = charge.updatedAt ?: OffsetDateTime.now(),
-                        pointDelta = -charge.rewardPoint,
-                        description = "포인트 환불"
-                    )
-                }
-
-                else -> Unit
-            }
-        }
-
-        val sorted = records.sortedByDescending { it.occurredAt }
-        val totalCount = sorted.size.toLong()
-        val totalPages = if (totalCount == 0L) 0 else ceil(totalCount.toDouble() / size.toDouble()).toInt()
-        val fromIndex = page * size
-        val toIndex = minOf(fromIndex + size, sorted.size)
-        val pageItems = if (fromIndex >= sorted.size) {
-            emptyList()
-        } else {
-            sorted.subList(fromIndex, toIndex)
-        }.map { item ->
+        val offset = page * size
+        val rows = pointChargeRepository.findLedgerRows(actor.id, size, offset)
+        val totalCount = pointChargeRepository.countLedgerRows(actor.id)
+        val totalPages = if (totalCount == 0L) 0 else ((totalCount + size - 1) / size).toInt()
+        val pageItems = rows.map { row ->
             PointLedgerItemResponse(
-                occurredAt = item.occurredAt,
-                pointDelta = item.pointDelta,
-                description = item.description
+                occurredAt = row.getOccurredAt(),
+                pointDelta = row.getPointDelta(),
+                description = row.getDescription()
             )
         }
 
@@ -214,11 +205,10 @@ class PointChargeService(
         )
     }
 
-    @Transactional
     fun refundCharge(principal: AuthPrincipal, chargeId: Long): RefundPointChargeResponse {
         val actor = loadActiveUser(principal.userId)
-        val charge = pointChargeRepository.findByIdForUpdate(chargeId)
-            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "결제 내역을 찾을 수 없습니다.")
+        val charge = pointChargeRepository.findById(chargeId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "결제 내역을 찾을 수 없습니다.") }
 
         if (charge.user.id != actor.id) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 결제 건만 환불할 수 있습니다.")
@@ -242,39 +232,74 @@ class PointChargeService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불 처리 상태가 올바르지 않습니다.")
         }
 
-        actor.point -= charge.rewardPoint
+        return transactionTemplate.execute {
+            finalizeRefund(actor.id, chargeId)
+        } ?: throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "환불 처리에 실패했습니다.")
+    }
+
+    private fun finalizeRefund(userId: Long, chargeId: Long): RefundPointChargeResponse {
+        val actor = loadActiveUser(userId)
+        val charge = pointChargeRepository.findByIdForUpdate(chargeId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "결제 내역을 찾을 수 없습니다.")
+
+        if (charge.user.id != actor.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 결제 건만 환불할 수 있습니다.")
+        }
+        if (charge.status != PointChargeStatus.PAID) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불 가능한 결제 상태가 아닙니다.")
+        }
+        val impUid = charge.impUid?.trim().orEmpty()
+        if (impUid.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불할 결제 식별자를 찾을 수 없습니다.")
+        }
+        if (actor.point < charge.rewardPoint) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "보유 포인트가 부족하여 환불할 수 없습니다. 사용 포인트를 회복한 뒤 다시 시도해 주세요."
+            )
+        }
+
+        val updated = userRepository.addPointIfNotNegative(actor.id, -charge.rewardPoint)
+        if (updated == 0) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "보유 포인트가 부족하여 환불할 수 없습니다.")
+        }
+
         charge.status = PointChargeStatus.CANCELLED
         charge.failureReason = null
 
-        userRepository.save(actor)
         pointChargeRepository.save(charge)
+        val currentPoint = loadCurrentPoint(actor.id)
 
         return RefundPointChargeResponse(
             chargeId = charge.id,
             status = charge.status,
             refundedPoint = charge.rewardPoint,
-            currentPoint = actor.point
+            currentPoint = currentPoint
         )
     }
 
-    private fun verifyAndApplyCharge(charge: PointCharge, impUid: String): ConfirmPointChargeResponse {
-        if (charge.status == PointChargeStatus.PAID) {
-            val currentPoint = charge.user.point
-            return ConfirmPointChargeResponse(
-                merchantUid = charge.merchantUid,
-                impUid = charge.impUid.orEmpty(),
-                paidAmount = charge.paidAmount,
-                chargedPoint = charge.rewardPoint,
-                currentPoint = currentPoint
-            )
+    private fun applyVerifiedChargeWithLock(
+        merchantUid: String,
+        fallbackImpUid: String,
+        payment: com.cw.vlainter.domain.payment.client.PortonePayment,
+        expectedUserId: Long?
+    ): ConfirmPointChargeResponse {
+        val charge = pointChargeRepository.findByMerchantUidForUpdate(merchantUid)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "충전 요청 정보를 찾을 수 없습니다.")
+
+        if (expectedUserId != null && charge.user.id != expectedUserId) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 충전 요청만 확정할 수 있습니다.")
         }
 
-        val payment = getPaymentWithRetry(charge.merchantUid, impUid)
-        val verifiedImpUid = payment.impUid.ifBlank { impUid }
-        if (verifiedImpUid.isBlank()) {
-            failCharge(charge, impUid, "결제 식별자 검증에 실패했습니다.")
+        if (charge.status == PointChargeStatus.PAID) {
+            return toConfirmResponse(charge, loadCurrentPoint(charge.user.id))
         }
-        val duplicateByVerifiedImpUid = pointChargeRepository.findByImpUid(verifiedImpUid).orElse(null)
+
+        val verifiedImpUid = payment.impUid.ifBlank { fallbackImpUid }
+        if (verifiedImpUid.isBlank()) {
+            failCharge(charge, fallbackImpUid, "결제 식별자 검증에 실패했습니다.")
+        }
+        val duplicateByVerifiedImpUid = pointChargeRepository.findByImpUidForUpdate(verifiedImpUid)
         if (duplicateByVerifiedImpUid != null && duplicateByVerifiedImpUid.id != charge.id) {
             failCharge(charge, verifiedImpUid, "이미 처리된 결제 식별자입니다.")
         }
@@ -297,17 +322,19 @@ class PointChargeService(
         charge.failureReason = null
         charge.paidAt = OffsetDateTime.now()
 
-        val user = charge.user
-        user.point += charge.rewardPoint
-        userRepository.save(user)
+        val updated = userRepository.addPoint(charge.user.id, charge.rewardPoint)
+        if (updated == 0) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "포인트 적립 처리에 실패했습니다.")
+        }
         pointChargeRepository.save(charge)
+        val currentPoint = loadCurrentPoint(charge.user.id)
 
         return ConfirmPointChargeResponse(
             merchantUid = charge.merchantUid,
             impUid = verifiedImpUid,
             paidAmount = paidAmount,
             chargedPoint = charge.rewardPoint,
-            currentPoint = user.point
+            currentPoint = currentPoint
         )
     }
 
@@ -319,6 +346,22 @@ class PointChargeService(
             pointChargeRepository.save(charge)
         }
         throw ResponseStatusException(HttpStatus.BAD_REQUEST, reason)
+    }
+
+    private fun toConfirmResponse(charge: PointCharge, currentPoint: Long): ConfirmPointChargeResponse {
+        return ConfirmPointChargeResponse(
+            merchantUid = charge.merchantUid,
+            impUid = charge.impUid.orEmpty(),
+            paidAmount = charge.paidAmount,
+            chargedPoint = charge.rewardPoint,
+            currentPoint = currentPoint
+        )
+    }
+
+    private fun loadCurrentPoint(userId: Long): Long {
+        return userRepository.findById(userId)
+            .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "인증이 필요합니다.") }
+            .point
     }
 
     private fun loadActiveUser(userId: Long): User {
@@ -407,9 +450,4 @@ class PointChargeService(
         return currentPoint >= charge.rewardPoint
     }
 
-    private data class PointLedgerRecord(
-        val occurredAt: OffsetDateTime,
-        val pointDelta: Long,
-        val description: String
-    )
 }

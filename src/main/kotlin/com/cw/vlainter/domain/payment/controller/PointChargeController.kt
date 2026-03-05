@@ -10,8 +10,11 @@ import com.cw.vlainter.domain.payment.dto.PreparePointChargeRequest
 import com.cw.vlainter.domain.payment.dto.PreparePointChargeResponse
 import com.cw.vlainter.domain.payment.dto.RefundPointChargeResponse
 import com.cw.vlainter.domain.payment.service.PointChargeService
+import com.cw.vlainter.global.config.properties.RedirectProperties
 import com.cw.vlainter.global.security.AuthPrincipal
 import jakarta.validation.Valid
+import jakarta.validation.Validator
+import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -22,12 +25,19 @@ import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.server.ResponseStatusException
 
 @RestController
 @RequestMapping("/api/payments")
 class PointChargeController(
-    private val pointChargeService: PointChargeService
+    private val pointChargeService: PointChargeService,
+    private val redirectProperties: RedirectProperties,
+    private val validator: Validator
 ) {
+    private val trustedPaymentOrigin: String = redirectProperties.allowedOrigins
+        .firstOrNull { it.startsWith("http://") || it.startsWith("https://") }
+        ?: "http://localhost:5173"
+
     @GetMapping("/points/products")
     fun getPointChargeProducts(): ResponseEntity<List<PointChargeProductResponse>> {
         return ResponseEntity.ok(pointChargeService.getPointChargeProducts())
@@ -77,10 +87,9 @@ class PointChargeController(
 
     @PostMapping("/portone/webhook", consumes = [MediaType.APPLICATION_JSON_VALUE])
     fun handlePortoneWebhookJson(
-        @RequestBody(required = false) request: PortoneWebhookRequest?
+        @Valid @RequestBody request: PortoneWebhookRequest
     ): ResponseEntity<Map<String, String>> {
-        val safeRequest = request ?: PortoneWebhookRequest()
-        return ResponseEntity.ok(pointChargeService.handleWebhook(safeRequest))
+        return ResponseEntity.ok(pointChargeService.handleWebhook(request))
     }
 
     @PostMapping("/portone/webhook", consumes = [MediaType.APPLICATION_FORM_URLENCODED_VALUE])
@@ -94,6 +103,7 @@ class PointChargeController(
             merchantUid = merchantUid,
             status = status
         )
+        validateWebhookRequest(request)
         return ResponseEntity.ok(pointChargeService.handleWebhook(request))
     }
 
@@ -110,6 +120,7 @@ class PointChargeController(
             <body>
             <script>
               (function () {
+                var ALLOWED_PAYMENT_ORIGIN = "$trustedPaymentOrigin";
                 var params = new URLSearchParams(window.location.search);
                 var payload = {
                   impUid: params.get("imp_uid") || "",
@@ -117,7 +128,7 @@ class PointChargeController(
                   status: params.get("imp_success") || ""
                 };
                 if (window.opener && !window.opener.closed) {
-                  window.opener.postMessage({ type: "PORTONE_PAYMENT_CALLBACK", payload: payload }, "*");
+                  window.opener.postMessage({ type: "PORTONE_PAYMENT_CALLBACK", payload: payload }, ALLOWED_PAYMENT_ORIGIN);
                   window.close();
                   return;
                 }
@@ -128,5 +139,12 @@ class PointChargeController(
             </html>
         """.trimIndent()
         return ResponseEntity.ok(html)
+    }
+
+    private fun validateWebhookRequest(request: PortoneWebhookRequest) {
+        val violations = validator.validate(request)
+        if (violations.isEmpty()) return
+        val message = violations.joinToString(", ") { it.message }
+        throw ResponseStatusException(HttpStatus.BAD_REQUEST, message)
     }
 }

@@ -40,6 +40,7 @@ class PointChargePolicyRepository(
               AND amount IS NOT NULL
               AND reward_point IS NOT NULL
               AND product::text = :productId
+            ORDER BY sort_order ASC, id ASC
             LIMIT 1
         """.trimIndent()
 

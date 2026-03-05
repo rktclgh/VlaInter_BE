@@ -26,6 +26,10 @@ import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
 import org.mockito.Mockito.never
 import org.springframework.http.HttpStatus
+import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.TransactionStatus
+import org.springframework.transaction.support.SimpleTransactionStatus
+import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
 import java.math.BigDecimal
 import java.time.OffsetDateTime
@@ -90,7 +94,8 @@ class PointChargeServiceTests {
 
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
         given(pointChargeRepository.findByMerchantUid("merchant-1")).willReturn(Optional.of(charge))
-        given(pointChargeRepository.findByImpUid("imp-1")).willReturn(Optional.empty())
+        given(pointChargeRepository.findByMerchantUidForUpdate("merchant-1")).willReturn(charge)
+        given(pointChargeRepository.findByImpUidForUpdate("imp-1")).willReturn(null)
         given(portoneClient.getPaymentByMerchantUid("merchant-1")).willReturn(
             PortonePayment(
                 impUid = "imp-1",
@@ -99,7 +104,11 @@ class PointChargeServiceTests {
                 amount = BigDecimal("10000")
             )
         )
-        given(userRepository.save(user)).willReturn(user)
+        given(userRepository.addPoint(user.id, 10_000L)).willAnswer {
+            user.point += 10_000L
+            1
+        }
+        given(userRepository.findById(user.id)).willReturn(Optional.of(user))
         given(pointChargeRepository.save(charge)).willReturn(charge)
 
         val result = service().confirmCharge(
@@ -128,7 +137,8 @@ class PointChargeServiceTests {
 
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
         given(pointChargeRepository.findByMerchantUid("merchant-1")).willReturn(Optional.of(charge))
-        given(pointChargeRepository.findByImpUid("imp-2")).willReturn(Optional.empty())
+        given(pointChargeRepository.findByMerchantUidForUpdate("merchant-1")).willReturn(charge)
+        given(pointChargeRepository.findByImpUidForUpdate("imp-2")).willReturn(null)
         given(portoneClient.getPaymentByMerchantUid("merchant-1")).willReturn(
             PortonePayment(
                 impUid = "imp-2",
@@ -166,6 +176,7 @@ class PointChargeServiceTests {
         )
 
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
+        given(pointChargeRepository.findById(charge.id)).willReturn(Optional.of(charge))
         given(pointChargeRepository.findByIdForUpdate(charge.id)).willReturn(charge)
         given(portoneClient.cancelPayment("imp-10", "사용자 요청 환불")).willReturn(
             PortonePayment(
@@ -175,7 +186,11 @@ class PointChargeServiceTests {
                 amount = BigDecimal("10000")
             )
         )
-        given(userRepository.save(user)).willReturn(user)
+        given(userRepository.addPointIfNotNegative(user.id, -10_000L)).willAnswer {
+            user.point -= 10_000L
+            1
+        }
+        given(userRepository.findById(user.id)).willReturn(Optional.of(user))
         given(pointChargeRepository.save(charge)).willReturn(charge)
 
         val result = service().refundCharge(principal, charge.id)
@@ -202,7 +217,7 @@ class PointChargeServiceTests {
         )
 
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
-        given(pointChargeRepository.findByIdForUpdate(charge.id)).willReturn(charge)
+        given(pointChargeRepository.findById(charge.id)).willReturn(Optional.of(charge))
 
         val exception = assertThrows<ResponseStatusException> {
             service().refundCharge(principal, charge.id)
@@ -217,36 +232,16 @@ class PointChargeServiceTests {
         val user = createUser(point = 30_000L)
         val principal = createPrincipal(user)
         val now = OffsetDateTime.now()
-        val paidCharge = PointCharge(
-            id = 20L,
-            user = user,
-            merchantUid = "merchant-20",
-            impUid = "imp-20",
-            requestedAmount = 20_000,
-            rewardPoint = 22_000L,
-            paidAmount = 20_000,
-            status = PointChargeStatus.PAID,
-            paidAt = now.minusDays(2),
-            createdAt = now.minusDays(2),
-            updatedAt = now.minusDays(2)
-        )
-        val canceledCharge = PointCharge(
-            id = 21L,
-            user = user,
-            merchantUid = "merchant-21",
-            impUid = "imp-21",
-            requestedAmount = 30_000,
-            rewardPoint = 36_000L,
-            paidAmount = 30_000,
-            status = PointChargeStatus.CANCELLED,
-            paidAt = now.minusDays(1),
-            createdAt = now.minusDays(1),
-            updatedAt = now
-        )
 
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
-        given(pointChargeRepository.findAllByUser_IdOrderByCreatedAtDesc(user.id))
-            .willReturn(listOf(canceledCharge, paidCharge))
+        given(pointChargeRepository.countLedgerRows(user.id)).willReturn(3L)
+        given(pointChargeRepository.findLedgerRows(user.id, 10, 0)).willReturn(
+            listOf(
+                ledgerRow(now, -36_000L, "포인트 환불"),
+                ledgerRow(now.minusDays(1), 36_000L, "포인트 충전"),
+                ledgerRow(now.minusDays(2), 22_000L, "포인트 충전")
+            )
+        )
 
         val response = service().getPointLedgerHistory(principal, page = 0, size = 10)
 
@@ -269,8 +264,22 @@ class PointChargeServiceTests {
                 apiKey = "test-key",
                 apiSecret = "test-secret",
                 customerCode = "imp12345678"
-            )
+            ),
+            transactionTemplate = TransactionTemplate(NoOpTransactionManager())
         )
+    }
+
+    private fun ledgerRow(occurredAt: OffsetDateTime, pointDelta: Long, description: String) =
+        object : com.cw.vlainter.domain.payment.repository.PointLedgerRowProjection {
+            override fun getOccurredAt(): OffsetDateTime = occurredAt
+            override fun getPointDelta(): Long = pointDelta
+            override fun getDescription(): String = description
+        }
+
+    private class NoOpTransactionManager : org.springframework.transaction.PlatformTransactionManager {
+        override fun getTransaction(definition: TransactionDefinition?): TransactionStatus = SimpleTransactionStatus()
+        override fun commit(status: TransactionStatus) = Unit
+        override fun rollback(status: TransactionStatus) = Unit
     }
 
     private fun createUser(

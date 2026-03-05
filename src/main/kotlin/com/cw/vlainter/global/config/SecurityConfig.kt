@@ -56,6 +56,8 @@ class SecurityConfig(
             }
             .authorizeHttpRequests {
                 it.requestMatchers(*PUBLIC_API_PATHS, *PUBLIC_DOCS_PATHS).permitAll()
+                    .requestMatchers(HttpMethod.POST, "/api/payments/portone/webhook").permitAll()
+                    .requestMatchers(HttpMethod.GET, "/api/payments/portone/callback").permitAll()
                     // FE 라우트 추가 시 아래 PUBLIC_FRONTEND_ROUTES/PUBLIC_STATIC_PATHS를 함께 갱신한다.
                     .requestMatchers(*PUBLIC_FRONTEND_ROUTES, *PUBLIC_STATIC_PATHS).permitAll()
                     .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
@@ -93,9 +95,7 @@ class SecurityConfig(
             "/api/auth/logout",
             "/api/auth/email-verification/send",
             "/api/auth/email-verification/verify",
-            "/api/auth/password/temporary",
-            "/api/payments/portone/webhook",
-            "/api/payments/portone/callback"
+            "/api/auth/password/temporary"
         )
 
         val PUBLIC_DOCS_PATHS = arrayOf(

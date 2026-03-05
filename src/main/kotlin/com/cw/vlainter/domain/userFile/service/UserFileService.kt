@@ -33,6 +33,11 @@ class UserFileService(
     private val s3Client: S3Client,
     private val s3Properties: S3Properties
 ) {
+    private companion object {
+        val ALLOWED_PROFILE_IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "webp")
+        val ALLOWED_PROFILE_IMAGE_CONTENT_TYPES = setOf("image/png", "image/jpeg", "image/webp")
+    }
+
     private val logger = LoggerFactory.getLogger(UserFileService::class.java)
     private val originalFileNameMaxLength = 255
 
@@ -146,10 +151,8 @@ class UserFileService(
         }
 
         if (fileType == FileType.PROFILE_IMAGE) {
-            val allowedExtensions = setOf("png", "jpg", "jpeg", "webp")
-            val allowedContentTypes = setOf("image/png", "image/jpeg", "image/webp")
-            val extensionValid = extension in allowedExtensions
-            val contentTypeValid = contentType.isBlank() || contentType in allowedContentTypes
+            val extensionValid = extension in ALLOWED_PROFILE_IMAGE_EXTENSIONS
+            val contentTypeValid = contentType.isNotBlank() && contentType in ALLOWED_PROFILE_IMAGE_CONTENT_TYPES
             if (!extensionValid || !contentTypeValid) {
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
