@@ -2,10 +2,13 @@ package com.cw.vlainter.domain.payment.controller
 
 import com.cw.vlainter.domain.payment.dto.ConfirmPointChargeRequest
 import com.cw.vlainter.domain.payment.dto.ConfirmPointChargeResponse
+import com.cw.vlainter.domain.payment.dto.PointLedgerHistoryResponse
+import com.cw.vlainter.domain.payment.dto.PointPaymentHistoryResponse
 import com.cw.vlainter.domain.payment.dto.PointChargeProductResponse
 import com.cw.vlainter.domain.payment.dto.PortoneWebhookRequest
 import com.cw.vlainter.domain.payment.dto.PreparePointChargeRequest
 import com.cw.vlainter.domain.payment.dto.PreparePointChargeResponse
+import com.cw.vlainter.domain.payment.dto.RefundPointChargeResponse
 import com.cw.vlainter.domain.payment.service.PointChargeService
 import com.cw.vlainter.global.security.AuthPrincipal
 import jakarta.validation.Valid
@@ -15,6 +18,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
@@ -43,6 +47,32 @@ class PointChargeController(
         @Valid @RequestBody request: ConfirmPointChargeRequest
     ): ResponseEntity<ConfirmPointChargeResponse> {
         return ResponseEntity.ok(pointChargeService.confirmCharge(principal, request))
+    }
+
+    @GetMapping("/points/history")
+    fun getPointPaymentHistory(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @RequestParam(defaultValue = "0") page: Int,
+        @RequestParam(defaultValue = "10") size: Int
+    ): ResponseEntity<PointPaymentHistoryResponse> {
+        return ResponseEntity.ok(pointChargeService.getPaymentHistory(principal, page, size))
+    }
+
+    @GetMapping("/points/ledger")
+    fun getPointLedgerHistory(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @RequestParam(defaultValue = "0") page: Int,
+        @RequestParam(defaultValue = "10") size: Int
+    ): ResponseEntity<PointLedgerHistoryResponse> {
+        return ResponseEntity.ok(pointChargeService.getPointLedgerHistory(principal, page, size))
+    }
+
+    @PostMapping("/points/{chargeId}/refund")
+    fun refundPointCharge(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable chargeId: Long
+    ): ResponseEntity<RefundPointChargeResponse> {
+        return ResponseEntity.ok(pointChargeService.refundCharge(principal, chargeId))
     }
 
     @PostMapping("/portone/webhook", consumes = [MediaType.APPLICATION_JSON_VALUE])

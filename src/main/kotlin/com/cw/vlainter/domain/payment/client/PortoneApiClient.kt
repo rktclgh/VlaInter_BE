@@ -65,6 +65,27 @@ class PortoneApiClient(
         return toPortonePayment(response.body)
     }
 
+    override fun cancelPayment(impUid: String, reason: String): PortonePayment {
+        if (impUid.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불 결제 식별자(impUid)가 비어 있습니다.")
+        }
+        validateConfiguration()
+
+        val headers = HttpHeaders()
+        headers.contentType = MediaType.APPLICATION_JSON
+        headers.accept = listOf(MediaType.APPLICATION_JSON)
+        headers.setBearerAuth(getAccessToken())
+
+        val payload = PortoneCancelRequest(
+            impUid = impUid,
+            reason = reason.ifBlank { "사용자 요청 환불" }
+        )
+        val entity = HttpEntity(payload, headers)
+        val url = "${portoneProperties.baseUrl.trim().trimEnd('/')}/payments/cancel"
+        val response = exchange(url, HttpMethod.POST, entity, PortoneEnvelope::class.java)
+        return toPortonePayment(response.body)
+    }
+
     private fun getAccessToken(): String {
         val now = Instant.now().epochSecond
         cachedToken?.let { token ->
@@ -173,6 +194,12 @@ private data class PortoneTokenRequest(
     val impKey: String,
     @JsonProperty("imp_secret")
     val impSecret: String
+)
+
+private data class PortoneCancelRequest(
+    @JsonProperty("imp_uid")
+    val impUid: String,
+    val reason: String
 )
 
 private data class PortoneTokenEnvelope(

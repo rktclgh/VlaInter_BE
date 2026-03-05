@@ -24,9 +24,11 @@ import org.mockito.BDDMockito.given
 import org.mockito.BDDMockito.then
 import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
+import org.mockito.Mockito.never
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
 import java.math.BigDecimal
+import java.time.OffsetDateTime
 import java.util.Optional
 
 @ExtendWith(MockitoExtension::class)
@@ -146,6 +148,114 @@ class PointChargeServiceTests {
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
         assertThat(charge.status).isEqualTo(PointChargeStatus.FAILED)
+    }
+
+    @Test
+    fun refundChargeCancelsPortonePaymentAndDeductsPoint() {
+        val user = createUser(point = 15_000L)
+        val principal = createPrincipal(user)
+        val charge = PointCharge(
+            id = 10L,
+            user = user,
+            merchantUid = "merchant-10",
+            impUid = "imp-10",
+            requestedAmount = 10_000,
+            rewardPoint = 10_000L,
+            paidAmount = 10_000,
+            status = PointChargeStatus.PAID
+        )
+
+        given(userRepository.findById(user.id)).willReturn(Optional.of(user))
+        given(pointChargeRepository.findByIdForUpdate(charge.id)).willReturn(charge)
+        given(portoneClient.cancelPayment("imp-10", "사용자 요청 환불")).willReturn(
+            PortonePayment(
+                impUid = "imp-10",
+                merchantUid = "merchant-10",
+                status = "cancelled",
+                amount = BigDecimal("10000")
+            )
+        )
+        given(userRepository.save(user)).willReturn(user)
+        given(pointChargeRepository.save(charge)).willReturn(charge)
+
+        val result = service().refundCharge(principal, charge.id)
+
+        assertThat(result.status).isEqualTo(PointChargeStatus.CANCELLED)
+        assertThat(result.currentPoint).isEqualTo(5_000L)
+        assertThat(user.point).isEqualTo(5_000L)
+        assertThat(charge.status).isEqualTo(PointChargeStatus.CANCELLED)
+    }
+
+    @Test
+    fun refundChargeThrowsBadRequestWhenCurrentPointIsNotEnough() {
+        val user = createUser(point = 3_000L)
+        val principal = createPrincipal(user)
+        val charge = PointCharge(
+            id = 11L,
+            user = user,
+            merchantUid = "merchant-11",
+            impUid = "imp-11",
+            requestedAmount = 10_000,
+            rewardPoint = 10_000L,
+            paidAmount = 10_000,
+            status = PointChargeStatus.PAID
+        )
+
+        given(userRepository.findById(user.id)).willReturn(Optional.of(user))
+        given(pointChargeRepository.findByIdForUpdate(charge.id)).willReturn(charge)
+
+        val exception = assertThrows<ResponseStatusException> {
+            service().refundCharge(principal, charge.id)
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
+        then(portoneClient).should(never()).cancelPayment(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString())
+    }
+
+    @Test
+    fun getPointLedgerHistoryIncludesChargeAndRefundRows() {
+        val user = createUser(point = 30_000L)
+        val principal = createPrincipal(user)
+        val now = OffsetDateTime.now()
+        val paidCharge = PointCharge(
+            id = 20L,
+            user = user,
+            merchantUid = "merchant-20",
+            impUid = "imp-20",
+            requestedAmount = 20_000,
+            rewardPoint = 22_000L,
+            paidAmount = 20_000,
+            status = PointChargeStatus.PAID,
+            paidAt = now.minusDays(2),
+            createdAt = now.minusDays(2),
+            updatedAt = now.minusDays(2)
+        )
+        val canceledCharge = PointCharge(
+            id = 21L,
+            user = user,
+            merchantUid = "merchant-21",
+            impUid = "imp-21",
+            requestedAmount = 30_000,
+            rewardPoint = 36_000L,
+            paidAmount = 30_000,
+            status = PointChargeStatus.CANCELLED,
+            paidAt = now.minusDays(1),
+            createdAt = now.minusDays(1),
+            updatedAt = now
+        )
+
+        given(userRepository.findById(user.id)).willReturn(Optional.of(user))
+        given(pointChargeRepository.findAllByUser_IdOrderByCreatedAtDesc(user.id))
+            .willReturn(listOf(canceledCharge, paidCharge))
+
+        val response = service().getPointLedgerHistory(principal, page = 0, size = 10)
+
+        assertThat(response.totalCount).isEqualTo(3L)
+        assertThat(response.items).hasSize(3)
+        assertThat(response.items[0].pointDelta).isEqualTo(-36_000L)
+        assertThat(response.items[0].description).isEqualTo("포인트 환불")
+        assertThat(response.items[1].pointDelta).isEqualTo(36_000L)
+        assertThat(response.items[2].pointDelta).isEqualTo(22_000L)
     }
 
     private fun service(): PointChargeService {

@@ -3,10 +3,15 @@ package com.cw.vlainter.domain.payment.service
 import com.cw.vlainter.domain.payment.client.PortoneClient
 import com.cw.vlainter.domain.payment.dto.ConfirmPointChargeRequest
 import com.cw.vlainter.domain.payment.dto.ConfirmPointChargeResponse
+import com.cw.vlainter.domain.payment.dto.PointLedgerHistoryResponse
+import com.cw.vlainter.domain.payment.dto.PointLedgerItemResponse
+import com.cw.vlainter.domain.payment.dto.PointPaymentHistoryItemResponse
+import com.cw.vlainter.domain.payment.dto.PointPaymentHistoryResponse
 import com.cw.vlainter.domain.payment.dto.PointChargeProductResponse
 import com.cw.vlainter.domain.payment.dto.PortoneWebhookRequest
 import com.cw.vlainter.domain.payment.dto.PreparePointChargeRequest
 import com.cw.vlainter.domain.payment.dto.PreparePointChargeResponse
+import com.cw.vlainter.domain.payment.dto.RefundPointChargeResponse
 import com.cw.vlainter.domain.payment.entity.PointCharge
 import com.cw.vlainter.domain.payment.entity.PointChargeStatus
 import com.cw.vlainter.domain.payment.repository.PointChargePolicyRepository
@@ -16,6 +21,8 @@ import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.config.properties.PortoneProperties
 import com.cw.vlainter.global.security.AuthPrincipal
+import org.springframework.data.domain.PageRequest
+import org.springframework.data.domain.Sort
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -23,6 +30,7 @@ import org.springframework.web.server.ResponseStatusException
 import java.math.BigDecimal
 import java.time.OffsetDateTime
 import java.util.UUID
+import kotlin.math.ceil
 
 @Service
 class PointChargeService(
@@ -32,6 +40,8 @@ class PointChargeService(
     private val portoneClient: PortoneClient,
     private val portoneProperties: PortoneProperties
 ) {
+    private val defaultPaymentMethod = "CARD"
+
     @Transactional(readOnly = true)
     fun getPointChargeProducts(): List<PointChargeProductResponse> {
         return pointChargePolicyRepository.findAllActive().map { product ->
@@ -102,6 +112,149 @@ class PointChargeService(
 
         verifyAndApplyCharge(charge, impUid)
         return mapOf("message" to "ok")
+    }
+
+    @Transactional(readOnly = true)
+    fun getPaymentHistory(principal: AuthPrincipal, page: Int, size: Int): PointPaymentHistoryResponse {
+        validatePageRequest(page, size)
+        val actor = loadActiveUser(principal.userId)
+        val pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"))
+        val paymentPage = pointChargeRepository.findAllByUser_IdOrderByCreatedAtDesc(actor.id, pageable)
+        val items = paymentPage.content.map { charge ->
+            val pointDelta = when (charge.status) {
+                PointChargeStatus.PAID -> charge.rewardPoint
+                PointChargeStatus.CANCELLED -> -charge.rewardPoint
+                else -> 0L
+            }
+            val paymentNumber = when {
+                !charge.impUid.isNullOrBlank() -> charge.impUid!!
+                else -> charge.merchantUid
+            }
+
+            PointPaymentHistoryItemResponse(
+                chargeId = charge.id,
+                occurredAt = resolvePaymentOccurredAt(charge),
+                amount = if (charge.paidAmount > 0) charge.paidAmount else charge.requestedAmount,
+                pointDelta = pointDelta,
+                paymentMethod = defaultPaymentMethod,
+                status = charge.status,
+                paymentNumber = paymentNumber,
+                refundable = isRefundable(actor.point, charge)
+            )
+        }
+
+        return PointPaymentHistoryResponse(
+            currentPoint = actor.point,
+            page = paymentPage.number,
+            size = paymentPage.size,
+            totalCount = paymentPage.totalElements,
+            totalPages = paymentPage.totalPages,
+            items = items
+        )
+    }
+
+    @Transactional(readOnly = true)
+    fun getPointLedgerHistory(principal: AuthPrincipal, page: Int, size: Int): PointLedgerHistoryResponse {
+        validatePageRequest(page, size)
+        val actor = loadActiveUser(principal.userId)
+        val charges = pointChargeRepository.findAllByUser_IdOrderByCreatedAtDesc(actor.id)
+
+        val records = mutableListOf<PointLedgerRecord>()
+        charges.forEach { charge ->
+            when (charge.status) {
+                PointChargeStatus.PAID -> {
+                    records += PointLedgerRecord(
+                        occurredAt = resolveChargeOccurredAt(charge),
+                        pointDelta = charge.rewardPoint,
+                        description = "포인트 충전"
+                    )
+                }
+
+                PointChargeStatus.CANCELLED -> {
+                    records += PointLedgerRecord(
+                        occurredAt = resolveChargeOccurredAt(charge),
+                        pointDelta = charge.rewardPoint,
+                        description = "포인트 충전"
+                    )
+                    records += PointLedgerRecord(
+                        occurredAt = charge.updatedAt ?: OffsetDateTime.now(),
+                        pointDelta = -charge.rewardPoint,
+                        description = "포인트 환불"
+                    )
+                }
+
+                else -> Unit
+            }
+        }
+
+        val sorted = records.sortedByDescending { it.occurredAt }
+        val totalCount = sorted.size.toLong()
+        val totalPages = if (totalCount == 0L) 0 else ceil(totalCount.toDouble() / size.toDouble()).toInt()
+        val fromIndex = page * size
+        val toIndex = minOf(fromIndex + size, sorted.size)
+        val pageItems = if (fromIndex >= sorted.size) {
+            emptyList()
+        } else {
+            sorted.subList(fromIndex, toIndex)
+        }.map { item ->
+            PointLedgerItemResponse(
+                occurredAt = item.occurredAt,
+                pointDelta = item.pointDelta,
+                description = item.description
+            )
+        }
+
+        return PointLedgerHistoryResponse(
+            currentPoint = actor.point,
+            page = page,
+            size = size,
+            totalCount = totalCount,
+            totalPages = totalPages,
+            items = pageItems
+        )
+    }
+
+    @Transactional
+    fun refundCharge(principal: AuthPrincipal, chargeId: Long): RefundPointChargeResponse {
+        val actor = loadActiveUser(principal.userId)
+        val charge = pointChargeRepository.findByIdForUpdate(chargeId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "결제 내역을 찾을 수 없습니다.")
+
+        if (charge.user.id != actor.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 결제 건만 환불할 수 있습니다.")
+        }
+        if (charge.status != PointChargeStatus.PAID) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불 가능한 결제 상태가 아닙니다.")
+        }
+        val impUid = charge.impUid?.trim().orEmpty()
+        if (impUid.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불할 결제 식별자를 찾을 수 없습니다.")
+        }
+        if (actor.point < charge.rewardPoint) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "보유 포인트가 부족하여 환불할 수 없습니다. 사용 포인트를 회복한 뒤 다시 시도해 주세요."
+            )
+        }
+
+        val canceledPayment = portoneClient.cancelPayment(impUid, "사용자 요청 환불")
+        if (!canceledPayment.status.equals("cancelled", ignoreCase = true)) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불 처리 상태가 올바르지 않습니다.")
+        }
+
+        actor.point -= charge.rewardPoint
+        charge.status = PointChargeStatus.CANCELLED
+        charge.failureReason = null
+
+        userRepository.save(actor)
+        pointChargeRepository.save(charge)
+
+        return RefundPointChargeResponse(
+            chargeId = charge.id,
+            status = charge.status,
+            refundedPoint = charge.rewardPoint,
+            currentPoint = actor.point
+        )
     }
 
     private fun verifyAndApplyCharge(charge: PointCharge, impUid: String): ConfirmPointChargeResponse {
@@ -226,4 +379,37 @@ class PointChargeService(
             throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "PortOne 설정이 누락되었습니다.")
         }
     }
+
+    private fun validatePageRequest(page: Int, size: Int) {
+        if (page < 0) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "page는 0 이상이어야 합니다.")
+        }
+        if (size !in 1..100) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "size는 1 이상 100 이하여야 합니다.")
+        }
+    }
+
+    private fun resolvePaymentOccurredAt(charge: PointCharge): OffsetDateTime {
+        return when (charge.status) {
+            PointChargeStatus.PAID -> resolveChargeOccurredAt(charge)
+            PointChargeStatus.CANCELLED -> charge.updatedAt ?: resolveChargeOccurredAt(charge)
+            else -> charge.createdAt ?: charge.updatedAt ?: OffsetDateTime.now()
+        }
+    }
+
+    private fun resolveChargeOccurredAt(charge: PointCharge): OffsetDateTime {
+        return charge.paidAt ?: charge.createdAt ?: charge.updatedAt ?: OffsetDateTime.now()
+    }
+
+    private fun isRefundable(currentPoint: Long, charge: PointCharge): Boolean {
+        if (charge.status != PointChargeStatus.PAID) return false
+        if (charge.impUid.isNullOrBlank()) return false
+        return currentPoint >= charge.rewardPoint
+    }
+
+    private data class PointLedgerRecord(
+        val occurredAt: OffsetDateTime,
+        val pointDelta: Long,
+        val description: String
+    )
 }
