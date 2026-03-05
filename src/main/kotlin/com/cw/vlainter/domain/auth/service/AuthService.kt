@@ -52,6 +52,35 @@ class AuthService(
         validateUserForLogin(user)
         val validatedRedirectUri = redirectUriValidator.validate(request.redirectUri)
 
+        return issueLoginResult(user, validatedRedirectUri)
+    }
+
+    fun loginOrSignupWithEmail(email: String, nameHint: String?, redirectUri: String?): LoginResult {
+        val normalizedEmail = email.trim().lowercase()
+        if (normalizedEmail.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이메일 정보가 유효하지 않습니다.")
+        }
+
+        val user = userRepository.findByEmail(normalizedEmail).orElseGet {
+            val resolvedName = resolveSocialName(nameHint, normalizedEmail)
+            userRepository.save(
+                User(
+                    email = normalizedEmail,
+                    password = passwordEncoder.encode(generateSocialRandomPassword()),
+                    name = resolvedName,
+                    status = UserStatus.ACTIVE,
+                    role = UserRole.USER
+                )
+            )
+        }
+
+        validateUserForLogin(user)
+        val validatedRedirectUri = redirectUriValidator.validate(redirectUri)
+        return issueLoginResult(user, validatedRedirectUri)
+    }
+
+    private fun issueLoginResult(user: User, validatedRedirectUri: String?): LoginResult {
+
         val sessionId = UUID.randomUUID().toString()
         val accessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId, user.role)
         val refreshToken = jwtTokenProvider.createRefreshToken(user.id, sessionId)
@@ -166,6 +195,19 @@ class AuthService(
      */
     private fun unauthorizedException(): ResponseStatusException {
         return ResponseStatusException(HttpStatus.UNAUTHORIZED, "이메일 또는 비밀번호가 올바르지 않습니다.")
+    }
+
+    private fun resolveSocialName(nameHint: String?, email: String): String {
+        val trimmedName = nameHint?.trim().orEmpty()
+        if (trimmedName.isNotBlank()) {
+            return trimmedName.take(100)
+        }
+        val localPart = email.substringBefore("@").ifBlank { "Vlainter User" }
+        return localPart.take(100)
+    }
+
+    private fun generateSocialRandomPassword(): String {
+        return "Ka${UUID.randomUUID()}!1a"
     }
 }
 

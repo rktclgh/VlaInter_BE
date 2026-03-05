@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.auth.controller
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.auth.service.AuthService
+import com.cw.vlainter.domain.auth.service.KakaoAuthService
 import com.cw.vlainter.domain.auth.service.LoginResult
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.global.security.AuthCookieManager
@@ -33,13 +34,16 @@ class AuthControllerTests {
     private lateinit var authService: AuthService
 
     @Mock
+    private lateinit var kakaoAuthService: KakaoAuthService
+
+    @Mock
     private lateinit var authCookieManager: AuthCookieManager
 
     private lateinit var mockMvc: MockMvc
 
     @BeforeEach
     fun setUp() {
-        val controller = AuthController(authService, authCookieManager)
+        val controller = AuthController(authService, kakaoAuthService, authCookieManager)
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build()
     }
 

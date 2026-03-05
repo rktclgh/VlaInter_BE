@@ -68,6 +68,7 @@ class JwtAuthenticationFilter(
         val path = request.requestURI
         return path == "/api/auth/signup" ||
             path == "/api/auth/login" ||
+            path == "/api/auth/kakao/login" ||
             path == "/api/auth/refresh" ||
             path == "/api/auth/logout" ||
             path.startsWith("/swagger-ui/") ||

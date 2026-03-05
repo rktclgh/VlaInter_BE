@@ -2,8 +2,10 @@ package com.cw.vlainter.domain.auth.controller
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.auth.dto.LoginResponse
+import com.cw.vlainter.domain.auth.dto.KakaoLoginRequest
 import com.cw.vlainter.domain.auth.dto.SignupRequest
 import com.cw.vlainter.domain.auth.service.AuthService
+import com.cw.vlainter.domain.auth.service.KakaoAuthService
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.cw.vlainter.global.security.AuthCookieManager
 import jakarta.servlet.http.HttpServletRequest
@@ -31,6 +33,7 @@ import java.util.LinkedHashMap
 @RequestMapping("/api/auth")
 class AuthController(
     private val authService: AuthService,
+    private val kakaoAuthService: KakaoAuthService,
     private val authCookieManager: AuthCookieManager
 ) {
     private val logger = LoggerFactory.getLogger(AuthController::class.java)
@@ -134,6 +137,50 @@ class AuthController(
             logger.warn(
                 "Auth login failed email={} status={} reason={} ip={}",
                 email,
+                ex.statusCode.value(),
+                ex.reason,
+                clientIp
+            )
+            throw ex
+        }
+    }
+
+    @PostMapping("/kakao/login")
+    fun kakaoLogin(
+        @Valid
+        @RequestBody request: KakaoLoginRequest,
+        response: HttpServletResponse,
+        servletRequest: HttpServletRequest
+    ): ResponseEntity<LoginResponse> {
+        val clientIp = extractClientIp(servletRequest)
+        logger.info(
+            "Auth kakao login attempt hasRedirectUri={} hasClientId={} ip={}",
+            !request.redirectUri.isNullOrBlank(),
+            !request.clientId.isNullOrBlank(),
+            clientIp
+        )
+
+        try {
+            val result = kakaoAuthService.loginOrSignupWithKakao(
+                code = request.code,
+                redirectUri = request.redirectUri,
+                clientIdFromClient = request.clientId
+            )
+            addAuthCookies(response, result.accessToken, result.refreshToken)
+            logger.info("Auth kakao login success userId={} email={} ip={}", result.userId, result.email, clientIp)
+
+            return ResponseEntity.ok(
+                LoginResponse(
+                    userId = result.userId,
+                    email = result.email,
+                    name = result.name,
+                    role = result.role,
+                    redirectUri = result.redirectUri
+                )
+            )
+        } catch (ex: ResponseStatusException) {
+            logger.warn(
+                "Auth kakao login failed status={} reason={} ip={}",
                 ex.statusCode.value(),
                 ex.reason,
                 clientIp
