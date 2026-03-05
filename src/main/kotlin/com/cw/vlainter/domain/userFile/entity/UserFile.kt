@@ -2,6 +2,8 @@ package com.cw.vlainter.domain.userFile.entity
 
 import com.cw.vlainter.domain.user.entity.User
 import jakarta.persistence.*
+import org.hibernate.annotations.JdbcTypeCode
+import org.hibernate.type.SqlTypes
 import java.time.OffsetDateTime
 
 @Entity
@@ -22,7 +24,8 @@ class UserFile(
     val user: User,
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "file_type", nullable = false)
+    @JdbcTypeCode(SqlTypes.NAMED_ENUM)
+    @Column(name = "file_type", nullable = false, columnDefinition = "file_type")
     val fileType: FileType,
 
     @Column(name = "file_url", nullable = false, length = 500)
