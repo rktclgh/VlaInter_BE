@@ -122,7 +122,8 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          ssh ${EC2_USER:-ubuntu}@${EC2_HOST} "bash -se" <<EOF
+          ssh ${EC2_USER:-ubuntu}@${EC2_HOST} \
+            "IMAGE_TAG='${IMAGE_TAG}' DOCKERHUB_USERNAME='${DOCKERHUB_USERNAME}' DOCKERHUB_TOKEN='${DOCKERHUB_TOKEN}' bash -se" <<'EOF'
           set -euo pipefail
 
           DEPLOY_DIR=/home/ubuntu/vlainter
@@ -138,7 +139,7 @@ jobs:
           version: "3.8"
           services:
             app:
-              image: \${IMAGE_TAG}
+              image: ${IMAGE_TAG}
               container_name: vlainter-app
               restart: always
               env_file:
@@ -147,7 +148,7 @@ jobs:
                 - "8080:8080"
           YAML2
 
-          echo "\${DOCKERHUB_TOKEN}" | docker login -u "\${DOCKERHUB_USERNAME}" --password-stdin
+          echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
 
           if docker compose version >/dev/null 2>&1; then
             DC="docker compose"
@@ -158,7 +159,7 @@ jobs:
             exit 1
           fi
 
-          \$DC pull
-          \$DC up -d --remove-orphans
-          \$DC ps
+          $DC pull
+          $DC up -d --remove-orphans
+          $DC ps
           EOF
