@@ -45,7 +45,7 @@ class UserFileService(
     @Transactional
     fun uploadMyFile(principal: AuthPrincipal, fileType: FileType, file: MultipartFile): UserFileResponse {
         val actor = loadActiveUser(principal.userId)
-        validateUploadFile(file)
+        validateUploadFile(fileType, file)
         ensureS3Configured()
 
         val sanitizedFileName = sanitizeFileName(file.originalFilename)
@@ -77,8 +77,11 @@ class UserFileService(
         }
 
         if (!oldStoredPath.isNullOrBlank() && oldStoredPath != storedPath) {
+            val oldPath = oldStoredPath
             runAfterCommit {
-                deleteObjectQuietly(oldStoredPath!!)
+                if (!oldPath.isNullOrBlank()) {
+                    deleteObjectQuietly(oldPath)
+                }
             }
         }
 
@@ -111,7 +114,7 @@ class UserFileService(
         return user
     }
 
-    private fun validateUploadFile(file: MultipartFile) {
+    private fun validateUploadFile(fileType: FileType, file: MultipartFile) {
         if (file.isEmpty) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "업로드할 파일이 비어 있습니다.")
         }
@@ -120,6 +123,18 @@ class UserFileService(
                 HttpStatus.BAD_REQUEST,
                 "파일 크기는 ${s3Properties.maxFileSizeBytes} bytes 이하여야 합니다."
             )
+        }
+
+        val lowerName = file.originalFilename?.trim()?.lowercase().orEmpty()
+        val contentType = file.contentType?.trim()?.lowercase().orEmpty()
+        val extension = lowerName.substringAfterLast('.', "")
+
+        if (fileType == FileType.RESUME || fileType == FileType.INTRODUCE || fileType == FileType.PORTFOLIO) {
+            val extensionValid = extension == "pdf"
+            val contentTypeValid = contentType.isBlank() || contentType == "application/pdf"
+            if (!extensionValid || !contentTypeValid) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이력서/자기소개서/포트폴리오는 PDF 파일만 업로드할 수 있습니다.")
+            }
         }
     }
 
@@ -148,7 +163,13 @@ class UserFileService(
         val now = OffsetDateTime.now()
         val prefix = s3Properties.keyPrefix.trim().trim('/')
         val month = now.monthValue.toString().padStart(2, '0')
-        return "$prefix/$userId/${fileType.name.lowercase()}/${now.year}/$month/${UUID.randomUUID()}-$fileName"
+        val typeSegment = when (fileType) {
+            FileType.RESUME -> "resume"
+            FileType.INTRODUCE -> "introduce"
+            FileType.PORTFOLIO -> "portfolio"
+            FileType.PROFILE_IMAGE -> "profile-image"
+        }
+        return "$prefix/users/$userId/$typeSegment/${now.year}/$month/${UUID.randomUUID()}-$fileName"
     }
 
     private fun buildStoredPath(objectKey: String): String {
