@@ -125,7 +125,7 @@ jobs:
           ssh ${EC2_USER:-ubuntu}@${EC2_HOST} "bash -se" <<EOF
           set -euo pipefail
 
-          DEPLOY_DIR=\$HOME/vlainter
+          DEPLOY_DIR=/home/ubuntu/vlainter
           mkdir -p "\$DEPLOY_DIR"
           cd "\$DEPLOY_DIR"
 
