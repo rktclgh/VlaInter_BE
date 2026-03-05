@@ -1,0 +1,119 @@
+package com.cw.vlainter.domain.auth.controller
+
+import com.cw.vlainter.domain.auth.dto.LoginRequest
+import com.cw.vlainter.domain.auth.service.AuthService
+import com.cw.vlainter.domain.auth.service.KakaoAuthService
+import com.cw.vlainter.domain.auth.service.LoginResult
+import com.cw.vlainter.domain.user.entity.UserRole
+import com.cw.vlainter.global.security.AuthCookieManager
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.extension.ExtendWith
+import org.mockito.BDDMockito.given
+import org.mockito.BDDMockito.then
+import org.mockito.Mock
+import org.mockito.Mockito.verifyNoInteractions
+import org.mockito.junit.jupiter.MockitoExtension
+import org.springframework.http.HttpHeaders
+import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
+import org.springframework.http.ResponseCookie
+import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.header
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.test.web.servlet.setup.MockMvcBuilders
+import org.springframework.web.server.ResponseStatusException
+
+@ExtendWith(MockitoExtension::class)
+class AuthControllerTests {
+
+    @Mock
+    private lateinit var authService: AuthService
+
+    @Mock
+    private lateinit var kakaoAuthService: KakaoAuthService
+
+    @Mock
+    private lateinit var authCookieManager: AuthCookieManager
+
+    private lateinit var mockMvc: MockMvc
+
+    @BeforeEach
+    fun setUp() {
+        val controller = AuthController(authService, kakaoAuthService, authCookieManager)
+        mockMvc = MockMvcBuilders.standaloneSetup(controller).build()
+    }
+
+    @Test
+    fun `login returns user info and auth cookies`() {
+        val request = LoginRequest(
+            email = "tester@vlainter.com",
+            password = "Password123!",
+            redirectUri = "https://app.vlainter.com/home"
+        )
+        val loginResult = LoginResult(
+            userId = 1L,
+            email = request.email,
+            name = "Tester",
+            role = UserRole.ADMIN,
+            accessToken = "access-token",
+            refreshToken = "refresh-token",
+            redirectUri = request.redirectUri
+        )
+        val accessCookie = ResponseCookie.from("vlainter_at", "access-token").httpOnly(true).path("/").build()
+        val refreshCookie = ResponseCookie.from("vlainter_rt", "refresh-token").httpOnly(true).path("/").build()
+
+        given(authService.login(request)).willReturn(loginResult)
+        given(authCookieManager.createAccessTokenCookie("access-token")).willReturn(accessCookie)
+        given(authCookieManager.createRefreshTokenCookie("refresh-token")).willReturn(refreshCookie)
+
+        mockMvc.perform(
+            post("/api/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jacksonObjectMapper().writeValueAsString(request))
+        )
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.userId").value(1L))
+            .andExpect(jsonPath("$.email").value(request.email))
+            .andExpect(jsonPath("$.name").value("Tester"))
+            .andExpect(jsonPath("$.role").value("ADMIN"))
+            .andExpect(jsonPath("$.redirectUri").value(request.redirectUri))
+            .andExpect(header().stringValues(HttpHeaders.SET_COOKIE, accessCookie.toString(), refreshCookie.toString()))
+
+        then(authService).should().login(request)
+        then(authCookieManager).should().createAccessTokenCookie("access-token")
+        then(authCookieManager).should().createRefreshTokenCookie("refresh-token")
+    }
+
+    @Test
+    fun `login returns 400 when required json field is missing`() {
+        mockMvc.perform(
+            post("/api/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"email":"tester@vlainter.com"}""")
+        )
+            .andExpect(status().isBadRequest)
+
+        verifyNoInteractions(authService, authCookieManager)
+    }
+
+    @Test
+    fun `login returns 401 on auth failure`() {
+        val request = LoginRequest(email = "tester@vlainter.com", password = "WrongPassword!")
+        given(authService.login(request))
+            .willThrow(ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid email or password."))
+
+        mockMvc.perform(
+            post("/api/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jacksonObjectMapper().writeValueAsString(request))
+        )
+            .andExpect(status().isUnauthorized)
+
+        then(authService).should().login(request)
+        verifyNoInteractions(authCookieManager)
+    }
+}
