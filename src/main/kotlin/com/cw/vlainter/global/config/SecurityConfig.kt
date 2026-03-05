@@ -61,7 +61,7 @@ class SecurityConfig(
                     .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                     .requestMatchers("/api/admin/**").hasRole("ADMIN")
                     .requestMatchers("/api/**").authenticated()
-                    .anyRequest().permitAll()
+                    .anyRequest().denyAll()
             }
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
 
@@ -107,6 +107,7 @@ class SecurityConfig(
             "/index.html",
             "/login",
             "/join",
+            "/password/forgot",
             "/auth/kakao/callback",
             "/content/interview",
             "/content/files",

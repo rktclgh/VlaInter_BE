@@ -19,8 +19,9 @@ class RestAccessDeniedHandler(
         response: HttpServletResponse,
         accessDeniedException: AccessDeniedException?
     ) {
-        if (!request.requestURI.startsWith("/api/")) {
-            response.sendRedirect("/errors/403")
+        val requestPath = resolveRequestPath(request)
+        if (!requestPath.startsWith("/api/")) {
+            response.sendRedirect("${request.contextPath}/errors/403")
             return
         }
 
@@ -28,11 +29,21 @@ class RestAccessDeniedHandler(
             status = HttpStatus.FORBIDDEN.value(),
             code = HttpStatus.FORBIDDEN.name,
             message = "접근 권한이 없습니다.",
-            path = request.requestURI
+            path = requestPath
         )
         response.status = HttpStatus.FORBIDDEN.value()
         response.contentType = MediaType.APPLICATION_JSON_VALUE
         response.characterEncoding = Charsets.UTF_8.name()
         response.writer.write(objectMapper.writeValueAsString(body))
+    }
+
+    private fun resolveRequestPath(request: HttpServletRequest): String {
+        val contextPath = request.contextPath.orEmpty()
+        val requestUri = request.requestURI.orEmpty()
+        return if (contextPath.isNotBlank() && requestUri.startsWith(contextPath)) {
+            requestUri.removePrefix(contextPath)
+        } else {
+            requestUri
+        }
     }
 }

@@ -34,6 +34,7 @@ class UserFileService(
     private val s3Properties: S3Properties
 ) {
     private val logger = LoggerFactory.getLogger(UserFileService::class.java)
+    private val originalFileNameMaxLength = 255
 
     @Transactional(readOnly = true)
     fun getMyFiles(principal: AuthPrincipal): List<UserFileResponse> {
@@ -62,6 +63,7 @@ class UserFileService(
             if (existing != null) {
                 oldDeletionKey = resolveDeletionKey(existing.storageKey, existing.fileUrl)
                 userFileRepository.delete(existing)
+                userFileRepository.flush()
             }
 
             userFileRepository.save(
@@ -189,9 +191,11 @@ class UserFileService(
         val normalizedWhitespace = withoutPath
             .replace(Regex("[\\r\\n\\t]"), " ")
             .replace(Regex("\\s+"), " ")
+            .replace("\u0000", "")
             .trim()
 
-        return normalizedWhitespace.ifBlank { "file" }
+        val safeName = normalizedWhitespace.ifBlank { "file" }
+        return safeName.take(originalFileNameMaxLength)
     }
 
     private fun buildStorageFileName(originalFileName: String): String {
@@ -199,13 +203,8 @@ class UserFileService(
             .lowercase()
             .replace(Regex("[^a-z0-9]"), "")
 
-        val base = originalFileName.substringBeforeLast('.', originalFileName)
-            .replace(Regex("\\s+"), "_")
-            .replace(Regex("[^A-Za-z0-9._-]"), "")
-            .ifBlank { "file" }
-
-        val suffix = if (extension.isBlank()) "" else ".$extension"
-        return "${UUID.randomUUID()}-$base$suffix"
+        val objectId = UUID.randomUUID().toString()
+        return if (extension.isBlank()) objectId else "$objectId.$extension"
     }
 
     private fun resolveDeletionKey(storageKey: String?, storedPath: String?): String? {
