@@ -144,6 +144,19 @@ class UserFileService(
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이력서/자기소개서/포트폴리오는 PDF 파일만 업로드할 수 있습니다.")
             }
         }
+
+        if (fileType == FileType.PROFILE_IMAGE) {
+            val allowedExtensions = setOf("png", "jpg", "jpeg", "webp")
+            val allowedContentTypes = setOf("image/png", "image/jpeg", "image/webp")
+            val extensionValid = extension in allowedExtensions
+            val contentTypeValid = contentType.isBlank() || contentType in allowedContentTypes
+            if (!extensionValid || !contentTypeValid) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "프로필 이미지는 PNG/JPG/JPEG/WEBP 형식만 업로드할 수 있습니다."
+                )
+            }
+        }
     }
 
     private fun ensureS3Configured() {
