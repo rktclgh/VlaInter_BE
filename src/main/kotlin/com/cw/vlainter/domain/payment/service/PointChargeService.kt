@@ -183,16 +183,53 @@ class PointChargeService(
     fun getPointLedgerHistory(principal: AuthPrincipal, page: Int, size: Int): PointLedgerHistoryResponse {
         validatePageRequest(page, size)
         val actor = loadActiveUser(principal.userId)
-        val offset = page * size
-        val rows = pointChargeRepository.findLedgerRows(actor.id, size, offset)
-        val totalCount = pointChargeRepository.countLedgerRows(actor.id)
+        val paidCount = pointChargeRepository.countByUser_IdAndStatus(actor.id, PointChargeStatus.PAID)
+        val cancelledCount = pointChargeRepository.countByUser_IdAndStatus(actor.id, PointChargeStatus.CANCELLED)
+        val totalCount = paidCount + (cancelledCount * 2)
         val totalPages = if (totalCount == 0L) 0 else ((totalCount + size - 1) / size).toInt()
-        val pageItems = rows.map { row ->
-            PointLedgerItemResponse(
-                occurredAt = row.getOccurredAt(),
-                pointDelta = row.getPointDelta(),
-                description = row.getDescription()
+
+        if (totalCount == 0L) {
+            return PointLedgerHistoryResponse(
+                currentPoint = actor.point,
+                page = page,
+                size = size,
+                totalCount = 0L,
+                totalPages = 0,
+                items = emptyList()
             )
+        }
+
+        val startIndex = page.toLong() * size.toLong()
+        val endExclusive = startIndex + size.toLong()
+        val statuses = listOf(PointChargeStatus.PAID, PointChargeStatus.CANCELLED)
+        val chargePageSize = maxOf(size * 2, 20)
+        var chargePageIndex = 0
+        var processedLedgerCount = 0L
+        val pageItems = mutableListOf<PointLedgerItemResponse>()
+
+        while (processedLedgerCount < endExclusive && pageItems.size < size) {
+            val chargePage = pointChargeRepository.findAllByUser_IdAndStatusIn(
+                actor.id,
+                statuses,
+                PageRequest.of(chargePageIndex, chargePageSize, Sort.by(Sort.Direction.DESC, "createdAt", "id"))
+            )
+            if (chargePage.content.isEmpty()) break
+
+            chargePage.content.forEach { charge ->
+                toLedgerRecords(charge).forEach { record ->
+                    if (processedLedgerCount in startIndex until endExclusive && pageItems.size < size) {
+                        pageItems += PointLedgerItemResponse(
+                            occurredAt = record.occurredAt,
+                            pointDelta = record.pointDelta,
+                            description = record.description
+                        )
+                    }
+                    processedLedgerCount++
+                }
+            }
+
+            if (chargePage.isLast) break
+            chargePageIndex++
         }
 
         return PointLedgerHistoryResponse(
@@ -239,7 +276,7 @@ class PointChargeService(
 
     private fun finalizeRefund(userId: Long, chargeId: Long): RefundPointChargeResponse {
         val actor = loadActiveUser(userId)
-        val charge = pointChargeRepository.findByIdForUpdate(chargeId)
+        val charge = pointChargeRepository.findForUpdateById(chargeId)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "결제 내역을 찾을 수 없습니다.")
 
         if (charge.user.id != actor.id) {
@@ -284,7 +321,7 @@ class PointChargeService(
         payment: com.cw.vlainter.domain.payment.client.PortonePayment,
         expectedUserId: Long?
     ): ConfirmPointChargeResponse {
-        val charge = pointChargeRepository.findByMerchantUidForUpdate(merchantUid)
+        val charge = pointChargeRepository.findForUpdateByMerchantUid(merchantUid)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "충전 요청 정보를 찾을 수 없습니다.")
 
         if (expectedUserId != null && charge.user.id != expectedUserId) {
@@ -299,7 +336,7 @@ class PointChargeService(
         if (verifiedImpUid.isBlank()) {
             failCharge(charge, fallbackImpUid, "결제 식별자 검증에 실패했습니다.")
         }
-        val duplicateByVerifiedImpUid = pointChargeRepository.findByImpUidForUpdate(verifiedImpUid)
+        val duplicateByVerifiedImpUid = pointChargeRepository.findForUpdateByImpUid(verifiedImpUid)
         if (duplicateByVerifiedImpUid != null && duplicateByVerifiedImpUid.id != charge.id) {
             failCharge(charge, verifiedImpUid, "이미 처리된 결제 식별자입니다.")
         }
@@ -444,10 +481,43 @@ class PointChargeService(
         return charge.paidAt ?: charge.createdAt ?: charge.updatedAt ?: OffsetDateTime.now()
     }
 
+    private fun toLedgerRecords(charge: PointCharge): List<LedgerRecord> {
+        return when (charge.status) {
+            PointChargeStatus.PAID -> listOf(
+                LedgerRecord(
+                    occurredAt = resolveChargeOccurredAt(charge),
+                    pointDelta = charge.rewardPoint,
+                    description = "포인트 충전"
+                )
+            )
+
+            PointChargeStatus.CANCELLED -> listOf(
+                LedgerRecord(
+                    occurredAt = charge.updatedAt ?: OffsetDateTime.now(),
+                    pointDelta = -charge.rewardPoint,
+                    description = "포인트 환불"
+                ),
+                LedgerRecord(
+                    occurredAt = resolveChargeOccurredAt(charge),
+                    pointDelta = charge.rewardPoint,
+                    description = "포인트 충전"
+                )
+            ).sortedByDescending { it.occurredAt }
+
+            else -> emptyList()
+        }
+    }
+
     private fun isRefundable(currentPoint: Long, charge: PointCharge): Boolean {
         if (charge.status != PointChargeStatus.PAID) return false
         if (charge.impUid.isNullOrBlank()) return false
         return currentPoint >= charge.rewardPoint
     }
+
+    private data class LedgerRecord(
+        val occurredAt: OffsetDateTime,
+        val pointDelta: Long,
+        val description: String
+    )
 
 }
