@@ -9,5 +9,7 @@ data class UserFileResponse(
     val fileType: FileType,
     val fileName: String,
     val fileUrl: String,
-    val createdAt: OffsetDateTime
+    val createdAt: OffsetDateTime,
+    val originalFileName: String? = null,
+    val storageFileName: String? = null
 )

@@ -19,15 +19,32 @@ class RestAuthenticationEntryPoint(
         response: HttpServletResponse,
         authException: AuthenticationException?
     ) {
+        val requestPath = resolveRequestPath(request)
+        val isApiPath = requestPath == "/api" || requestPath.startsWith("/api/")
+        if (!isApiPath) {
+            response.sendRedirect("${request.contextPath}/errors/403")
+            return
+        }
+
         val body = ApiErrorResponse(
             status = HttpStatus.UNAUTHORIZED.value(),
             code = HttpStatus.UNAUTHORIZED.name,
             message = "인증이 필요합니다. 다시 로그인해 주세요.",
-            path = request.requestURI
+            path = requestPath
         )
         response.status = HttpStatus.UNAUTHORIZED.value()
         response.contentType = MediaType.APPLICATION_JSON_VALUE
         response.characterEncoding = Charsets.UTF_8.name()
         response.writer.write(objectMapper.writeValueAsString(body))
+    }
+
+    private fun resolveRequestPath(request: HttpServletRequest): String {
+        val contextPath = request.contextPath.orEmpty()
+        val requestUri = request.requestURI.orEmpty()
+        return if (contextPath.isNotBlank() && requestUri.startsWith(contextPath)) {
+            requestUri.removePrefix(contextPath)
+        } else {
+            requestUri
+        }
     }
 }

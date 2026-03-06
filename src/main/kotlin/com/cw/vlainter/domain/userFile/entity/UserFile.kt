@@ -34,6 +34,24 @@ class UserFile(
     @Column(name = "file_name", nullable = false)
     val fileName: String,
 
+    @Column(name = "original_file_name", nullable = false)
+    val originalFileName: String,
+
+    @Column(name = "storage_file_name", nullable = false)
+    val storageFileName: String,
+
+    @Column(name = "storage_key", nullable = false, length = 1000)
+    val storageKey: String,
+
+    @Column(name = "content_type", length = 255)
+    val contentType: String? = null,
+
+    @Column(name = "file_size_bytes")
+    val fileSizeBytes: Long? = null,
+
     @Column(name = "created_at", nullable = false)
-    val createdAt: OffsetDateTime = OffsetDateTime.now()
+    val createdAt: OffsetDateTime = OffsetDateTime.now(),
+
+    @Column(name = "updated_at", nullable = false)
+    val updatedAt: OffsetDateTime = OffsetDateTime.now()
 )
