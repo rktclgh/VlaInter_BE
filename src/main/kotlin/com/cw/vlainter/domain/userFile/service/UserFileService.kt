@@ -33,6 +33,11 @@ class UserFileService(
     private val s3Client: S3Client,
     private val s3Properties: S3Properties
 ) {
+    private companion object {
+        val ALLOWED_PROFILE_IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "webp")
+        val ALLOWED_PROFILE_IMAGE_CONTENT_TYPES = setOf("image/png", "image/jpeg", "image/webp")
+    }
+
     private val logger = LoggerFactory.getLogger(UserFileService::class.java)
     private val originalFileNameMaxLength = 255
 
@@ -142,6 +147,17 @@ class UserFileService(
             val contentTypeValid = contentType.isBlank() || contentType == "application/pdf"
             if (!extensionValid || !contentTypeValid) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이력서/자기소개서/포트폴리오는 PDF 파일만 업로드할 수 있습니다.")
+            }
+        }
+
+        if (fileType == FileType.PROFILE_IMAGE) {
+            val extensionValid = extension in ALLOWED_PROFILE_IMAGE_EXTENSIONS
+            val contentTypeValid = contentType.isNotBlank() && contentType in ALLOWED_PROFILE_IMAGE_CONTENT_TYPES
+            if (!extensionValid || !contentTypeValid) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "프로필 이미지는 PNG/JPG/JPEG/WEBP 형식만 업로드할 수 있습니다."
+                )
             }
         }
     }
