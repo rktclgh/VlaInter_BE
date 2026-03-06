@@ -34,6 +34,15 @@ class PointChargeController(
     private val redirectProperties: RedirectProperties,
     private val validator: Validator
 ) {
+    private val allowedPaymentOrigins: List<String> = redirectProperties.allowedOrigins
+        .map { it.trim() }
+        .filter { it.startsWith("http://") || it.startsWith("https://") }
+        .also {
+            require(it.isNotEmpty()) {
+                "app.redirect.allowed-origins must contain at least one valid http/https origin."
+            }
+        }
+
     @GetMapping("/points/products")
     fun getPointChargeProducts(): ResponseEntity<List<PointChargeProductResponse>> {
         return ResponseEntity.ok(pointChargeService.getPointChargeProducts())
@@ -105,10 +114,6 @@ class PointChargeController(
 
     @GetMapping("/portone/callback", produces = [MediaType.TEXT_HTML_VALUE])
     fun callbackPage(): ResponseEntity<String> {
-        val allowedPaymentOrigins = redirectProperties.allowedOrigins
-            .map { it.trim() }
-            .filter { it.startsWith("http://") || it.startsWith("https://") }
-            .ifEmpty { listOf("http://localhost:5173") }
         val originsScriptArray = allowedPaymentOrigins.joinToString(", ") { "\"${it.replace("\"", "\\\"")}\"" }
         val fallbackOrigin = allowedPaymentOrigins.first()
 
