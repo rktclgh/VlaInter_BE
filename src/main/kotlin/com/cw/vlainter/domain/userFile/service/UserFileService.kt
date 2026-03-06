@@ -21,7 +21,9 @@ import org.springframework.web.server.ResponseStatusException
 import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest
+import software.amazon.awssdk.services.s3.model.GetObjectRequest
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
+import software.amazon.awssdk.services.s3.model.S3Exception
 import java.net.URI
 import java.time.OffsetDateTime
 import java.util.UUID
@@ -46,6 +48,47 @@ class UserFileService(
         val actor = loadActiveUser(principal.userId)
         return userFileRepository.findAllByUser_IdOrderByCreatedAtDesc(actor.id)
             .map { toResponse(it) }
+    }
+
+    @Transactional(readOnly = true)
+    fun getMyProfileImage(principal: AuthPrincipal): ProfileImageResource? {
+        val actor = loadActiveUser(principal.userId)
+        ensureS3Configured()
+
+        val profileImage = userFileRepository.findTopByUser_IdAndFileTypeOrderByCreatedAtDesc(
+            actor.id,
+            FileType.PROFILE_IMAGE
+        ) ?: return null
+
+        val objectKey = resolveDeletionKey(profileImage.storageKey, profileImage.fileUrl)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "프로필 이미지를 찾을 수 없습니다.")
+
+        val request = GetObjectRequest.builder()
+            .bucket(s3Properties.bucket.trim())
+            .key(objectKey)
+            .build()
+
+        val responseBytes = try {
+            s3Client.getObjectAsBytes(request)
+        } catch (ex: S3Exception) {
+            if (ex.statusCode() == 404) {
+                throw ResponseStatusException(HttpStatus.NOT_FOUND, "프로필 이미지를 찾을 수 없습니다.")
+            }
+            logger.warn("S3 profile image fetch failed key={} reason={}", objectKey, ex.message)
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로필 이미지를 불러오지 못했습니다.")
+        } catch (ex: Exception) {
+            logger.warn("S3 profile image fetch failed key={} reason={}", objectKey, ex.message)
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로필 이미지를 불러오지 못했습니다.")
+        }
+
+        val contentType = profileImage.contentType?.takeIf { it.isNotBlank() }
+            ?: responseBytes.response().contentType()?.takeIf { it.isNotBlank() }
+            ?: "application/octet-stream"
+
+        return ProfileImageResource(
+            bytes = responseBytes.asByteArray(),
+            contentType = contentType
+        )
     }
 
     @Transactional
@@ -294,4 +337,9 @@ class UserFileService(
             storageFileName = file.storageFileName
         )
     }
+
+    class ProfileImageResource(
+        val bytes: ByteArray,
+        val contentType: String
+    )
 }
