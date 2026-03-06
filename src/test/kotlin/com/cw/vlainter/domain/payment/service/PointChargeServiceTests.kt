@@ -25,9 +25,6 @@ import org.mockito.BDDMockito.then
 import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
 import org.mockito.Mockito.never
-import org.springframework.data.domain.PageImpl
-import org.springframework.data.domain.PageRequest
-import org.springframework.data.domain.Sort
 import org.springframework.http.HttpStatus
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.TransactionStatus
@@ -107,7 +104,7 @@ class PointChargeServiceTests {
                 amount = BigDecimal("10000")
             )
         )
-        given(userRepository.addPoint(user.id, 10_000L)).willAnswer {
+        given(userRepository.rewardPoint(user.id, 10_000L)).willAnswer {
             user.point += 10_000L
             1
         }
@@ -179,7 +176,6 @@ class PointChargeServiceTests {
         )
 
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
-        given(pointChargeRepository.findById(charge.id)).willReturn(Optional.of(charge))
         given(pointChargeRepository.findForUpdateById(charge.id)).willReturn(charge)
         given(portoneClient.cancelPayment("imp-10", "사용자 요청 환불")).willReturn(
             PortonePayment(
@@ -220,7 +216,8 @@ class PointChargeServiceTests {
         )
 
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
-        given(pointChargeRepository.findById(charge.id)).willReturn(Optional.of(charge))
+        given(pointChargeRepository.findForUpdateById(charge.id)).willReturn(charge)
+        given(userRepository.addPointIfNotNegative(user.id, -10_000L)).willReturn(0)
 
         val exception = assertThrows<ResponseStatusException> {
             service().refundCharge(principal, charge.id)
@@ -263,17 +260,12 @@ class PointChargeServiceTests {
         )
 
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
-        given(pointChargeRepository.countByUser_IdAndStatus(user.id, PointChargeStatus.PAID)).willReturn(1L)
-        given(pointChargeRepository.countByUser_IdAndStatus(user.id, PointChargeStatus.CANCELLED)).willReturn(1L)
         given(
             pointChargeRepository.findAllByUser_IdAndStatusIn(
                 user.id,
-                listOf(PointChargeStatus.PAID, PointChargeStatus.CANCELLED),
-                PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt", "id"))
+                listOf(PointChargeStatus.PAID, PointChargeStatus.CANCELLED)
             )
-        ).willReturn(
-            PageImpl(listOf(cancelledCharge, paidCharge), PageRequest.of(0, 20), 2)
-        )
+        ).willReturn(listOf(cancelledCharge, paidCharge))
 
         val response = service().getPointLedgerHistory(principal, page = 0, size = 10)
 

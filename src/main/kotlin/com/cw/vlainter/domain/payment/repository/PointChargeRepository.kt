@@ -12,8 +12,7 @@ import java.util.Optional
 interface PointChargeRepository : JpaRepository<PointCharge, Long> {
     fun findByMerchantUid(merchantUid: String): Optional<PointCharge>
     fun findAllByUser_IdOrderByCreatedAtDesc(userId: Long, pageable: Pageable): Page<PointCharge>
-    fun findAllByUser_IdAndStatusIn(userId: Long, statuses: Collection<PointChargeStatus>, pageable: Pageable): Page<PointCharge>
-    fun countByUser_IdAndStatus(userId: Long, status: PointChargeStatus): Long
+    fun findAllByUser_IdAndStatusIn(userId: Long, statuses: Collection<PointChargeStatus>): List<PointCharge>
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     fun findForUpdateById(id: Long): PointCharge?

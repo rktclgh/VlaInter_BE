@@ -42,6 +42,7 @@ class PointChargeService(
     private val transactionTemplate: TransactionTemplate
 ) {
     private val defaultPaymentMethod = "CARD"
+    private val refundPendingReason = "__refund_pending__"
 
     @Transactional(readOnly = true)
     fun getPointChargeProducts(): List<PointChargeProductResponse> {
@@ -183,9 +184,19 @@ class PointChargeService(
     fun getPointLedgerHistory(principal: AuthPrincipal, page: Int, size: Int): PointLedgerHistoryResponse {
         validatePageRequest(page, size)
         val actor = loadActiveUser(principal.userId)
-        val paidCount = pointChargeRepository.countByUser_IdAndStatus(actor.id, PointChargeStatus.PAID)
-        val cancelledCount = pointChargeRepository.countByUser_IdAndStatus(actor.id, PointChargeStatus.CANCELLED)
-        val totalCount = paidCount + (cancelledCount * 2)
+        val charges = pointChargeRepository.findAllByUser_IdAndStatusIn(
+            actor.id,
+            listOf(PointChargeStatus.PAID, PointChargeStatus.CANCELLED)
+        )
+        val ledgerEvents = charges
+            .flatMap { charge -> toLedgerRecords(charge) }
+            .sortedWith(
+                compareByDescending<LedgerEvent> { it.occurredAt }
+                    .thenByDescending { it.chargeId }
+                    .thenBy { it.eventSeq }
+            )
+
+        val totalCount = ledgerEvents.size.toLong()
         val totalPages = if (totalCount == 0L) 0 else ((totalCount + size - 1) / size).toInt()
 
         if (totalCount == 0L) {
@@ -199,37 +210,15 @@ class PointChargeService(
             )
         }
 
-        val startIndex = page.toLong() * size.toLong()
-        val endExclusive = startIndex + size.toLong()
-        val statuses = listOf(PointChargeStatus.PAID, PointChargeStatus.CANCELLED)
-        val chargePageSize = maxOf(size * 2, 20)
-        var chargePageIndex = 0
-        var processedLedgerCount = 0L
-        val pageItems = mutableListOf<PointLedgerItemResponse>()
-
-        while (processedLedgerCount < endExclusive && pageItems.size < size) {
-            val chargePage = pointChargeRepository.findAllByUser_IdAndStatusIn(
-                actor.id,
-                statuses,
-                PageRequest.of(chargePageIndex, chargePageSize, Sort.by(Sort.Direction.DESC, "createdAt", "id"))
+        val offset = page.toLong() * size.toLong()
+        val fromIndex = offset.coerceAtMost(totalCount).toInt()
+        val toIndex = (fromIndex + size).coerceAtMost(ledgerEvents.size)
+        val pageItems = ledgerEvents.subList(fromIndex, toIndex).map { event ->
+            PointLedgerItemResponse(
+                occurredAt = event.occurredAt,
+                pointDelta = event.pointDelta,
+                description = event.description
             )
-            if (chargePage.content.isEmpty()) break
-
-            chargePage.content.forEach { charge ->
-                toLedgerRecords(charge).forEach { record ->
-                    if (processedLedgerCount in startIndex until endExclusive && pageItems.size < size) {
-                        pageItems += PointLedgerItemResponse(
-                            occurredAt = record.occurredAt,
-                            pointDelta = record.pointDelta,
-                            description = record.description
-                        )
-                    }
-                    processedLedgerCount++
-                }
-            }
-
-            if (chargePage.isLast) break
-            chargePageIndex++
         }
 
         return PointLedgerHistoryResponse(
@@ -244,34 +233,74 @@ class PointChargeService(
 
     fun refundCharge(principal: AuthPrincipal, chargeId: Long): RefundPointChargeResponse {
         val actor = loadActiveUser(principal.userId)
-        val charge = pointChargeRepository.findById(chargeId)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "결제 내역을 찾을 수 없습니다.") }
+        val reserved = transactionTemplate.execute {
+            reserveRefund(actor.id, chargeId)
+        } ?: throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "환불 예약 처리에 실패했습니다.")
 
-        if (charge.user.id != actor.id) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 결제 건만 환불할 수 있습니다.")
+        val canceledPayment = try {
+            portoneClient.cancelPayment(reserved.impUid, "사용자 요청 환불")
+        } catch (ex: Exception) {
+            transactionTemplate.executeWithoutResult {
+                rollbackRefundReservation(actor.id, chargeId, reserved.rewardPoint)
+            }
+            throw ex
         }
-        if (charge.status != PointChargeStatus.PAID) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불 가능한 결제 상태가 아닙니다.")
-        }
-        val impUid = charge.impUid?.trim().orEmpty()
-        if (impUid.isBlank()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불할 결제 식별자를 찾을 수 없습니다.")
-        }
-        if (actor.point < charge.rewardPoint) {
-            throw ResponseStatusException(
-                HttpStatus.BAD_REQUEST,
-                "보유 포인트가 부족하여 환불할 수 없습니다. 사용 포인트를 회복한 뒤 다시 시도해 주세요."
-            )
-        }
-
-        val canceledPayment = portoneClient.cancelPayment(impUid, "사용자 요청 환불")
         if (!canceledPayment.status.equals("cancelled", ignoreCase = true)) {
+            transactionTemplate.executeWithoutResult {
+                rollbackRefundReservation(actor.id, chargeId, reserved.rewardPoint)
+            }
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불 처리 상태가 올바르지 않습니다.")
         }
 
         return transactionTemplate.execute {
             finalizeRefund(actor.id, chargeId)
         } ?: throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "환불 처리에 실패했습니다.")
+    }
+
+    private fun reserveRefund(userId: Long, chargeId: Long): ReservedRefund {
+        val charge = pointChargeRepository.findForUpdateById(chargeId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "결제 내역을 찾을 수 없습니다.")
+
+        if (charge.user.id != userId) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 결제 건만 환불할 수 있습니다.")
+        }
+        if (charge.status != PointChargeStatus.PAID) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불 가능한 결제 상태가 아닙니다.")
+        }
+        if (charge.failureReason == refundPendingReason) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "이미 환불 처리 중인 결제 건입니다.")
+        }
+
+        val impUid = charge.impUid?.trim().orEmpty()
+        if (impUid.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불할 결제 식별자를 찾을 수 없습니다.")
+        }
+        val deducted = userRepository.addPointIfNotNegative(userId, -charge.rewardPoint)
+        if (deducted == 0) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "보유 포인트가 부족하여 환불할 수 없습니다. 사용 포인트를 회복한 뒤 다시 시도해 주세요."
+            )
+        }
+
+        charge.failureReason = refundPendingReason
+        pointChargeRepository.save(charge)
+        return ReservedRefund(
+            impUid = impUid,
+            rewardPoint = charge.rewardPoint
+        )
+    }
+
+    private fun rollbackRefundReservation(userId: Long, chargeId: Long, rewardPoint: Long) {
+        val charge = pointChargeRepository.findForUpdateById(chargeId) ?: return
+        if (charge.user.id != userId) return
+        if (charge.status != PointChargeStatus.PAID) return
+        if (charge.failureReason != refundPendingReason) return
+        charge.failureReason = null
+        pointChargeRepository.save(charge)
+        if (rewardPoint > 0) {
+            userRepository.rewardPoint(userId, rewardPoint)
+        }
     }
 
     private fun finalizeRefund(userId: Long, chargeId: Long): RefundPointChargeResponse {
@@ -285,20 +314,12 @@ class PointChargeService(
         if (charge.status != PointChargeStatus.PAID) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불 가능한 결제 상태가 아닙니다.")
         }
+        if (charge.failureReason != refundPendingReason) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "환불 예약 상태가 아닙니다.")
+        }
         val impUid = charge.impUid?.trim().orEmpty()
         if (impUid.isBlank()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "환불할 결제 식별자를 찾을 수 없습니다.")
-        }
-        if (actor.point < charge.rewardPoint) {
-            throw ResponseStatusException(
-                HttpStatus.BAD_REQUEST,
-                "보유 포인트가 부족하여 환불할 수 없습니다. 사용 포인트를 회복한 뒤 다시 시도해 주세요."
-            )
-        }
-
-        val updated = userRepository.addPointIfNotNegative(actor.id, -charge.rewardPoint)
-        if (updated == 0) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "보유 포인트가 부족하여 환불할 수 없습니다.")
         }
 
         charge.status = PointChargeStatus.CANCELLED
@@ -359,7 +380,10 @@ class PointChargeService(
         charge.failureReason = null
         charge.paidAt = OffsetDateTime.now()
 
-        val updated = userRepository.addPoint(charge.user.id, charge.rewardPoint)
+        if (charge.rewardPoint <= 0) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "적립 포인트 값이 올바르지 않습니다.")
+        }
+        val updated = userRepository.rewardPoint(charge.user.id, charge.rewardPoint)
         if (updated == 0) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "포인트 적립 처리에 실패했습니다.")
         }
@@ -481,28 +505,35 @@ class PointChargeService(
         return charge.paidAt ?: charge.createdAt ?: charge.updatedAt ?: OffsetDateTime.now()
     }
 
-    private fun toLedgerRecords(charge: PointCharge): List<LedgerRecord> {
+    private fun toLedgerRecords(charge: PointCharge): List<LedgerEvent> {
+        val chargeId = charge.id
         return when (charge.status) {
             PointChargeStatus.PAID -> listOf(
-                LedgerRecord(
+                LedgerEvent(
                     occurredAt = resolveChargeOccurredAt(charge),
                     pointDelta = charge.rewardPoint,
-                    description = "포인트 충전"
+                    description = "포인트 충전",
+                    chargeId = chargeId,
+                    eventSeq = 2
                 )
             )
 
             PointChargeStatus.CANCELLED -> listOf(
-                LedgerRecord(
+                LedgerEvent(
                     occurredAt = charge.updatedAt ?: OffsetDateTime.now(),
                     pointDelta = -charge.rewardPoint,
-                    description = "포인트 환불"
+                    description = "포인트 환불",
+                    chargeId = chargeId,
+                    eventSeq = 1
                 ),
-                LedgerRecord(
+                LedgerEvent(
                     occurredAt = resolveChargeOccurredAt(charge),
                     pointDelta = charge.rewardPoint,
-                    description = "포인트 충전"
+                    description = "포인트 충전",
+                    chargeId = chargeId,
+                    eventSeq = 2
                 )
-            ).sortedByDescending { it.occurredAt }
+            )
 
             else -> emptyList()
         }
@@ -514,10 +545,17 @@ class PointChargeService(
         return currentPoint >= charge.rewardPoint
     }
 
-    private data class LedgerRecord(
+    private data class ReservedRefund(
+        val impUid: String,
+        val rewardPoint: Long
+    )
+
+    private data class LedgerEvent(
         val occurredAt: OffsetDateTime,
         val pointDelta: Long,
-        val description: String
+        val description: String,
+        val chargeId: Long,
+        val eventSeq: Int
     )
 
 }

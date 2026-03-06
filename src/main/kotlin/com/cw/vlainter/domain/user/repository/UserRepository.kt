@@ -16,10 +16,16 @@ interface UserRepository : JpaRepository<User, Long> {
      */
     fun findByEmail(email: String): Optional<User>
 
+    /**
+     * 결제 확정 등으로 포인트를 적립한다. delta는 0보다 커야 한다.
+     */
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("update User u set u.point = u.point + :delta where u.id = :userId")
-    fun addPoint(@Param("userId") userId: Long, @Param("delta") delta: Long): Int
+    fun rewardPoint(@Param("userId") userId: Long, @Param("delta") delta: Long): Int
 
+    /**
+     * 포인트 차감 시 잔액이 음수가 되지 않는 경우에만 반영한다.
+     */
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("update User u set u.point = u.point + :delta where u.id = :userId and (u.point + :delta) >= 0")
     fun addPointIfNotNegative(@Param("userId") userId: Long, @Param("delta") delta: Long): Int

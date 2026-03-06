@@ -34,10 +34,6 @@ class PointChargeController(
     private val redirectProperties: RedirectProperties,
     private val validator: Validator
 ) {
-    private val trustedPaymentOrigin: String = redirectProperties.allowedOrigins
-        .firstOrNull { it.startsWith("http://") || it.startsWith("https://") }
-        ?: "http://localhost:5173"
-
     @GetMapping("/points/products")
     fun getPointChargeProducts(): ResponseEntity<List<PointChargeProductResponse>> {
         return ResponseEntity.ok(pointChargeService.getPointChargeProducts())
@@ -109,6 +105,13 @@ class PointChargeController(
 
     @GetMapping("/portone/callback", produces = [MediaType.TEXT_HTML_VALUE])
     fun callbackPage(): ResponseEntity<String> {
+        val allowedPaymentOrigins = redirectProperties.allowedOrigins
+            .map { it.trim() }
+            .filter { it.startsWith("http://") || it.startsWith("https://") }
+            .ifEmpty { listOf("http://localhost:5173") }
+        val originsScriptArray = allowedPaymentOrigins.joinToString(", ") { "\"${it.replace("\"", "\\\"")}\"" }
+        val fallbackOrigin = allowedPaymentOrigins.first()
+
         val html = """
             <!doctype html>
             <html lang="ko">
@@ -120,7 +123,8 @@ class PointChargeController(
             <body>
             <script>
               (function () {
-                var ALLOWED_PAYMENT_ORIGIN = "$trustedPaymentOrigin";
+                var ALLOWED_PAYMENT_ORIGINS = [$originsScriptArray];
+                var FALLBACK_ORIGIN = "$fallbackOrigin";
                 var params = new URLSearchParams(window.location.search);
                 var payload = {
                   impUid: params.get("imp_uid") || "",
@@ -128,11 +132,17 @@ class PointChargeController(
                   status: params.get("imp_success") || ""
                 };
                 if (window.opener && !window.opener.closed) {
-                  window.opener.postMessage({ type: "PORTONE_PAYMENT_CALLBACK", payload: payload }, ALLOWED_PAYMENT_ORIGIN);
+                  ALLOWED_PAYMENT_ORIGINS.forEach(function(origin) {
+                    try {
+                      window.opener.postMessage({ type: "PORTONE_PAYMENT_CALLBACK", payload: payload }, origin);
+                    } catch (e) {
+                      // ignore postMessage failures per origin
+                    }
+                  });
                   window.close();
                   return;
                 }
-                window.location.replace("/content/point-charge" + window.location.search);
+                window.location.replace(FALLBACK_ORIGIN + "/content/point-charge" + window.location.search);
               })();
             </script>
             </body>
