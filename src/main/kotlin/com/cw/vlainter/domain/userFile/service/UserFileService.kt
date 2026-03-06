@@ -1,5 +1,6 @@
 package com.cw.vlainter.domain.userFile.service
 
+import com.cw.vlainter.domain.interview.repository.DocumentIngestionJobRepository
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
@@ -23,6 +24,7 @@ import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
+import software.amazon.awssdk.core.exception.SdkClientException
 import software.amazon.awssdk.services.s3.model.S3Exception
 import java.net.URI
 import java.time.OffsetDateTime
@@ -32,12 +34,14 @@ import java.util.UUID
 class UserFileService(
     private val userRepository: UserRepository,
     private val userFileRepository: UserFileRepository,
+    private val documentIngestionJobRepository: DocumentIngestionJobRepository,
     private val s3Client: S3Client,
     private val s3Properties: S3Properties
 ) {
     private companion object {
         val ALLOWED_PROFILE_IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "webp")
         val ALLOWED_PROFILE_IMAGE_CONTENT_TYPES = setOf("image/png", "image/jpeg", "image/webp")
+        const val MAX_DOCUMENT_FILES_PER_TYPE = 5L
     }
 
     private val logger = LoggerFactory.getLogger(UserFileService::class.java)
@@ -46,7 +50,7 @@ class UserFileService(
     @Transactional(readOnly = true)
     fun getMyFiles(principal: AuthPrincipal): List<UserFileResponse> {
         val actor = loadActiveUser(principal.userId)
-        return userFileRepository.findAllByUser_IdOrderByCreatedAtDesc(actor.id)
+        return userFileRepository.findAllByUser_IdAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id)
             .map { toResponse(it) }
     }
 
@@ -55,7 +59,7 @@ class UserFileService(
         val actor = loadActiveUser(principal.userId)
         ensureS3Configured()
 
-        val profileImage = userFileRepository.findTopByUser_IdAndFileTypeOrderByCreatedAtDesc(
+        val profileImage = userFileRepository.findTopByUser_IdAndFileTypeAndIsActiveTrueAndDeletedAtIsNullOrderByCreatedAtDesc(
             actor.id,
             FileType.PROFILE_IMAGE
         ) ?: return null
@@ -72,13 +76,16 @@ class UserFileService(
             s3Client.getObjectAsBytes(request)
         } catch (ex: S3Exception) {
             if (ex.statusCode() == 404) {
-                throw ResponseStatusException(HttpStatus.NOT_FOUND, "프로필 이미지를 찾을 수 없습니다.")
+                return null
             }
             logger.warn("S3 profile image fetch failed key={} reason={}", objectKey, ex.message)
-            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로필 이미지를 불러오지 못했습니다.")
+            return null
+        } catch (ex: SdkClientException) {
+            logger.warn("S3 profile image fetch skipped key={} reason={}", objectKey, ex.message)
+            return null
         } catch (ex: Exception) {
             logger.warn("S3 profile image fetch failed key={} reason={}", objectKey, ex.message)
-            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로필 이미지를 불러오지 못했습니다.")
+            return null
         }
 
         val contentType = profileImage.contentType?.takeIf { it.isNotBlank() }
@@ -105,13 +112,28 @@ class UserFileService(
 
         putObject(objectKey, contentType, file.bytes)
 
-        var oldDeletionKey: String? = null
         val saved = try {
-            val existing = userFileRepository.findByUser_IdAndFileType(actor.id, fileType)
-            if (existing != null) {
-                oldDeletionKey = resolveDeletionKey(existing.storageKey, existing.fileUrl)
-                userFileRepository.delete(existing)
-                userFileRepository.flush()
+            if (fileType == FileType.PROFILE_IMAGE) {
+                val existing = userFileRepository
+                    .findTopByUser_IdAndFileTypeAndIsActiveTrueAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id, fileType)
+                if (existing != null) {
+                    val oldDeletionKey = resolveDeletionKey(existing.storageKey, existing.fileUrl)
+                    userFileRepository.delete(existing)
+                    userFileRepository.flush()
+                    if (!oldDeletionKey.isNullOrBlank() && oldDeletionKey != objectKey) {
+                        runAfterCommit {
+                            deleteObjectQuietly(oldDeletionKey)
+                        }
+                    }
+                }
+            } else {
+                val currentCount = userFileRepository.countByUser_IdAndFileTypeAndDeletedAtIsNull(actor.id, fileType)
+                if (currentCount >= MAX_DOCUMENT_FILES_PER_TYPE) {
+                    throw ResponseStatusException(
+                        HttpStatus.BAD_REQUEST,
+                        "${fileType.koreanLabel()} 파일은 최대 ${MAX_DOCUMENT_FILES_PER_TYPE}개까지 보관할 수 있습니다."
+                    )
+                }
             }
 
             userFileRepository.save(
@@ -125,18 +147,13 @@ class UserFileService(
                     storageKey = objectKey,
                     contentType = contentType,
                     fileSizeBytes = file.size,
+                    isActive = true,
                     updatedAt = OffsetDateTime.now()
                 )
             )
         } catch (ex: Exception) {
             deleteObjectQuietly(objectKey)
             throw ex
-        }
-
-        if (!oldDeletionKey.isNullOrBlank() && oldDeletionKey != objectKey) {
-            runAfterCommit {
-                deleteObjectQuietly(oldDeletionKey)
-            }
         }
 
         return toResponse(saved)
@@ -326,6 +343,8 @@ class UserFileService(
 
     private fun toResponse(file: UserFile): UserFileResponse {
         val displayFileName = file.originalFileName.takeIf { it.isNotBlank() } ?: file.fileName
+        val latestIngestionJob = if (file.fileType == FileType.PROFILE_IMAGE) null
+        else documentIngestionJobRepository.findTopByDocumentFileIdOrderByRequestedAtDesc(file.id)
         return UserFileResponse(
             fileId = file.id,
             userId = file.user.id,
@@ -334,7 +353,11 @@ class UserFileService(
             fileUrl = file.fileUrl,
             createdAt = file.createdAt,
             originalFileName = file.originalFileName,
-            storageFileName = file.storageFileName
+            storageFileName = file.storageFileName,
+            versionNo = file.versionNo,
+            active = file.isActive,
+            ingestionStatus = latestIngestionJob?.status?.name,
+            ingested = latestIngestionJob?.status?.name == "READY"
         )
     }
 
@@ -342,4 +365,11 @@ class UserFileService(
         val bytes: ByteArray,
         val contentType: String
     )
+
+    private fun FileType.koreanLabel(): String = when (this) {
+        FileType.RESUME -> "이력서"
+        FileType.INTRODUCE -> "자기소개서"
+        FileType.PORTFOLIO -> "포트폴리오"
+        FileType.PROFILE_IMAGE -> "프로필 이미지"
+    }
 }

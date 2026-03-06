@@ -1,0 +1,70 @@
+package com.cw.vlainter.domain.interview.controller
+
+import com.cw.vlainter.domain.interview.dto.BookmarkTurnRequest
+import com.cw.vlainter.domain.interview.dto.DocumentIngestionResponse
+import com.cw.vlainter.domain.interview.dto.ReadyDocumentResponse
+import com.cw.vlainter.domain.interview.dto.SavedQuestionResponse
+import com.cw.vlainter.domain.interview.dto.StartMockInterviewRequest
+import com.cw.vlainter.domain.interview.dto.StartTechInterviewResponse
+import com.cw.vlainter.domain.interview.dto.SubmitInterviewAnswerRequest
+import com.cw.vlainter.domain.interview.dto.SubmitInterviewAnswerResponse
+import com.cw.vlainter.domain.interview.service.DocumentInterviewService
+import com.cw.vlainter.domain.interview.service.InterviewPracticeService
+import com.cw.vlainter.global.security.AuthPrincipal
+import jakarta.validation.Valid
+import org.springframework.http.ResponseEntity
+import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+@RequestMapping("/api/interview/mock")
+class DocumentInterviewController(
+    private val documentInterviewService: DocumentInterviewService,
+    private val interviewPracticeService: InterviewPracticeService
+) {
+    @GetMapping("/documents")
+    fun getReadyDocuments(
+        @AuthenticationPrincipal principal: AuthPrincipal
+    ): ResponseEntity<List<ReadyDocumentResponse>> {
+        return ResponseEntity.ok(documentInterviewService.getReadyDocuments(principal))
+    }
+
+    @PostMapping("/documents/{fileId}/ingestion")
+    fun ingestDocument(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable fileId: Long
+    ): ResponseEntity<DocumentIngestionResponse> {
+        return ResponseEntity.ok(documentInterviewService.ingestDocument(principal, fileId))
+    }
+
+    @PostMapping("/sessions")
+    fun startMockInterview(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @Valid @RequestBody request: StartMockInterviewRequest
+    ): ResponseEntity<StartTechInterviewResponse> {
+        return ResponseEntity.ok(documentInterviewService.startMockInterview(principal, request))
+    }
+
+    @PostMapping("/sessions/{sessionId}/answers")
+    fun submitAnswer(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable sessionId: Long,
+        @Valid @RequestBody request: SubmitInterviewAnswerRequest
+    ): ResponseEntity<SubmitInterviewAnswerResponse> {
+        return ResponseEntity.ok(interviewPracticeService.submitAnswer(principal, sessionId, request))
+    }
+
+    @PostMapping("/turns/{turnId}/bookmark")
+    fun bookmarkTurn(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable turnId: Long,
+        @RequestBody(required = false) request: BookmarkTurnRequest?
+    ): ResponseEntity<SavedQuestionResponse> {
+        return ResponseEntity.ok(interviewPracticeService.bookmarkTurn(principal, turnId, request ?: BookmarkTurnRequest()))
+    }
+}

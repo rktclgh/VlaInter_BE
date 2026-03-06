@@ -15,7 +15,7 @@ class User (
     val id: Long = 0,
 
     @Column(unique = true, nullable = false)
-    val email: String,
+    var email: String,
 
     @Column(nullable = false)
     var password: String,

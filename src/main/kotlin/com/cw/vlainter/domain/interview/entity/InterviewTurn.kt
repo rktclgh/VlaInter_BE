@@ -12,6 +12,8 @@ import jakarta.persistence.JoinColumn
 import jakarta.persistence.ManyToOne
 import jakarta.persistence.Table
 import jakarta.persistence.UniqueConstraint
+import org.hibernate.annotations.JdbcTypeCode
+import org.hibernate.type.SqlTypes
 import java.time.OffsetDateTime
 
 @Entity
@@ -41,6 +43,10 @@ class InterviewTurn(
     @JoinColumn(name = "question_id")
     val question: QaQuestion? = null,
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "document_question_id")
+    val documentQuestion: DocumentQuestion? = null,
+
     @Column(name = "question_text_snapshot", nullable = false)
     val questionTextSnapshot: String,
 
@@ -54,9 +60,11 @@ class InterviewTurn(
     @Column(name = "difficulty", length = 20)
     var difficulty: String? = null,
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "tags", nullable = false, columnDefinition = "jsonb")
     var tagsJson: String = "[]",
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "rag_context", nullable = false, columnDefinition = "jsonb")
     var ragContextJson: String = "{}",
 

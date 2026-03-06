@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.interview.ai
 
 import com.cw.vlainter.domain.interview.entity.QaQuestion
+import com.cw.vlainter.domain.interview.entity.QuestionDifficulty
 import com.cw.vlainter.global.config.properties.AiProperties
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -27,6 +28,90 @@ class InterviewAiOrchestrator(
             parsed.copy(model = generated.model, modelVersion = generated.modelVersion)
         }.onFailure { ex ->
             logger.warn("AI 평가 실패(provider={}): {}", aiProperties.provider, ex.message)
+        }.getOrElse { ex ->
+            if (aiProperties.fallbackToHeuristic) null else throw ex
+        }
+    }
+
+    fun generateDocumentQuestions(
+        fileTypeLabel: String,
+        difficulty: QuestionDifficulty?,
+        questionCount: Int,
+        contextSnippets: List<String>
+    ): List<GeneratedDocumentQuestion> {
+        require(questionCount > 0) { "questionCount must be positive." }
+        val prompt = buildDocumentQuestionPrompt(fileTypeLabel, difficulty, questionCount, contextSnippets)
+        val generated = llmProviderRouter.generateJson(prompt, temperature = 0.4)
+        val node = objectMapper.readTree(generated.text)
+        val questions = node["questions"]
+            ?.takeIf { it.isArray }
+            ?.mapIndexedNotNull { index, item ->
+                val questionText = item.text("questionText").ifBlank { return@mapIndexedNotNull null }
+                GeneratedDocumentQuestion(
+                    questionNo = index + 1,
+                    questionText = questionText,
+                    questionType = item.text("questionType").ifBlank { fileTypeLabel.uppercase() },
+                    referenceAnswer = item.text("referenceAnswer").ifBlank { null },
+                    evidence = item["evidence"]
+                        ?.takeIf { it.isArray }
+                        ?.mapNotNull { evidenceItem -> evidenceItem.asText().trim().takeIf(String::isNotBlank) }
+                        ?: emptyList()
+                )
+            }
+            .orEmpty()
+
+        return questions.take(questionCount)
+    }
+
+    fun evaluateDocumentAnswer(
+        questionText: String,
+        referenceAnswer: String?,
+        evidence: List<String>,
+        userAnswer: String
+    ): AiTurnEvaluation? {
+        if (userAnswer.isBlank()) return null
+
+        val prompt = """
+            당신은 문서 기반 모의면접 평가관입니다.
+            아래 입력을 바탕으로 한국어 JSON만 출력하세요.
+
+            [질문]
+            $questionText
+
+            [참고 답안]
+            ${referenceAnswer?.takeIf { it.isNotBlank() } ?: "(참고 답안 없음)"}
+
+            [근거 포인트]
+            ${if (evidence.isEmpty()) "(근거 없음)" else evidence.joinToString("\n- ", prefix = "- ")}
+
+            [사용자 답변]
+            $userAnswer
+
+            출력 JSON 스키마:
+            {
+              "score": 0~100 숫자(소수점 2자리까지),
+              "feedback": "총평(2~4문장)",
+              "bestPractice": "개선 가이드(2~4문장)",
+              "rubric": {
+                "coverage": 0~100,
+                "accuracy": 0~100,
+                "communication": 0~100
+              },
+              "evidence": ["평가 근거", "..."]
+            }
+
+            규칙:
+            - 반드시 JSON 객체만 반환
+            - 답변이 문서 맥락과 어긋나면 낮은 점수를 부여
+            - 사실 기반 근거와 전달력을 함께 평가
+        """.trimIndent()
+
+        return runCatching {
+            val generated = llmProviderRouter.generateJson(prompt)
+            val parsed = parseEvaluationJson(generated.text)
+            parsed.copy(model = generated.model, modelVersion = generated.modelVersion)
+        }.onFailure { ex ->
+            logger.warn("문서 기반 AI 평가 실패(provider={}): {}", aiProperties.provider, ex.message)
         }.getOrElse { ex ->
             if (aiProperties.fallbackToHeuristic) null else throw ex
         }
@@ -74,6 +159,50 @@ class InterviewAiOrchestrator(
             - 반드시 JSON 객체만 반환 (코드블록 금지)
             - 점수는 관대하지 않게, 근거 중심으로 산정
             - 사용자 답변이 질문과 무관하면 낮은 점수 부여
+        """.trimIndent()
+    }
+
+    private fun buildDocumentQuestionPrompt(
+        fileTypeLabel: String,
+        difficulty: QuestionDifficulty?,
+        questionCount: Int,
+        contextSnippets: List<String>
+    ): String {
+        val joinedContext = contextSnippets
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n") { snippet -> "[문서 발췌]\n$snippet" }
+
+        return """
+            당신은 채용 면접관입니다.
+            아래 문서 발췌를 기반으로 지원자에게 물을 개인화 면접 질문을 생성하세요.
+            질문은 반드시 면접관의 말투로 작성하세요.
+
+            [문서 유형]
+            $fileTypeLabel
+
+            [난이도]
+            ${difficulty?.name ?: "MIXED"}
+
+            [문서 발췌]
+            $joinedContext
+
+            출력 JSON 스키마:
+            {
+              "questions": [
+                {
+                  "questionText": "면접 질문",
+                  "questionType": "RESUME_EXPERIENCE | PORTFOLIO_PROJECT | INTRODUCE_MOTIVATION 등",
+                  "referenceAnswer": "좋은 답변의 방향",
+                  "evidence": ["질문의 근거가 된 문서 포인트", "..."]
+                }
+              ]
+            }
+
+            규칙:
+            - 총 ${questionCount}개 질문 생성
+            - 질문은 구체적이어야 하며 문서의 내용과 직접 연결되어야 함
+            - 단순 나열형 질문 대신 이유, 역할, 의사결정, 결과를 묻는 면접형 질문 우선
+            - 반드시 JSON만 출력
         """.trimIndent()
     }
 
@@ -130,4 +259,12 @@ data class AiTurnEvaluation(
     val evidenceJson: String,
     val model: String = "unknown",
     val modelVersion: String? = null
+)
+
+data class GeneratedDocumentQuestion(
+    val questionNo: Int,
+    val questionText: String,
+    val questionType: String,
+    val referenceAnswer: String?,
+    val evidence: List<String>
 )

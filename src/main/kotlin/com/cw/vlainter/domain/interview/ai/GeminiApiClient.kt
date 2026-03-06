@@ -94,7 +94,8 @@ class GeminiApiClient(
 
         val payload = GeminiEmbedContentRequest(
             model = "models/$model",
-            content = GeminiContent(parts = listOf(GeminiPart(text = text)))
+            content = GeminiContent(parts = listOf(GeminiPart(text = text))),
+            outputDimensionality = geminiProperties.embeddingOutputDimensionality
         )
 
         val response = post(url, HttpEntity(payload, headers), GeminiEmbedContentResponse::class.java)
@@ -161,7 +162,9 @@ private data class GeminiGenerateContentResponse(
 
 private data class GeminiEmbedContentRequest(
     val model: String,
-    val content: GeminiContent
+    val content: GeminiContent,
+    @JsonProperty("outputDimensionality")
+    val outputDimensionality: Int? = null
 )
 
 private data class GeminiEmbedContentResponse(

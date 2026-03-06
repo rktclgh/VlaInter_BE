@@ -43,3 +43,11 @@ enum class TurnSourceTag {
 enum class TurnEvaluationStatus {
     PENDING, DONE, FAILED
 }
+
+enum class InterviewQuestionKind {
+    TECH, DOCUMENT
+}
+
+enum class DocumentIngestionStatus {
+    QUEUED, PROCESSING, READY, FAILED, CANCELLED
+}

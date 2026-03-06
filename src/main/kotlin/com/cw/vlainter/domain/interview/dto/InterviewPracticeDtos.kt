@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.interview.dto
 
 import com.cw.vlainter.domain.interview.entity.QuestionDifficulty
+import com.cw.vlainter.domain.interview.entity.InterviewQuestionKind
 import com.cw.vlainter.domain.interview.entity.QuestionSourceTag
 import com.cw.vlainter.domain.interview.entity.TurnSourceTag
 import jakarta.validation.constraints.Max
@@ -23,6 +24,8 @@ data class InterviewQuestionResponse(
     val turnId: Long,
     val turnNo: Int,
     val questionId: Long?,
+    val documentQuestionId: Long?,
+    val questionKind: InterviewQuestionKind,
     val categoryId: Long?,
     val questionText: String,
     val sourceTag: TurnSourceTag,
@@ -64,6 +67,8 @@ data class BookmarkTurnRequest(
 data class SavedQuestionResponse(
     val savedQuestionId: Long,
     val questionId: Long?,
+    val documentQuestionId: Long?,
+    val questionKind: InterviewQuestionKind,
     val categoryId: Long?,
     val questionText: String,
     val category: String?,

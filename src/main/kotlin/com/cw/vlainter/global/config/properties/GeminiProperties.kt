@@ -8,6 +8,7 @@ data class GeminiProperties(
     val baseUrl: String = "https://generativelanguage.googleapis.com",
     val chatModel: String = "gemini-2.5-flash",
     val embeddingModel: String = "gemini-embedding-001",
+    val embeddingOutputDimensionality: Int = 768,
     val temperature: Double = 0.2,
     val connectTimeoutSeconds: Long = 3,
     val readTimeoutSeconds: Long = 20

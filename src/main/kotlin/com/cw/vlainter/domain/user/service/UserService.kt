@@ -145,16 +145,17 @@ class UserService(
     }
 
     @Transactional
-    fun hardDeleteMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
+    fun softDeleteMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
         val adminUser = authorizeAdmin(adminPrincipal)
         if (adminUser.id == targetUserId) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 완전 삭제할 수 없습니다.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 삭제 처리할 수 없습니다.")
         }
 
         val targetUser = findUserOrNotFound(targetUserId)
-
-        userFileRepository.deleteAllByUser_Id(targetUser.id)
-        userRepository.delete(targetUser)
+        targetUser.status = UserStatus.DELETED
+        targetUser.email = "deletedUser${targetUser.id}@vlainter.online"
+        targetUser.name = "Deleted User ${targetUser.id}"
+        userRepository.save(targetUser)
     }
 
     @Transactional(readOnly = true)

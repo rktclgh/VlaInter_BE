@@ -9,6 +9,8 @@ import jakarta.persistence.Id
 import jakarta.persistence.JoinColumn
 import jakarta.persistence.OneToOne
 import jakarta.persistence.Table
+import org.hibernate.annotations.JdbcTypeCode
+import org.hibernate.type.SqlTypes
 import java.math.BigDecimal
 import java.time.OffsetDateTime
 
@@ -26,6 +28,7 @@ class InterviewTurnEvaluation(
     @Column(name = "total_score", nullable = false, precision = 5, scale = 2)
     var totalScore: BigDecimal,
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "rubric_scores", nullable = false, columnDefinition = "jsonb")
     var rubricScoresJson: String = "{}",
 
@@ -35,6 +38,7 @@ class InterviewTurnEvaluation(
     @Column(name = "best_practice", nullable = false)
     var bestPractice: String,
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "evidence", nullable = false, columnDefinition = "jsonb")
     var evidenceJson: String = "[]",
 
