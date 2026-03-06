@@ -43,6 +43,8 @@ data class QuestionSummaryResponse(
     val questionId: Long,
     val questionText: String,
     val canonicalAnswer: String?,
+    val modelAnswer: String? = null,
+    val bestPractice: String? = null,
     val categoryId: Long,
     val categoryName: String,
     val categoryPath: String,

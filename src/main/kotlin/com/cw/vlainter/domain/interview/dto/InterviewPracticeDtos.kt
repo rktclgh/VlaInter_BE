@@ -49,13 +49,15 @@ data class SubmitInterviewAnswerRequest(
 data class TurnEvaluationResponse(
     val score: BigDecimal,
     val feedback: String,
-    val bestPractice: String
+    val bestPractice: String,
+    val modelAnswer: String? = null
 )
 
 data class SubmitInterviewAnswerResponse(
     val sessionId: Long,
     val answeredTurnId: Long,
-    val evaluation: TurnEvaluationResponse,
+    val submittedAnswer: String,
+    val evaluation: TurnEvaluationResponse? = null,
     val nextQuestion: InterviewQuestionResponse? = null,
     val completed: Boolean
 )
@@ -71,6 +73,11 @@ data class SavedQuestionResponse(
     val questionKind: InterviewQuestionKind,
     val categoryId: Long?,
     val questionText: String,
+    val canonicalAnswer: String?,
+    val modelAnswer: String? = null,
+    val bestPractice: String? = null,
+    val feedback: String? = null,
+    val answerText: String?,
     val category: String?,
     val difficulty: String?,
     val sourceTag: String?,
@@ -112,4 +119,26 @@ data class InterviewSessionResultsResponse(
     val mode: String,
     val finishedAt: OffsetDateTime?,
     val turns: List<InterviewTurnResultResponse>
+)
+
+data class InterviewHistoryDocumentResponse(
+    val fileId: Long?,
+    val fileType: String?,
+    val label: String,
+    val ocrUsed: Boolean = false
+)
+
+data class InterviewSessionHistoryResponse(
+    val sessionId: Long,
+    val status: String,
+    val mode: String,
+    val questionCount: Int,
+    val difficulty: String?,
+    val difficultyRating: Int?,
+    val categoryId: Long?,
+    val categoryName: String?,
+    val jobName: String?,
+    val selectedDocuments: List<InterviewHistoryDocumentResponse>,
+    val startedAt: OffsetDateTime?,
+    val finishedAt: OffsetDateTime?
 )

@@ -35,7 +35,7 @@ data class StartMockInterviewRequest(
     val documentFileIds: List<Long>,
     val categoryId: Long? = null,
     val difficulty: QuestionDifficulty? = null,
-    @field:Min(value = 1, message = "questionCount는 1 이상이어야 합니다.")
+    @field:Min(value = 5, message = "questionCount는 5 이상이어야 합니다.")
     @field:Max(value = 20, message = "questionCount는 20 이하여야 합니다.")
     val questionCount: Int = 5
 )

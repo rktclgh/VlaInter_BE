@@ -1,8 +1,8 @@
 package com.cw.vlainter.domain.interview.service
-
-import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.dto.BookmarkTurnRequest
 import com.cw.vlainter.domain.interview.dto.InterviewQuestionResponse
+import com.cw.vlainter.domain.interview.dto.InterviewHistoryDocumentResponse
+import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionResultsResponse
 import com.cw.vlainter.domain.interview.dto.InterviewTurnResultResponse
 import com.cw.vlainter.domain.interview.dto.QuestionAttemptResponse
@@ -12,21 +12,24 @@ import com.cw.vlainter.domain.interview.dto.StartTechInterviewResponse
 import com.cw.vlainter.domain.interview.dto.SubmitInterviewAnswerRequest
 import com.cw.vlainter.domain.interview.dto.SubmitInterviewAnswerResponse
 import com.cw.vlainter.domain.interview.dto.TurnEvaluationResponse
-import com.cw.vlainter.domain.interview.entity.DocumentQuestion
+import com.cw.vlainter.domain.interview.entity.EmbeddingStatus
 import com.cw.vlainter.domain.interview.entity.InterviewQuestionKind
 import com.cw.vlainter.domain.interview.entity.InterviewMode
 import com.cw.vlainter.domain.interview.entity.InterviewSession
 import com.cw.vlainter.domain.interview.entity.InterviewStatus
 import com.cw.vlainter.domain.interview.entity.InterviewTurn
-import com.cw.vlainter.domain.interview.entity.InterviewTurnEvaluation
 import com.cw.vlainter.domain.interview.entity.QaQuestion
+import com.cw.vlainter.domain.interview.entity.QaQuestionSet
+import com.cw.vlainter.domain.interview.entity.QaQuestionSetItem
+import com.cw.vlainter.domain.interview.entity.QuestionDifficulty
+import com.cw.vlainter.domain.interview.entity.QuestionSetOwnerType
 import com.cw.vlainter.domain.interview.entity.QuestionSetStatus
 import com.cw.vlainter.domain.interview.entity.QuestionSetVisibility
+import com.cw.vlainter.domain.interview.entity.QuestionSourceTag
 import com.cw.vlainter.domain.interview.entity.RevealPolicy
 import com.cw.vlainter.domain.interview.entity.SavedQuestion
-import com.cw.vlainter.domain.interview.entity.TurnEvaluationStatus
 import com.cw.vlainter.domain.interview.entity.TurnSourceTag
-import com.cw.vlainter.domain.interview.entity.UserQuestionAttempt
+import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.repository.InterviewSessionRepository
 import com.cw.vlainter.domain.interview.repository.InterviewTurnEvaluationRepository
 import com.cw.vlainter.domain.interview.repository.InterviewTurnRepository
@@ -41,12 +44,14 @@ import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
+import jakarta.persistence.EntityManager
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException
-import java.math.BigDecimal
-import java.math.RoundingMode
+import java.security.MessageDigest
 import java.time.OffsetDateTime
 import kotlin.math.max
 import kotlin.math.min
@@ -54,6 +59,7 @@ import kotlin.math.min
 @Service
 class InterviewPracticeService(
     private val interviewAiOrchestrator: InterviewAiOrchestrator,
+    private val interviewEvaluationService: InterviewEvaluationService,
     private val categoryRepository: QaCategoryRepository,
     private val questionRepository: QaQuestionRepository,
     private val questionSetRepository: QaQuestionSetRepository,
@@ -65,12 +71,16 @@ class InterviewPracticeService(
     private val userQuestionAttemptRepository: UserQuestionAttemptRepository,
     private val savedQuestionRepository: SavedQuestionRepository,
     private val userRepository: UserRepository,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val entityManager: EntityManager
 ) {
     @Transactional
     fun startTechInterview(principal: AuthPrincipal, request: StartTechInterviewRequest): StartTechInterviewResponse {
         val actor = loadUser(principal.userId)
-        val candidates = resolveCandidates(principal, request)
+        var candidates = resolveCandidates(principal, request)
+        if (candidates.isEmpty() && request.setId == null && request.categoryId != null) {
+            candidates = generateCategoryQuestions(actor.id, request)
+        }
         if (candidates.isEmpty()) {
             throw ResponseStatusException(HttpStatus.NOT_FOUND, "조건에 맞는 질문이 없습니다.")
         }
@@ -78,6 +88,8 @@ class InterviewPracticeService(
         val questionCount = request.questionCount.coerceAtMost(candidates.size)
         val selected = candidates.shuffled().take(questionCount)
         val questionRefs = selected.map { QuestionRef(InterviewQuestionKind.TECH, it.id) }
+        val primaryCategory = request.categoryId?.let { categoryRepository.findByIdAndDeletedAtIsNull(it) }
+        val jobCategory = primaryCategory?.parent ?: primaryCategory
 
         val session = interviewSessionRepository.save(
             InterviewSession(
@@ -86,7 +98,19 @@ class InterviewPracticeService(
                 status = InterviewStatus.IN_PROGRESS,
                 questionSet = request.setId?.let { questionSetRepository.findByIdAndDeletedAtIsNull(it) },
                 revealPolicy = RevealPolicy.PER_TURN,
-                configJson = toSessionConfigJson(questionRefs = questionRefs, cursor = 1)
+                configJson = toSessionConfigJson(
+                    questionRefs = questionRefs,
+                    cursor = 1,
+                    meta = mapOf(
+                        "questionCount" to questionCount,
+                        "difficulty" to request.difficulty?.name,
+                        "difficultyRating" to difficultyToRating(request.difficulty),
+                        "categoryId" to primaryCategory?.id,
+                        "categoryName" to primaryCategory?.name,
+                        "jobName" to jobCategory?.name,
+                        "selectedDocuments" to emptyList<Map<String, Any?>>()
+                    )
+                )
             )
         )
 
@@ -101,7 +125,7 @@ class InterviewPracticeService(
     }
 
     @Transactional
-    fun submitAnswer(
+    fun submitTechAnswer(
         principal: AuthPrincipal,
         sessionId: Long,
         request: SubmitInterviewAnswerRequest
@@ -116,37 +140,13 @@ class InterviewPracticeService(
         val turn = interviewTurnRepository.findFirstBySession_IdAndUserAnswerIsNullOrderByTurnNoAsc(session.id)
             ?: throw ResponseStatusException(HttpStatus.CONFLICT, "답변할 질문이 없습니다.")
 
-        turn.userAnswer = request.answer.trim()
+        val submittedAnswer = request.answer.trim()
+        turn.userAnswer = submittedAnswer
         turn.answeredAt = OffsetDateTime.now()
+        interviewTurnRepository.save(turn)
+        entityManager.flush()
 
-        val evaluation = evaluate(turn, turn.userAnswer.orEmpty())
-        turn.evaluationStatus = TurnEvaluationStatus.DONE
-        interviewTurnEvaluationRepository.save(
-            InterviewTurnEvaluation(
-                turn = turn,
-                totalScore = evaluation.score,
-                feedback = evaluation.feedback,
-                bestPractice = evaluation.bestPractice,
-                rubricScoresJson = evaluation.rubricScoresJson,
-                evidenceJson = evaluation.evidenceJson,
-                model = evaluation.model,
-                modelVersion = evaluation.modelVersion
-            )
-        )
-
-        if (turn.question != null) {
-            userQuestionAttemptRepository.save(
-                UserQuestionAttempt(
-                    user = session.user,
-                    question = turn.question,
-                    session = session,
-                    turn = turn,
-                    answerText = turn.userAnswer.orEmpty(),
-                    totalScore = evaluation.score,
-                    feedbackSummary = evaluation.feedback
-                )
-            )
-        }
+        val evaluation = interviewEvaluationService.evaluateTurnSync(turn.id)
 
         val config = parseSessionConfig(session.configJson)
         val nextRef = if (config.cursor < config.queue.size) config.queue[config.cursor] else null
@@ -163,13 +163,67 @@ class InterviewPracticeService(
         return SubmitInterviewAnswerResponse(
             sessionId = session.id,
             answeredTurnId = turn.id,
-            evaluation = TurnEvaluationResponse(
-                score = evaluation.score,
-                feedback = evaluation.feedback,
-                bestPractice = evaluation.bestPractice
-            ),
+            submittedAnswer = submittedAnswer,
+            evaluation = evaluation,
             nextQuestion = nextTurn?.let { toInterviewQuestionResponse(it) },
             completed = nextTurn == null
+        )
+    }
+
+    @Transactional
+    fun submitMockAnswer(
+        principal: AuthPrincipal,
+        sessionId: Long,
+        request: SubmitInterviewAnswerRequest
+    ): SubmitInterviewAnswerResponse {
+        val session = interviewSessionRepository.findByIdAndUser_Id(sessionId, principal.userId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "면접 세션을 찾을 수 없습니다.")
+
+        if (session.status != InterviewStatus.IN_PROGRESS) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "진행 중인 면접이 아닙니다.")
+        }
+
+        val turn = interviewTurnRepository.findFirstBySession_IdAndUserAnswerIsNullOrderByTurnNoAsc(session.id)
+            ?: throw ResponseStatusException(HttpStatus.CONFLICT, "답변할 질문이 없습니다.")
+
+        val submittedAnswer = request.answer.trim()
+        turn.userAnswer = submittedAnswer
+        turn.answeredAt = OffsetDateTime.now()
+        interviewTurnRepository.save(turn)
+
+        val config = parseSessionConfig(session.configJson)
+        val nextRef = if (config.cursor < config.queue.size) config.queue[config.cursor] else null
+
+        if (nextRef != null) {
+            session.configJson = toSessionConfigJson(config.queue, config.cursor + 1)
+            val nextTurn = createTurnFromRef(session, turn.turnNo + 1, nextRef)
+            entityManager.flush()
+            runAfterCommit {
+                interviewEvaluationService.evaluateTurnAsync(turn.id)
+            }
+
+            return SubmitInterviewAnswerResponse(
+                sessionId = session.id,
+                answeredTurnId = turn.id,
+                submittedAnswer = submittedAnswer,
+                nextQuestion = toInterviewQuestionResponse(nextTurn),
+                completed = false
+            )
+        }
+
+        session.status = InterviewStatus.FINISHING
+        entityManager.flush()
+        interviewEvaluationService.evaluateTurnSync(turn.id)
+        interviewEvaluationService.evaluateOutstandingTurnsSync(session.id)
+        session.status = InterviewStatus.DONE
+        session.finishedAt = OffsetDateTime.now()
+
+        return SubmitInterviewAnswerResponse(
+            sessionId = session.id,
+            answeredTurnId = turn.id,
+            submittedAnswer = submittedAnswer,
+            nextQuestion = null,
+            completed = true
         )
     }
 
@@ -253,10 +307,18 @@ class InterviewPracticeService(
                     tags = parseTags(turn.tagsJson),
                     bookmarked = turn.isBookmarked,
                     evaluation = evaluation?.let {
+                        val resolved = resolveAnswerContent(
+                            questionText = turn.questionTextSnapshot,
+                            rawModelAnswer = turn.question?.canonicalAnswer ?: turn.documentQuestion?.referenceAnswer,
+                            rawGuideText = it.bestPractice,
+                            difficulty = turn.difficulty,
+                            categoryLabel = turn.categorySnapshot
+                        )
                         TurnEvaluationResponse(
                             score = it.totalScore,
                             feedback = it.feedback,
-                            bestPractice = it.bestPractice
+                            bestPractice = resolved.guideText ?: it.bestPractice,
+                            modelAnswer = resolved.modelAnswer
                         )
                     }
                 )
@@ -271,6 +333,13 @@ class InterviewPracticeService(
         )
     }
 
+    @Transactional(readOnly = true)
+    fun getTechSessionHistory(principal: AuthPrincipal): List<InterviewSessionHistoryResponse> {
+        return interviewSessionRepository
+            .findAllByUser_IdAndModeInOrderByCreatedAtDesc(principal.userId, listOf(InterviewMode.TECH))
+            .map { toSessionHistoryResponse(it) }
+    }
+
     private fun resolveCandidates(principal: AuthPrincipal, request: StartTechInterviewRequest): List<QaQuestion> {
         val filterCategoryIds = resolveCategoryIds(request.categoryId)
         if (request.setId != null) {
@@ -283,6 +352,7 @@ class InterviewPracticeService(
             return questionSetItemRepository.findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(set.id)
                 .map { it.question }
                 .filter { matchesFilter(it, request, filterCategoryIds) }
+                .filter { isAcceptableTechQuestion(it) }
         }
 
         return questionRepository.findCandidatesForUser(
@@ -292,9 +362,67 @@ class InterviewPracticeService(
             difficulty = request.difficulty,
             sourceTag = request.sourceTag
         ).let { questions ->
-            if (filterCategoryIds.isEmpty()) questions
-            else questions.filter { it.category.id in filterCategoryIds }
+            val filtered = if (filterCategoryIds.isEmpty()) questions else questions.filter { it.category.id in filterCategoryIds }
+            filtered.filter { isAcceptableTechQuestion(it) }
         }
+    }
+
+    private fun generateCategoryQuestions(principalUserId: Long, request: StartTechInterviewRequest): List<QaQuestion> {
+        val categoryId = request.categoryId ?: return emptyList()
+        val category = categoryRepository.findByIdAndDeletedAtIsNull(categoryId)
+            ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효하지 않은 categoryId 입니다: $categoryId")
+
+        val generated = interviewAiOrchestrator.generateTechQuestions(
+            categoryPath = category.path,
+            difficulty = request.difficulty,
+            questionCount = request.questionCount.coerceAtLeast(5)
+        )
+        if (generated.isEmpty()) return emptyList()
+
+        val owner = loadUser(principalUserId)
+        val setTitle = "AUTO:${category.path}"
+        val autoSet = questionSetRepository.findFirstByOwnerUser_IdAndTitleAndDeletedAtIsNullOrderByCreatedAtDesc(owner.id, setTitle)
+            ?: questionSetRepository.save(
+                QaQuestionSet(
+                    ownerUser = owner,
+                    ownerType = QuestionSetOwnerType.USER,
+                    title = setTitle,
+                    description = "카테고리 기반 자동 생성 문답",
+                    visibility = QuestionSetVisibility.PRIVATE,
+                    status = QuestionSetStatus.ACTIVE,
+                    embeddingStatus = EmbeddingStatus.NOT_EMBEDDED
+                )
+            )
+
+        val collected = mutableListOf<QaQuestion>()
+        generated.forEach { item ->
+            val fingerprint = fingerprintFor(item.questionText, category.path, (request.difficulty ?: QuestionDifficulty.MEDIUM).name)
+            val question = questionRepository.findByFingerprintAndDeletedAtIsNull(fingerprint)
+                ?: questionRepository.save(
+                    QaQuestion(
+                        fingerprint = fingerprint,
+                        questionText = item.questionText.trim(),
+                        canonicalAnswer = item.canonicalAnswer?.trim(),
+                        category = category,
+                        difficulty = request.difficulty ?: QuestionDifficulty.MEDIUM,
+                        sourceTag = QuestionSourceTag.USER,
+                        tagsJson = objectMapper.writeValueAsString(item.tags.distinct()),
+                        createdBy = owner
+                    )
+                )
+            if (!questionSetItemRepository.existsBySet_IdAndQuestion_Id(autoSet.id, question.id)) {
+                val nextOrder = questionSetItemRepository.findMaxOrderNo(autoSet.id) + 1
+                questionSetItemRepository.save(
+                    QaQuestionSetItem(
+                        set = autoSet,
+                        question = question,
+                        orderNo = nextOrder
+                    )
+                )
+            }
+            collected += question
+        }
+        return collected
     }
 
     private fun matchesFilter(
@@ -308,10 +436,21 @@ class InterviewPracticeService(
         return categoryPass && difficultyPass && sourcePass
     }
 
+    private fun isAcceptableTechQuestion(question: QaQuestion): Boolean {
+        val normalized = question.questionText.replace(Regex("\\s+"), " ").trim()
+        if (normalized.length < 18) return false
+        if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED)\\b").containsMatchIn(normalized)) return false
+
+        val rawCategoryCode = question.category.code.trim().uppercase()
+        if (rawCategoryCode.isNotBlank() && normalized.contains(rawCategoryCode)) return false
+
+        return true
+    }
+
     private fun toTurnSource(question: QaQuestion): TurnSourceTag {
         return when (question.sourceTag) {
-            com.cw.vlainter.domain.interview.entity.QuestionSourceTag.SYSTEM -> TurnSourceTag.SYSTEM
-            com.cw.vlainter.domain.interview.entity.QuestionSourceTag.USER -> TurnSourceTag.USER
+            QuestionSourceTag.SYSTEM -> TurnSourceTag.SYSTEM
+            QuestionSourceTag.USER -> TurnSourceTag.USER
         }
     }
 
@@ -344,7 +483,7 @@ class InterviewPracticeService(
                     questionTextSnapshot = question.questionText,
                     categorySnapshot = question.questionType,
                     difficulty = question.difficulty,
-                    tagsJson = """["${question.questionType}"]""",
+                    tagsJson = "[]",
                     ragContextJson = question.evidenceJson
                 )
             }
@@ -370,6 +509,14 @@ class InterviewPracticeService(
     }
 
     private fun toSavedQuestionResponse(saved: SavedQuestion): SavedQuestionResponse {
+        val evaluation = saved.sourceTurn?.id?.let { interviewTurnEvaluationRepository.findByTurn_Id(it) }
+        val resolved = resolveAnswerContent(
+            questionText = saved.questionTextSnapshot,
+            rawModelAnswer = saved.question?.canonicalAnswer ?: saved.documentQuestion?.referenceAnswer,
+            rawGuideText = evaluation?.bestPractice,
+            difficulty = saved.difficulty,
+            categoryLabel = saved.categorySnapshot
+        )
         return SavedQuestionResponse(
             savedQuestionId = saved.id,
             questionId = saved.question?.id,
@@ -377,6 +524,11 @@ class InterviewPracticeService(
             questionKind = if (saved.question != null) InterviewQuestionKind.TECH else InterviewQuestionKind.DOCUMENT,
             categoryId = saved.category?.id,
             questionText = saved.questionTextSnapshot,
+            canonicalAnswer = resolved.modelAnswer,
+            modelAnswer = resolved.modelAnswer,
+            bestPractice = resolved.guideText,
+            feedback = evaluation?.feedback,
+            answerText = saved.sourceTurn?.userAnswer,
             category = saved.categorySnapshot,
             difficulty = saved.difficulty,
             sourceTag = saved.sourceTag,
@@ -384,6 +536,25 @@ class InterviewPracticeService(
             note = saved.note,
             createdAt = saved.createdAt
         )
+    }
+
+    private fun runAfterCommit(callback: () -> Unit) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            callback()
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCommit() {
+                callback()
+            }
+        })
+    }
+
+    private fun fingerprintFor(questionText: String, category: String, difficulty: String): String {
+        val normalized = "${questionText.trim().lowercase()}|${category.trim().lowercase()}|${difficulty.trim().lowercase()}"
+            .replace(Regex("\\s+"), " ")
+        val digest = MessageDigest.getInstance("SHA-256").digest(normalized.toByteArray())
+        return digest.joinToString("") { "%02x".format(it) }
     }
 
     private fun parseTags(raw: String?): List<String> {
@@ -407,11 +578,16 @@ class InterviewPracticeService(
     private fun loadUser(userId: Long) = userRepository.findById(userId)
         .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "사용자 정보를 찾을 수 없습니다.") }
 
-    private fun toSessionConfigJson(questionRefs: List<QuestionRef>, cursor: Int): String {
+    private fun toSessionConfigJson(
+        questionRefs: List<QuestionRef>,
+        cursor: Int,
+        meta: Map<String, Any?> = emptyMap()
+    ): String {
         return objectMapper.writeValueAsString(
             mapOf(
                 "queue" to questionRefs,
-                "cursor" to cursor
+                "cursor" to cursor,
+                "meta" to meta
             )
         )
     }
@@ -436,84 +612,6 @@ class InterviewPracticeService(
         return SessionConfig(queue = queue, cursor = cursor)
     }
 
-    private fun evaluate(turn: InterviewTurn, answer: String): EvaluationResult {
-        val trimmed = answer.trim()
-        if (trimmed.isBlank()) {
-            return EvaluationResult(
-                score = BigDecimal.ZERO.setScale(2),
-                feedback = "답변이 비어 있습니다. 핵심 내용을 포함해 다시 작성해 주세요.",
-                bestPractice = "질문 의도 1문장, 근거 2~3문장, 결론 1문장 구조로 답변하세요.",
-                rubricScoresJson = """{"coverage":0,"accuracy":0,"communication":0}""",
-                evidenceJson = "[]",
-                model = "heuristic",
-                modelVersion = "v1"
-            )
-        }
-
-        val question = turn.question
-        val documentQuestion = turn.documentQuestion
-        val aiEvaluation = if (question != null) {
-            interviewAiOrchestrator.evaluateTechAnswer(question, trimmed)
-        } else if (documentQuestion != null) {
-            interviewAiOrchestrator.evaluateDocumentAnswer(
-                questionText = documentQuestion.questionText,
-                referenceAnswer = documentQuestion.referenceAnswer,
-                evidence = parseTags(documentQuestion.evidenceJson),
-                userAnswer = trimmed
-            )
-        } else {
-            null
-        }
-        if (aiEvaluation != null) {
-            return EvaluationResult(
-                score = aiEvaluation.score,
-                feedback = aiEvaluation.feedback,
-                bestPractice = aiEvaluation.bestPractice,
-                rubricScoresJson = aiEvaluation.rubricScoresJson,
-                evidenceJson = aiEvaluation.evidenceJson,
-                model = aiEvaluation.model,
-                modelVersion = aiEvaluation.modelVersion
-            )
-        }
-
-        val canonical = when {
-            question != null -> question.canonicalAnswer?.trim().orEmpty()
-            documentQuestion != null -> documentQuestion.referenceAnswer?.trim().orEmpty()
-            else -> ""
-        }
-        val score = if (canonical.isBlank()) {
-            val lenScore = min(100, max(20, trimmed.length / 3))
-            BigDecimal(lenScore).setScale(2)
-        } else {
-            val answerTokens = tokenize(trimmed)
-            val canonicalTokens = tokenize(canonical)
-            val overlap = if (canonicalTokens.isEmpty()) 0.0 else answerTokens.intersect(canonicalTokens).size.toDouble() / canonicalTokens.size
-            val numeric = (30 + overlap * 70).coerceIn(0.0, 100.0)
-            BigDecimal(numeric).setScale(2, RoundingMode.HALF_UP)
-        }
-
-        val feedback = when {
-            score >= BigDecimal("85.00") -> "핵심 개념을 잘 설명했습니다. 근거 사례를 한 줄 추가하면 더 좋습니다."
-            score >= BigDecimal("70.00") -> "핵심은 맞지만 설명 구조가 다소 약합니다. 결론을 먼저 말하고 근거를 붙여 보세요."
-            else -> "핵심 포인트 누락이 있습니다. 용어 정의와 문제 해결 흐름을 분리해 작성해 보세요."
-        }
-
-        val bestPractice = if (canonical.isBlank()) {
-            "질문 의도를 재진술한 뒤, 실무 예시와 트레이드오프를 포함해 답변하세요."
-        } else {
-            "모범답안의 핵심 키워드를 기준으로 1) 정의 2) 적용 사례 3) 한계/개선 순서로 답변하세요."
-        }
-
-        return EvaluationResult(score = score, feedback = feedback, bestPractice = bestPractice)
-    }
-
-    private fun tokenize(text: String): Set<String> {
-        return text.lowercase()
-            .split(Regex("[^a-zA-Z0-9가-힣]+"))
-            .filter { it.length >= 2 }
-            .toSet()
-    }
-
     data class QuestionRef(
         val kind: InterviewQuestionKind,
         val id: Long
@@ -524,13 +622,49 @@ class InterviewPracticeService(
         val cursor: Int = 0
     )
 
-    private data class EvaluationResult(
-        val score: BigDecimal,
-        val feedback: String,
-        val bestPractice: String,
-        val rubricScoresJson: String = """{"coverage":0,"accuracy":0,"communication":0}""",
-        val evidenceJson: String = "[]",
-        val model: String = "heuristic",
-        val modelVersion: String? = "v1"
-    )
+    private fun toSessionHistoryResponse(session: InterviewSession): InterviewSessionHistoryResponse {
+        val root = runCatching { objectMapper.readTree(session.configJson) }.getOrNull()
+        val meta = root?.get("meta")
+        val queueSize = root?.get("queue")?.takeIf { it.isArray }?.size() ?: 0
+        val turns = interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(session.id)
+        val documents = meta?.get("selectedDocuments")
+            ?.takeIf { it.isArray }
+            ?.map { item ->
+                InterviewHistoryDocumentResponse(
+                    fileId = item["fileId"]?.takeIf { it.canConvertToLong() }?.asLong(),
+                    fileType = item["fileType"]?.asText(),
+                    label = item["label"]?.asText()?.trim().orEmpty(),
+                    ocrUsed = item["ocrUsed"]?.asBoolean() == true
+                )
+            }
+            ?.filter { it.label.isNotBlank() }
+            ?: emptyList()
+
+        return InterviewSessionHistoryResponse(
+            sessionId = session.id,
+            status = session.status.name,
+            mode = session.mode.name,
+            questionCount = meta?.get("questionCount")?.asInt() ?: max(queueSize, turns.size),
+            difficulty = meta?.get("difficulty")?.asText() ?: turns.firstOrNull()?.difficulty,
+            difficultyRating = meta?.get("difficultyRating")?.asInt()
+                ?: difficultyToRating(turns.firstOrNull()?.difficulty?.let { runCatching { QuestionDifficulty.valueOf(it) }.getOrNull() }),
+            categoryId = meta?.get("categoryId")?.takeIf { it.canConvertToLong() }?.asLong()
+                ?: turns.firstOrNull()?.category?.id,
+            categoryName = meta?.get("categoryName")?.asText()?.takeIf { it.isNotBlank() }
+                ?: turns.firstOrNull()?.categorySnapshot,
+            jobName = meta?.get("jobName")?.asText()?.takeIf { it.isNotBlank() },
+            selectedDocuments = documents,
+            startedAt = session.startedAt,
+            finishedAt = session.finishedAt
+        )
+    }
+
+    private fun difficultyToRating(difficulty: QuestionDifficulty?): Int? {
+        return when (difficulty) {
+            QuestionDifficulty.EASY -> 2
+            QuestionDifficulty.MEDIUM -> 3
+            QuestionDifficulty.HARD -> 5
+            null -> null
+        }
+    }
 }

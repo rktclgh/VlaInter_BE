@@ -248,10 +248,19 @@ class QuestionSetService(
     }
 
     private fun toQuestionSummary(question: QaQuestion): QuestionSummaryResponse {
+        val resolved = resolveAnswerContent(
+            questionText = question.questionText,
+            rawModelAnswer = question.canonicalAnswer,
+            rawGuideText = null,
+            difficulty = question.difficulty.name,
+            categoryLabel = question.category.name
+        )
         return QuestionSummaryResponse(
             questionId = question.id,
             questionText = question.questionText,
-            canonicalAnswer = question.canonicalAnswer,
+            canonicalAnswer = resolved.modelAnswer,
+            modelAnswer = resolved.modelAnswer,
+            bestPractice = resolved.guideText,
             categoryId = question.category.id,
             categoryName = question.category.name,
             categoryPath = question.category.path,

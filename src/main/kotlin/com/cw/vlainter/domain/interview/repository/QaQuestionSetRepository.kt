@@ -8,6 +8,8 @@ import org.springframework.data.jpa.repository.JpaRepository
 interface QaQuestionSetRepository : JpaRepository<QaQuestionSet, Long> {
     fun findByIdAndDeletedAtIsNull(id: Long): QaQuestionSet?
 
+    fun findFirstByOwnerUser_IdAndTitleAndDeletedAtIsNullOrderByCreatedAtDesc(userId: Long, title: String): QaQuestionSet?
+
     fun findAllByOwnerUser_IdAndDeletedAtIsNullOrderByCreatedAtDesc(userId: Long): List<QaQuestionSet>
 
     fun findAllByVisibilityAndStatusAndDeletedAtIsNullOrderByCreatedAtDesc(
