@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.interview.controller
 
 import com.cw.vlainter.domain.interview.dto.BookmarkTurnRequest
 import com.cw.vlainter.domain.interview.dto.DocumentIngestionResponse
+import com.cw.vlainter.domain.interview.dto.InterviewSessionResultsResponse
 import com.cw.vlainter.domain.interview.dto.ReadyDocumentResponse
 import com.cw.vlainter.domain.interview.dto.SavedQuestionResponse
 import com.cw.vlainter.domain.interview.dto.StartMockInterviewRequest
@@ -57,6 +58,14 @@ class DocumentInterviewController(
         @Valid @RequestBody request: SubmitInterviewAnswerRequest
     ): ResponseEntity<SubmitInterviewAnswerResponse> {
         return ResponseEntity.ok(interviewPracticeService.submitAnswer(principal, sessionId, request))
+    }
+
+    @GetMapping("/sessions/{sessionId}/results")
+    fun getSessionResults(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable sessionId: Long
+    ): ResponseEntity<InterviewSessionResultsResponse> {
+        return ResponseEntity.ok(interviewPracticeService.getSessionResults(principal, sessionId))
     }
 
     @PostMapping("/turns/{turnId}/bookmark")

@@ -41,26 +41,18 @@ class InterviewAiOrchestrator(
     ): List<GeneratedDocumentQuestion> {
         require(questionCount > 0) { "questionCount must be positive." }
         val prompt = buildDocumentQuestionPrompt(fileTypeLabel, difficulty, questionCount, contextSnippets)
-        val generated = llmProviderRouter.generateJson(prompt, temperature = 0.4)
-        val node = objectMapper.readTree(generated.text)
-        val questions = node["questions"]
-            ?.takeIf { it.isArray }
-            ?.mapIndexedNotNull { index, item ->
-                val questionText = item.text("questionText").ifBlank { return@mapIndexedNotNull null }
-                GeneratedDocumentQuestion(
-                    questionNo = index + 1,
-                    questionText = questionText,
-                    questionType = item.text("questionType").ifBlank { fileTypeLabel.uppercase() },
-                    referenceAnswer = item.text("referenceAnswer").ifBlank { null },
-                    evidence = item["evidence"]
-                        ?.takeIf { it.isArray }
-                        ?.mapNotNull { evidenceItem -> evidenceItem.asText().trim().takeIf(String::isNotBlank) }
-                        ?: emptyList()
-                )
+        return runCatching {
+            val generated = llmProviderRouter.generateJson(prompt, temperature = 0.4)
+            parseGeneratedDocumentQuestions(generated.text, fileTypeLabel).take(questionCount)
+        }.onFailure { ex ->
+            logger.warn("문서 질문 생성 실패(provider={}): {}", aiProperties.provider, ex.message)
+        }.getOrElse { ex ->
+            if (aiProperties.fallbackToHeuristic) {
+                buildHeuristicDocumentQuestions(fileTypeLabel, difficulty, questionCount, contextSnippets)
+            } else {
+                throw ex
             }
-            .orEmpty()
-
-        return questions.take(questionCount)
+        }
     }
 
     fun evaluateDocumentAnswer(
@@ -204,6 +196,90 @@ class InterviewAiOrchestrator(
             - 단순 나열형 질문 대신 이유, 역할, 의사결정, 결과를 묻는 면접형 질문 우선
             - 반드시 JSON만 출력
         """.trimIndent()
+    }
+
+    private fun parseGeneratedDocumentQuestions(raw: String, fileTypeLabel: String): List<GeneratedDocumentQuestion> {
+        val node = objectMapper.readTree(raw)
+        return node["questions"]
+            ?.takeIf { it.isArray }
+            ?.mapIndexedNotNull { index, item ->
+                val questionText = item.text("questionText").ifBlank { return@mapIndexedNotNull null }
+                GeneratedDocumentQuestion(
+                    questionNo = index + 1,
+                    questionText = questionText,
+                    questionType = item.text("questionType").ifBlank { fileTypeLabel.uppercase() },
+                    referenceAnswer = item.text("referenceAnswer").ifBlank { null },
+                    evidence = item["evidence"]
+                        ?.takeIf { it.isArray }
+                        ?.mapNotNull { evidenceItem -> evidenceItem.asText().trim().takeIf(String::isNotBlank) }
+                        ?: emptyList()
+                )
+            }
+            .orEmpty()
+    }
+
+    private fun buildHeuristicDocumentQuestions(
+        fileTypeLabel: String,
+        difficulty: QuestionDifficulty?,
+        questionCount: Int,
+        contextSnippets: List<String>
+    ): List<GeneratedDocumentQuestion> {
+        val evidencePool = contextSnippets
+            .flatMap { snippet ->
+                snippet.split("\n", ".", "?", "!")
+                    .map { it.replace(Regex("\\s+"), " ").trim() }
+            }
+            .filter { it.length in 18..220 }
+            .distinct()
+            .take(questionCount.coerceAtLeast(3) * 2)
+
+        val questionType = when (fileTypeLabel.uppercase()) {
+            "RESUME" -> "RESUME_EXPERIENCE"
+            "PORTFOLIO" -> "PORTFOLIO_PROJECT"
+            "INTRODUCE" -> "INTRODUCE_MOTIVATION"
+            else -> "${fileTypeLabel.uppercase()}_DOCUMENT"
+        }
+
+        val templates = when (fileTypeLabel.uppercase()) {
+            "RESUME" -> listOf(
+                "이 경험에서 맡은 역할과 실제로 기여한 부분을 구체적으로 설명해 주세요.",
+                "이 활동을 통해 가장 크게 성장한 역량은 무엇이었나요?",
+                "이력에 적은 성과를 만들기 위해 어떤 의사결정을 했는지 말씀해 주세요."
+            )
+            "PORTFOLIO" -> listOf(
+                "이 프로젝트에서 본인이 담당한 역할과 핵심 기술 선택 이유를 설명해 주세요.",
+                "구현 과정에서 가장 어려웠던 문제와 해결 방식을 구체적으로 말씀해 주세요.",
+                "이 결과물을 다시 만든다면 어떤 부분을 개선할지 설명해 주세요."
+            )
+            else -> listOf(
+                "자기소개서에서 강조한 강점을 실제 경험과 연결해서 설명해 주세요.",
+                "이 내용을 바탕으로 지원 동기와 직무 적합성을 구체적으로 말씀해 주세요.",
+                "이 경험이 현재 지원 직무와 어떻게 연결되는지 설명해 주세요."
+            )
+        }
+
+        val difficultyGuide = when (difficulty) {
+            QuestionDifficulty.HARD -> "구체적인 수치, 의사결정 근거, 대안 비교까지 포함해 답할 수 있어야 합니다."
+            QuestionDifficulty.EASY -> "핵심 경험과 역할 중심으로 답할 수 있어야 합니다."
+            else -> "핵심 경험과 선택 이유, 결과를 균형 있게 설명할 수 있어야 합니다."
+        }
+        val safeEvidencePool = evidencePool.ifEmpty { listOf("") }
+
+        return (0 until questionCount).map { index ->
+            val evidence = safeEvidencePool[index % safeEvidencePool.size]
+            val template = templates[index % templates.size]
+            GeneratedDocumentQuestion(
+                questionNo = index + 1,
+                questionText = if (evidence.isNotBlank()) {
+                    "$template\n문서에는 \"$evidence\" 라고 적혀 있는데, 이 부분을 중심으로 말씀해 주세요."
+                } else {
+                    template
+                },
+                questionType = questionType,
+                referenceAnswer = difficultyGuide,
+                evidence = listOfNotNull(evidence.takeIf { it.isNotBlank() })
+            )
+        }
     }
 
     private fun parseEvaluationJson(raw: String): AiTurnEvaluation {

@@ -11,6 +11,7 @@ import com.cw.vlainter.domain.userFile.entity.UserFile
 import com.cw.vlainter.domain.userFile.repository.UserFileRepository
 import com.cw.vlainter.global.config.properties.S3Properties
 import com.cw.vlainter.global.security.AuthPrincipal
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
@@ -36,7 +37,8 @@ class UserFileService(
     private val userFileRepository: UserFileRepository,
     private val documentIngestionJobRepository: DocumentIngestionJobRepository,
     private val s3Client: S3Client,
-    private val s3Properties: S3Properties
+    private val s3Properties: S3Properties,
+    private val objectMapper: ObjectMapper
 ) {
     private companion object {
         val ALLOWED_PROFILE_IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "webp")
@@ -357,8 +359,17 @@ class UserFileService(
             versionNo = file.versionNo,
             active = file.isActive,
             ingestionStatus = latestIngestionJob?.status?.name,
-            ingested = latestIngestionJob?.status?.name == "READY"
+            ingested = latestIngestionJob?.status?.name == "READY",
+            extractionMethod = extractMetadataText(latestIngestionJob?.metadataJson, "extractionMethod"),
+            ocrUsed = extractMetadataText(latestIngestionJob?.metadataJson, "extractionMethod") == "OCR_TESSERACT"
         )
+    }
+
+    private fun extractMetadataText(rawJson: String?, fieldName: String): String? {
+        if (rawJson.isNullOrBlank()) return null
+        return runCatching {
+            objectMapper.readTree(rawJson).path(fieldName).takeIf { !it.isMissingNode && !it.isNull }?.asText()?.trim()
+        }.getOrNull().takeIf { !it.isNullOrBlank() }
     }
 
     class ProfileImageResource(

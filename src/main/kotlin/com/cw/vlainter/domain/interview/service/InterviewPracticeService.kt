@@ -3,6 +3,8 @@ package com.cw.vlainter.domain.interview.service
 import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.dto.BookmarkTurnRequest
 import com.cw.vlainter.domain.interview.dto.InterviewQuestionResponse
+import com.cw.vlainter.domain.interview.dto.InterviewSessionResultsResponse
+import com.cw.vlainter.domain.interview.dto.InterviewTurnResultResponse
 import com.cw.vlainter.domain.interview.dto.QuestionAttemptResponse
 import com.cw.vlainter.domain.interview.dto.SavedQuestionResponse
 import com.cw.vlainter.domain.interview.dto.StartTechInterviewRequest
@@ -226,6 +228,47 @@ class InterviewPracticeService(
                     createdAt = it.createdAt
                 )
             }
+    }
+
+    @Transactional(readOnly = true)
+    fun getSessionResults(principal: AuthPrincipal, sessionId: Long): InterviewSessionResultsResponse {
+        val session = interviewSessionRepository.findByIdAndUser_Id(sessionId, principal.userId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "면접 세션을 찾을 수 없습니다.")
+
+        val turns = interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(session.id)
+            .map { turn ->
+                val evaluation = interviewTurnEvaluationRepository.findByTurn_Id(turn.id)
+                InterviewTurnResultResponse(
+                    turnId = turn.id,
+                    turnNo = turn.turnNo,
+                    questionId = turn.question?.id,
+                    documentQuestionId = turn.documentQuestion?.id,
+                    questionKind = if (turn.question != null) InterviewQuestionKind.TECH else InterviewQuestionKind.DOCUMENT,
+                    categoryId = turn.category?.id,
+                    questionText = turn.questionTextSnapshot,
+                    answerText = turn.userAnswer,
+                    category = turn.categorySnapshot,
+                    difficulty = turn.difficulty,
+                    sourceTag = turn.sourceTag,
+                    tags = parseTags(turn.tagsJson),
+                    bookmarked = turn.isBookmarked,
+                    evaluation = evaluation?.let {
+                        TurnEvaluationResponse(
+                            score = it.totalScore,
+                            feedback = it.feedback,
+                            bestPractice = it.bestPractice
+                        )
+                    }
+                )
+            }
+
+        return InterviewSessionResultsResponse(
+            sessionId = session.id,
+            status = session.status.name,
+            mode = session.mode.name,
+            finishedAt = session.finishedAt,
+            turns = turns
+        )
     }
 
     private fun resolveCandidates(principal: AuthPrincipal, request: StartTechInterviewRequest): List<QaQuestion> {

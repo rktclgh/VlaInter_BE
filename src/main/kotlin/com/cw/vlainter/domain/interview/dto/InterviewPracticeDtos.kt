@@ -88,3 +88,28 @@ data class QuestionAttemptResponse(
     val feedbackSummary: String?,
     val createdAt: OffsetDateTime
 )
+
+data class InterviewTurnResultResponse(
+    val turnId: Long,
+    val turnNo: Int,
+    val questionId: Long?,
+    val documentQuestionId: Long?,
+    val questionKind: InterviewQuestionKind,
+    val categoryId: Long?,
+    val questionText: String,
+    val answerText: String?,
+    val category: String?,
+    val difficulty: String?,
+    val sourceTag: TurnSourceTag,
+    val tags: List<String>,
+    val bookmarked: Boolean,
+    val evaluation: TurnEvaluationResponse? = null
+)
+
+data class InterviewSessionResultsResponse(
+    val sessionId: Long,
+    val status: String,
+    val mode: String,
+    val finishedAt: OffsetDateTime?,
+    val turns: List<InterviewTurnResultResponse>
+)

@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.interview.controller
 
 import com.cw.vlainter.domain.interview.dto.BookmarkTurnRequest
+import com.cw.vlainter.domain.interview.dto.InterviewSessionResultsResponse
 import com.cw.vlainter.domain.interview.dto.QuestionAttemptResponse
 import com.cw.vlainter.domain.interview.dto.SavedQuestionResponse
 import com.cw.vlainter.domain.interview.dto.StartTechInterviewRequest
@@ -40,6 +41,14 @@ class InterviewPracticeController(
         @Valid @RequestBody request: SubmitInterviewAnswerRequest
     ): ResponseEntity<SubmitInterviewAnswerResponse> {
         return ResponseEntity.ok(interviewPracticeService.submitAnswer(principal, sessionId, request))
+    }
+
+    @GetMapping("/sessions/{sessionId}/results")
+    fun getSessionResults(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable sessionId: Long
+    ): ResponseEntity<InterviewSessionResultsResponse> {
+        return ResponseEntity.ok(interviewPracticeService.getSessionResults(principal, sessionId))
     }
 
     @PostMapping("/turns/{turnId}/bookmark")

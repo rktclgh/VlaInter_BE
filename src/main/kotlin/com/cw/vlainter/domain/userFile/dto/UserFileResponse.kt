@@ -15,5 +15,7 @@ data class UserFileResponse(
     val versionNo: Int,
     val active: Boolean,
     val ingestionStatus: String? = null,
-    val ingested: Boolean = false
+    val ingested: Boolean = false,
+    val extractionMethod: String? = null,
+    val ocrUsed: Boolean = false
 )

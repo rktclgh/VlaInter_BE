@@ -12,6 +12,8 @@ data class DocumentIngestionResponse(
     val fileId: Long,
     val status: DocumentIngestionStatus,
     val chunkCount: Int?,
+    val extractionMethod: String? = null,
+    val ocrUsed: Boolean = false,
     val requestedAt: OffsetDateTime?,
     val finishedAt: OffsetDateTime?,
     val errorMessage: String? = null
@@ -23,6 +25,8 @@ data class ReadyDocumentResponse(
     val fileType: String,
     val status: DocumentIngestionStatus,
     val chunkCount: Int?,
+    val extractionMethod: String? = null,
+    val ocrUsed: Boolean = false,
     val lastIngestedAt: OffsetDateTime?
 )
 
