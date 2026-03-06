@@ -6,27 +6,31 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.boot.web.client.RestTemplateBuilder
+import org.springframework.http.client.SimpleClientHttpRequestFactory
 import org.springframework.http.HttpEntity
 import org.springframework.http.HttpHeaders
-import org.springframework.http.HttpMethod
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Component
 import org.springframework.web.client.RestClientResponseException
 import org.springframework.web.client.RestTemplate
-import java.time.Duration
+import java.util.function.Supplier
 
 @Component
 class GeminiApiClient(
     restTemplateBuilder: RestTemplateBuilder,
     private val geminiProperties: GeminiProperties,
     private val objectMapper: ObjectMapper
-) : LlmProviderClient {
+) : LlmProviderClient, EmbeddingProviderClient {
     override val provider: AiProvider = AiProvider.GEMINI
 
     private val restTemplate: RestTemplate = restTemplateBuilder
-        .setConnectTimeout(Duration.ofSeconds(geminiProperties.connectTimeoutSeconds))
-        .setReadTimeout(Duration.ofSeconds(geminiProperties.readTimeoutSeconds))
+        .requestFactory(Supplier {
+            SimpleClientHttpRequestFactory().apply {
+                setConnectTimeout((geminiProperties.connectTimeoutSeconds * 1000).toInt())
+                setReadTimeout((geminiProperties.readTimeoutSeconds * 1000).toInt())
+            }
+        })
         .build()
 
     override fun isEnabled(): Boolean = geminiProperties.apiKey.isNotBlank()
@@ -52,7 +56,7 @@ class GeminiApiClient(
             )
         )
 
-        val response = exchange(url, HttpMethod.POST, HttpEntity(payload, headers), GeminiGenerateContentResponse::class.java)
+        val response = post(url, HttpEntity(payload, headers), GeminiGenerateContentResponse::class.java)
         val body = response.body ?: error("Gemini 응답이 비어 있습니다.")
         val errorMessage = body.error?.get("message")?.asText()?.trim().orEmpty()
         if (errorMessage.isNotBlank()) {
@@ -77,14 +81,46 @@ class GeminiApiClient(
         )
     }
 
-    private fun <T> exchange(
+    override fun embedText(text: String): EmbeddingGenerationResult {
+        val apiKey = geminiProperties.apiKey.trim()
+        require(apiKey.isNotBlank()) { "Gemini API key is missing." }
+
+        val model = geminiProperties.embeddingModel.trim()
+        val url = "${geminiProperties.baseUrl.trim().trimEnd('/')}/v1beta/models/$model:embedContent?key=$apiKey"
+
+        val headers = HttpHeaders()
+        headers.contentType = MediaType.APPLICATION_JSON
+        headers.accept = listOf(MediaType.APPLICATION_JSON)
+
+        val payload = GeminiEmbedContentRequest(
+            model = "models/$model",
+            content = GeminiContent(parts = listOf(GeminiPart(text = text)))
+        )
+
+        val response = post(url, HttpEntity(payload, headers), GeminiEmbedContentResponse::class.java)
+        val body = response.body ?: error("Gemini 임베딩 응답이 비어 있습니다.")
+        val errorMessage = body.error?.get("message")?.asText()?.trim().orEmpty()
+        if (errorMessage.isNotBlank()) {
+            error("Gemini 임베딩 오류: $errorMessage")
+        }
+
+        val values = body.embedding?.values?.takeIf { it.isNotEmpty() }
+            ?: error("Gemini 임베딩 벡터가 비어 있습니다.")
+
+        return EmbeddingGenerationResult(
+            model = model,
+            modelVersion = "v1beta",
+            values = values
+        )
+    }
+
+    private fun <T> post(
         url: String,
-        method: HttpMethod,
         entity: HttpEntity<*>,
         responseType: Class<T>
     ): ResponseEntity<T> {
         return runCatching {
-            restTemplate.exchange(url, method, entity, responseType)
+            restTemplate.postForEntity(url, entity, responseType)
         }.getOrElse { ex ->
             val httpEx = ex as? RestClientResponseException
             if (httpEx != null) {
@@ -121,6 +157,20 @@ private data class GeminiGenerationConfig(
 private data class GeminiGenerateContentResponse(
     val candidates: List<GeminiCandidate>? = null,
     val error: JsonNode? = null
+)
+
+private data class GeminiEmbedContentRequest(
+    val model: String,
+    val content: GeminiContent
+)
+
+private data class GeminiEmbedContentResponse(
+    val embedding: GeminiEmbeddingPayload? = null,
+    val error: JsonNode? = null
+)
+
+private data class GeminiEmbeddingPayload(
+    val values: List<Double>? = null
 )
 
 private data class GeminiCandidate(

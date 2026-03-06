@@ -16,4 +16,8 @@ interface QaQuestionSetRepository : JpaRepository<QaQuestionSet, Long> {
     ): List<QaQuestionSet>
 
     fun findAllByDeletedAtIsNullOrderByCreatedAtDesc(): List<QaQuestionSet>
+
+    fun findTop10ByEmbeddingStatusAndDeletedAtIsNullOrderByEmbeddingRequestedAtAsc(
+        status: com.cw.vlainter.domain.interview.entity.EmbeddingStatus
+    ): List<QaQuestionSet>
 }

@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component
 @Component
 class BedrockLlmProviderClient(
     private val bedrockProperties: BedrockProperties
-) : LlmProviderClient {
+) : LlmProviderClient, EmbeddingProviderClient {
     override val provider: AiProvider = AiProvider.BEDROCK
 
     override fun isEnabled(): Boolean = bedrockProperties.enabled
@@ -15,6 +15,13 @@ class BedrockLlmProviderClient(
     override fun generateJson(prompt: String, temperature: Double?): LlmGenerationResult {
         error(
             "BEDROCK provider는 아직 구현되지 않았습니다. " +
+                "modelId=${bedrockProperties.modelId}, region=${bedrockProperties.region}"
+        )
+    }
+
+    override fun embedText(text: String): EmbeddingGenerationResult {
+        error(
+            "BEDROCK 임베딩 provider는 아직 구현되지 않았습니다. " +
                 "modelId=${bedrockProperties.modelId}, region=${bedrockProperties.region}"
         )
     }
