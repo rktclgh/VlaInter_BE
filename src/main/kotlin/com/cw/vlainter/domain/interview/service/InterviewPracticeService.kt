@@ -1,5 +1,6 @@
 package com.cw.vlainter.domain.interview.service
 
+import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.dto.BookmarkTurnRequest
 import com.cw.vlainter.domain.interview.dto.InterviewQuestionResponse
 import com.cw.vlainter.domain.interview.dto.QuestionAttemptResponse
@@ -47,6 +48,7 @@ import kotlin.math.min
 
 @Service
 class InterviewPracticeService(
+    private val interviewAiOrchestrator: InterviewAiOrchestrator,
     private val categoryRepository: QaCategoryRepository,
     private val questionRepository: QaQuestionRepository,
     private val questionSetRepository: QaQuestionSetRepository,
@@ -132,10 +134,10 @@ class InterviewPracticeService(
                 totalScore = evaluation.score,
                 feedback = evaluation.feedback,
                 bestPractice = evaluation.bestPractice,
-                rubricScoresJson = """{"coverage":${evaluation.score},"clarity":${evaluation.score}}""",
-                evidenceJson = "[]",
-                model = "heuristic",
-                modelVersion = "v1"
+                rubricScoresJson = evaluation.rubricScoresJson,
+                evidenceJson = evaluation.evidenceJson,
+                model = evaluation.model,
+                modelVersion = evaluation.modelVersion
             )
         )
 
@@ -361,7 +363,24 @@ class InterviewPracticeService(
             return EvaluationResult(
                 score = BigDecimal.ZERO.setScale(2),
                 feedback = "답변이 비어 있습니다. 핵심 내용을 포함해 다시 작성해 주세요.",
-                bestPractice = "질문 의도 1문장, 근거 2~3문장, 결론 1문장 구조로 답변하세요."
+                bestPractice = "질문 의도 1문장, 근거 2~3문장, 결론 1문장 구조로 답변하세요.",
+                rubricScoresJson = """{"coverage":0,"accuracy":0,"communication":0}""",
+                evidenceJson = "[]",
+                model = "heuristic",
+                modelVersion = "v1"
+            )
+        }
+
+        val aiEvaluation = interviewAiOrchestrator.evaluateTechAnswer(question, trimmed)
+        if (aiEvaluation != null) {
+            return EvaluationResult(
+                score = aiEvaluation.score,
+                feedback = aiEvaluation.feedback,
+                bestPractice = aiEvaluation.bestPractice,
+                rubricScoresJson = aiEvaluation.rubricScoresJson,
+                evidenceJson = aiEvaluation.evidenceJson,
+                model = aiEvaluation.model,
+                modelVersion = aiEvaluation.modelVersion
             )
         }
 
@@ -407,6 +426,10 @@ class InterviewPracticeService(
     private data class EvaluationResult(
         val score: BigDecimal,
         val feedback: String,
-        val bestPractice: String
+        val bestPractice: String,
+        val rubricScoresJson: String = """{"coverage":0,"accuracy":0,"communication":0}""",
+        val evidenceJson: String = "[]",
+        val model: String = "heuristic",
+        val modelVersion: String? = "v1"
     )
 }
