@@ -356,6 +356,7 @@ class UserFileService(
         val displayFileName = file.originalFileName.takeIf { it.isNotBlank() } ?: file.fileName
         val latestIngestionJob = if (file.fileType == FileType.PROFILE_IMAGE) null
         else documentIngestionJobRepository.findTopByDocumentFileIdOrderByRequestedAtDesc(file.id)
+        val extractionMethod = extractMetadataExtractionMethod(latestIngestionJob?.metadataJson)
         return UserFileResponse(
             fileId = file.id,
             userId = file.user.id,
@@ -369,15 +370,19 @@ class UserFileService(
             active = file.isActive,
             ingestionStatus = latestIngestionJob?.status?.name,
             ingested = latestIngestionJob?.status?.name == "READY",
-            extractionMethod = extractMetadataText(latestIngestionJob?.metadataJson, "extractionMethod"),
-            ocrUsed = extractMetadataText(latestIngestionJob?.metadataJson, "extractionMethod") == "OCR_TESSERACT"
+            extractionMethod = extractionMethod,
+            ocrUsed = extractionMethod == "OCR_TESSERACT"
         )
     }
 
-    private fun extractMetadataText(rawJson: String?, fieldName: String): String? {
+    private fun extractMetadataExtractionMethod(rawJson: String?): String? {
         if (rawJson.isNullOrBlank()) return null
         return runCatching {
-            objectMapper.readTree(rawJson).path(fieldName).takeIf { !it.isMissingNode && !it.isNull }?.asText()?.trim()
+            objectMapper.readTree(rawJson)
+                .path("extractionMethod")
+                .takeIf { !it.isMissingNode && !it.isNull }
+                ?.asText()
+                ?.trim()
         }.getOrNull().takeIf { !it.isNullOrBlank() }
     }
 

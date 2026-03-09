@@ -12,8 +12,6 @@ interface QaCategoryRepository : JpaRepository<QaCategory, Long> {
 
     fun findAllByPathStartingWithAndDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc(pathPrefix: String): List<QaCategory>
 
-    fun findAllByParent_IdAndDeletedAtIsNullOrderBySortOrderAsc(parentId: Long): List<QaCategory>
-
     fun findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc(): List<QaCategory>
 
     fun existsByParent_IdAndCodeAndDeletedAtIsNull(parentId: Long, code: String): Boolean

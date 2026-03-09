@@ -1,3 +1,5 @@
+@file:Suppress("JpaDataSourceORMInspection", "unused")
+
 package com.cw.vlainter.domain.interview.entity
 
 import jakarta.persistence.Column

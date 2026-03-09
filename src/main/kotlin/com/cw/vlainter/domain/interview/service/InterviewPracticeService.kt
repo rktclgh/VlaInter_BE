@@ -54,7 +54,6 @@ import org.springframework.web.server.ResponseStatusException
 import java.security.MessageDigest
 import java.time.OffsetDateTime
 import kotlin.math.max
-import kotlin.math.min
 
 @Service
 class InterviewPracticeService(
@@ -709,7 +708,7 @@ class InterviewPracticeService(
         val cursor = node["cursor"]?.asInt() ?: 0
         val meta = node["meta"]
             ?.takeIf { it.isObject }
-            ?.fields()
+            ?.properties()
             ?.asSequence()
             ?.associate { (key, value) ->
                 key to when {

@@ -1,3 +1,5 @@
+@file:Suppress("NonAsciiCharacters")
+
 package com.cw.vlainter.domain.interview.service
 
 import com.cw.vlainter.domain.interview.dto.AddQuestionToSetRequest
@@ -51,7 +53,7 @@ class QuestionSetServiceTests {
 
     @Test
     fun `addQuestionToSet는 직무 기술 평문을 저장하고 응답에 반영한다`() {
-        val actor = createUser(id = 7L)
+        val actor = createUser()
         val set = QaQuestionSet(
             id = 100L,
             ownerUser = actor,
@@ -131,8 +133,8 @@ class QuestionSetServiceTests {
         assertThat(set.skillName).isEqualTo("재무회계")
     }
 
-    private fun createUser(id: Long): User = User(
-        id = id,
+    private fun createUser(): User = User(
+        id = 7L,
         email = "tester@vlainter.com",
         password = "encoded-password",
         name = "Tester",

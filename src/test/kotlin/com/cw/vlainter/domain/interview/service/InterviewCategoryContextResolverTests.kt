@@ -1,3 +1,5 @@
+@file:Suppress("NonAsciiCharacters")
+
 package com.cw.vlainter.domain.interview.service
 
 import com.cw.vlainter.domain.interview.entity.QaCategory

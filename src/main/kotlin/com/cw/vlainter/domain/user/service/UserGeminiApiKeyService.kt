@@ -47,12 +47,10 @@ class UserGeminiApiKeyService(
         return !user.geminiApiKeyEncrypted.isNullOrBlank()
     }
 
-    @Transactional(readOnly = true)
     fun assertGeminiApiKeyConfigured(userId: Long) {
         getRequiredDecryptedGeminiApiKey(userId)
     }
 
-    @Transactional(readOnly = true)
     fun getRequiredDecryptedGeminiApiKey(userId: Long): String {
         val user = loadActiveUser(userId)
         val encrypted = user.geminiApiKeyEncrypted?.trim().orEmpty()

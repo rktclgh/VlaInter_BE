@@ -20,6 +20,7 @@ fun isGuideLikeText(value: String?): Boolean {
     return GUIDE_LIKE_PATTERNS.any { it.containsMatchIn(text) }
 }
 
+@Suppress("UNUSED_PARAMETER")
 fun resolveAnswerContent(
     questionText: String,
     rawModelAnswer: String?,

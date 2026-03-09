@@ -8,6 +8,7 @@ enum class QuestionSetVisibility {
     PRIVATE, GLOBAL
 }
 
+@Suppress("unused")
 enum class QuestionSetStatus {
     ACTIVE, ARCHIVED
 }
@@ -24,6 +25,7 @@ enum class InterviewMode {
     DOC, TECH, MIXED, QUESTION_SET_PRACTICE
 }
 
+@Suppress("unused")
 enum class InterviewStatus {
     IN_PROGRESS, FINISHING, DONE, FAILED, CANCELLED
 }

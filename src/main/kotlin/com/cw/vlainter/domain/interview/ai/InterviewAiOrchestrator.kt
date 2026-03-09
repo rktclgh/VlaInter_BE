@@ -456,7 +456,7 @@ class InterviewAiOrchestrator(
         val seen = linkedSetOf<String>()
         return generated.mapNotNull { item ->
             val normalizedQuestion = item.questionText.replace(Regex("\\s+"), " ").trim()
-            if (!isUsableTechQuestion(normalizedQuestion, labels)) return@mapNotNull null
+            if (!isUsableTechQuestion(normalizedQuestion)) return@mapNotNull null
             val fingerprint = normalizedQuestion
                 .lowercase()
                 .replace(Regex("[^a-z0-9가-힣]+"), "")
@@ -515,7 +515,7 @@ class InterviewAiOrchestrator(
             "rate limit" in message
     }
 
-    private fun isUsableTechQuestion(questionText: String, labels: CategoryLabels): Boolean {
+    private fun isUsableTechQuestion(questionText: String): Boolean {
         if (questionText.length < 18) return false
         // NOTE:
         // 아래 하드 필터는 난이도/도메인 다양성에서 과도하게 탈락을 발생시켜 비활성화한다.
@@ -527,24 +527,9 @@ class InterviewAiOrchestrator(
         // if (bannedFragments.any { lowered.contains(it) }) return false
         // if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED)\\b").containsMatchIn(questionText)) return false
         // if (Regex("설명해 주세요\\.?$").find(questionText)?.range?.first == 0 && questionText.length < 24) return false
-        // val skillKeywords = buildSkillKeywords(labels.skillLabel)
+        // val skillKeywords = buildSkillKeywords(skillLabel)
         // return skillKeywords.any { keyword -> keyword.isNotBlank() && lowered.contains(keyword) }
         return true
-    }
-
-    private fun buildSkillKeywords(skillLabel: String): Set<String> {
-        val base = skillLabel.trim().lowercase()
-        val keywords = linkedSetOf(base)
-        when {
-            "spring" in base -> keywords += listOf("spring", "spring boot", "bean", "transaction", "jpa")
-            "react" in base -> keywords += listOf("react", "hook", "state", "component")
-            "docker" in base -> keywords += listOf("docker", "image", "container")
-            "kubernetes" in base || "k8s" in base -> keywords += listOf("kubernetes", "k8s", "pod", "deployment")
-            "jpa" in base || "hibernate" in base -> keywords += listOf("jpa", "hibernate", "entity", "fetch")
-            "rag" in base -> keywords += listOf("rag", "retrieval", "embedding", "chunk")
-            "cloud" in base -> keywords += listOf("cloud", "autoscaling", "load balancer", "iam", "vpc")
-        }
-        return keywords
     }
 
     private fun isGuideLikeModelAnswer(answer: String): Boolean {
@@ -572,28 +557,6 @@ class InterviewAiOrchestrator(
             normalized += labels.skillLabel.uppercase().replace(Regex("[^A-Z0-9가-힣]+"), "_").trim('_')
         }
         return normalized
-    }
-
-    private fun isAnswerLinkedToQuestion(answer: String, questionText: String, skillLabel: String): Boolean {
-        val answerTokens = answer.lowercase()
-            .split(Regex("[^0-9a-zA-Z가-힣]+"))
-            .filter { it.length >= 2 }
-            .toSet()
-        if (answerTokens.size < 6) return false
-
-        val questionTokens = questionText.lowercase()
-            .split(Regex("[^0-9a-zA-Z가-힣]+"))
-            .filter { it.length >= 2 }
-            .toSet()
-
-        val skillTokens = skillLabel.lowercase()
-            .split(Regex("[^0-9a-zA-Z가-힣]+"))
-            .filter { it.length >= 2 }
-            .toSet()
-
-        val overlapWithQuestion = questionTokens.intersect(answerTokens).size
-        val overlapWithSkill = skillTokens.intersect(answerTokens).size
-        return overlapWithQuestion >= 2 && overlapWithSkill >= 1
     }
 
     private fun buildSnippetValidationPrompt(fileTypeLabel: String, snippets: List<String>): String {
