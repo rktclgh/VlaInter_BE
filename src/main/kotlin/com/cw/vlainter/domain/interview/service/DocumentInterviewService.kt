@@ -101,6 +101,10 @@ class DocumentInterviewService(
     private val selfProvider: ObjectProvider<DocumentInterviewService>,
     private val userGeminiApiKeyService: UserGeminiApiKeyService
 ) {
+    companion object {
+        private const val AI_GENERATED_SET_DESCRIPTION = "모의면접 시작 시 자동 생성된 기술 문답"
+    }
+
     private val logger = LoggerFactory.getLogger(javaClass)
     @Volatile
     private var availableTesseractLanguages: Set<String>? = null
@@ -789,8 +793,15 @@ class DocumentInterviewService(
         }
         if (generated.isEmpty()) return emptyList()
 
-        val autoSetTitle = "AUTO:$jobName/$skillName"
-        val autoSet = questionSetRepository.findLatestByOwnerUserIdAndTitle(actor.id, autoSetTitle)
+        val autoSetTitle = "$jobName / $skillName"
+        val autoSet = questionSetRepository.findFirstByOwnerUser_IdAndOwnerTypeAndVisibilityAndJobNameAndSkillNameAndDescriptionAndDeletedAtIsNullOrderByCreatedAtDesc(
+            userId = actor.id,
+            ownerType = QuestionSetOwnerType.USER,
+            visibility = QuestionSetVisibility.PRIVATE,
+            jobName = jobName,
+            skillName = skillName,
+            description = AI_GENERATED_SET_DESCRIPTION
+        )
             ?: questionSetRepository.save(
                 QaQuestionSet(
                     ownerUser = actor,
@@ -798,7 +809,7 @@ class DocumentInterviewService(
                     title = autoSetTitle,
                     jobName = jobName,
                     skillName = skillName,
-                    description = "모의면접 시작 시 자동 생성된 기술 문답",
+                    description = AI_GENERATED_SET_DESCRIPTION,
                     visibility = QuestionSetVisibility.PRIVATE,
                     status = QuestionSetStatus.ACTIVE
                 )
@@ -891,7 +902,7 @@ class DocumentInterviewService(
                 InterviewTurn(
                     session = session,
                     turnNo = 1,
-                    sourceTag = if (questionSetItemRepository.existsInAutoSetByQuestionId(question.id)) {
+                    sourceTag = if (questionSetItemRepository.existsInAiGeneratedSetByQuestionId(question.id)) {
                         TurnSourceTag.SYSTEM
                     } else {
                         when (question.sourceTag) {

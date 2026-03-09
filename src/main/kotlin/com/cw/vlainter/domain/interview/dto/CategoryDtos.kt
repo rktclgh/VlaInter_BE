@@ -34,6 +34,7 @@ data class CategoryResponse(
     val name: String,
     val description: String?,
     val depth: Int,
+    val depthLabel: String,
     val path: String,
     val sortOrder: Int,
     val isActive: Boolean,

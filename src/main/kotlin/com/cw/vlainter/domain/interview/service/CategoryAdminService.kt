@@ -34,12 +34,16 @@ class CategoryAdminService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카테고리 이름은 필수입니다.")
         }
 
+        val depth = (parent?.depth ?: -1) + 1
+        if (depth !in 0..2) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카테고리는 계열(0) / 직무(1) / 기술(2) 깊이까지만 생성할 수 있습니다.")
+        }
+
         val normalizedCode = allocateUniqueCode(parent?.id, normalizeCode(request.code ?: normalizedName))
         if (hasDuplicateName(parent, normalizedName)) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "같은 위치에 동일한 이름의 카테고리가 이미 존재합니다.")
         }
 
-        val depth = (parent?.depth ?: -1) + 1
         val path = (parent?.path ?: "") + "/$normalizedCode"
         val saved = categoryRepository.save(
             QaCategory(
@@ -95,6 +99,25 @@ class CategoryAdminService(
         }
         if (hasDuplicateName(newParent, category.name)) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "같은 위치에 동일한 이름의 카테고리가 이미 존재합니다.")
+        }
+
+        when (category.depth) {
+            0 -> {
+                if (newParent != null) {
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "계열(depth 0)은 부모 카테고리를 가질 수 없습니다.")
+                }
+            }
+            1 -> {
+                if (newParent == null || newParent.depth != 0) {
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "직무(depth 1)는 계열(depth 0)로만 이동할 수 있습니다.")
+                }
+            }
+            2 -> {
+                if (newParent == null || newParent.depth != 1) {
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술(depth 2)은 직무(depth 1)로만 이동할 수 있습니다.")
+                }
+            }
+            else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않는 depth 카테고리입니다.")
         }
 
         val oldPath = category.path
@@ -182,10 +205,18 @@ class CategoryAdminService(
             name = category.name,
             description = category.description,
             depth = category.depth,
+            depthLabel = depthLabel(category.depth),
             path = category.path,
             sortOrder = category.sortOrder,
             isActive = category.isActive,
             isLeaf = category.isLeaf
         )
+    }
+
+    private fun depthLabel(depth: Int): String = when (depth) {
+        0 -> "계열"
+        1 -> "직무"
+        2 -> "기술"
+        else -> "기타"
     }
 }

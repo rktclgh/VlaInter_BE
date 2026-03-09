@@ -91,4 +91,13 @@ class InterviewPracticeController(
     ): ResponseEntity<List<QuestionAttemptResponse>> {
         return ResponseEntity.ok(interviewPracticeService.getMyAttemptsByQuestion(principal, questionId))
     }
+
+    @PostMapping("/questions/{questionId}/save")
+    fun saveQuestion(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable questionId: Long,
+        @RequestBody(required = false) request: BookmarkTurnRequest?
+    ): ResponseEntity<SavedQuestionResponse> {
+        return ResponseEntity.ok(interviewPracticeService.saveQuestion(principal, questionId, request ?: BookmarkTurnRequest()))
+    }
 }

@@ -76,6 +76,10 @@ class InterviewPracticeService(
     private val objectMapper: ObjectMapper,
     private val entityManager: EntityManager
 ) {
+    companion object {
+        private const val AI_GENERATED_SET_DESCRIPTION = "카테고리 기반 자동 생성 문답"
+    }
+
     @Transactional
     fun startTechInterview(principal: AuthPrincipal, request: StartTechInterviewRequest): StartTechInterviewResponse {
         val actor = loadUser(principal.userId)
@@ -299,6 +303,48 @@ class InterviewPracticeService(
         return toSavedQuestionResponse(saved)
     }
 
+    @Transactional
+    fun saveQuestion(principal: AuthPrincipal, questionId: Long, request: BookmarkTurnRequest): SavedQuestionResponse {
+        val actor = loadUser(principal.userId)
+        val question = questionRepository.findByIdAndDeletedAtIsNull(questionId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "저장할 질문을 찾을 수 없습니다.")
+        val accessible = questionSetItemRepository.existsAccessibleByQuestionIdAndUserId(question.id, principal.userId)
+        if (!accessible) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "해당 질문에 접근할 수 없습니다.")
+        }
+
+        val existing = savedQuestionRepository.findTopByUser_IdAndQuestion_IdOrderByCreatedAtDesc(principal.userId, question.id)
+        if (existing != null) {
+            val nextNote = request.note?.trim()
+            if (!nextNote.isNullOrBlank()) {
+                existing.note = nextNote
+            }
+            return toSavedQuestionResponse(existing)
+        }
+
+        val saved = savedQuestionRepository.save(
+            SavedQuestion(
+                user = actor,
+                question = question,
+                documentQuestion = null,
+                sourceTurn = null,
+                questionTextSnapshot = question.questionText,
+                categorySnapshot = question.category.name,
+                jobSnapshot = question.jobName ?: question.category.parent?.name?.trim(),
+                skillSnapshot = question.skillName ?: question.category.name.trim(),
+                category = question.category,
+                difficulty = question.difficulty.name,
+                sourceTag = when (question.sourceTag) {
+                    QuestionSourceTag.SYSTEM -> TurnSourceTag.SYSTEM.name
+                    QuestionSourceTag.USER -> TurnSourceTag.USER.name
+                },
+                tagsJson = question.tagsJson,
+                note = request.note?.trim()
+            )
+        )
+        return toSavedQuestionResponse(saved)
+    }
+
     @Transactional(readOnly = true)
     fun getSavedQuestions(principal: AuthPrincipal): List<SavedQuestionResponse> {
         return savedQuestionRepository.findAllByUser_IdOrderByCreatedAtDesc(principal.userId)
@@ -440,8 +486,15 @@ class InterviewPracticeService(
         )
         if (generated.isEmpty()) return emptyList()
 
-        val setTitle = "AUTO:$jobName/$skillName"
-        val autoSet = questionSetRepository.findLatestByOwnerUserIdAndTitle(owner.id, setTitle)
+        val setTitle = "$jobName / $skillName"
+        val autoSet = questionSetRepository.findFirstByOwnerUser_IdAndOwnerTypeAndVisibilityAndJobNameAndSkillNameAndDescriptionAndDeletedAtIsNullOrderByCreatedAtDesc(
+            userId = owner.id,
+            ownerType = QuestionSetOwnerType.USER,
+            visibility = QuestionSetVisibility.PRIVATE,
+            jobName = jobName,
+            skillName = skillName,
+            description = AI_GENERATED_SET_DESCRIPTION
+        )
             ?: questionSetRepository.save(
                 QaQuestionSet(
                     ownerUser = owner,
@@ -449,7 +502,7 @@ class InterviewPracticeService(
                     title = setTitle,
                     jobName = jobName,
                     skillName = skillName,
-                    description = "카테고리 기반 자동 생성 문답",
+                    description = AI_GENERATED_SET_DESCRIPTION,
                     visibility = QuestionSetVisibility.PRIVATE,
                     status = QuestionSetStatus.ACTIVE
                 )
@@ -524,7 +577,7 @@ class InterviewPracticeService(
     }
 
     private fun toTurnSource(question: QaQuestion): TurnSourceTag {
-        if (questionSetItemRepository.existsInAutoSetByQuestionId(question.id)) {
+        if (questionSetItemRepository.existsInAiGeneratedSetByQuestionId(question.id)) {
             return TurnSourceTag.SYSTEM
         }
         return when (question.sourceTag) {
@@ -617,7 +670,7 @@ class InterviewPracticeService(
     }
 
     private fun normalizedTurnSourceTag(turn: InterviewTurn): TurnSourceTag {
-        if (turn.sourceTag == TurnSourceTag.USER && turn.question?.id?.let { questionSetItemRepository.existsInAutoSetByQuestionId(it) } == true) {
+        if (turn.sourceTag == TurnSourceTag.USER && turn.question?.id?.let { questionSetItemRepository.existsInAiGeneratedSetByQuestionId(it) } == true) {
             return TurnSourceTag.SYSTEM
         }
         return turn.sourceTag
@@ -626,7 +679,7 @@ class InterviewPracticeService(
     private fun normalizeSavedSourceTag(saved: SavedQuestion): String? {
         val current = saved.sourceTag ?: return null
         if (current != TurnSourceTag.USER.name) return current
-        if (saved.question?.id?.let { questionSetItemRepository.existsInAutoSetByQuestionId(it) } == true) {
+        if (saved.question?.id?.let { questionSetItemRepository.existsInAiGeneratedSetByQuestionId(it) } == true) {
             return TurnSourceTag.SYSTEM.name
         }
         return current

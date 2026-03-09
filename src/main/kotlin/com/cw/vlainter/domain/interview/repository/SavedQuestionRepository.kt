@@ -9,4 +9,5 @@ interface SavedQuestionRepository : JpaRepository<SavedQuestion, Long> {
     fun findByIdAndUser_Id(id: Long, userId: Long): SavedQuestion?
 
     fun existsByUser_IdAndSourceTurn_Id(userId: Long, sourceTurnId: Long): Boolean
+    fun findTopByUser_IdAndQuestion_IdOrderByCreatedAtDesc(userId: Long, questionId: Long): SavedQuestion?
 }

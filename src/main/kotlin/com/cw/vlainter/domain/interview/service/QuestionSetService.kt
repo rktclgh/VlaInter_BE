@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.interview.service
 
 import com.cw.vlainter.domain.interview.dto.AddQuestionToSetRequest
 import com.cw.vlainter.domain.interview.dto.CreateQuestionSetRequest
+import com.cw.vlainter.domain.interview.dto.UpdateQuestionSetRequest
 import com.cw.vlainter.domain.interview.dto.QuestionSetSummaryResponse
 import com.cw.vlainter.domain.interview.dto.QuestionSummaryResponse
 import com.cw.vlainter.domain.interview.entity.QaQuestion
@@ -56,23 +57,36 @@ class QuestionSetService(
         return toSummary(saved, 0)
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     fun getMyAndGlobalSets(principal: AuthPrincipal): List<QuestionSetSummaryResponse> {
-        val mySets = questionSetRepository.findVisibleUserSets(principal.userId)
-        val globalSets = questionSetRepository.findAllByVisibilityAndStatusAndDeletedAtIsNullOrderByCreatedAtDesc(
-            visibility = QuestionSetVisibility.GLOBAL,
-            status = QuestionSetStatus.ACTIVE
-        )
+        return getMySets(principal) + getGlobalSets(principal)
+    }
 
-        val merged = (mySets + globalSets)
-            .associateBy { it.id }
-            .values
-            .sortedByDescending { it.createdAt }
-
-        return merged.map { set ->
+    @Transactional
+    fun getMySets(principal: AuthPrincipal): List<QuestionSetSummaryResponse> {
+        return questionSetRepository.findVisibleUserSets(principal.userId).map { set ->
+            normalizeLegacyTitleIfNeeded(set)
             val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
             toSummary(set, count)
         }
+    }
+
+    @Transactional
+    fun getGlobalSets(principal: AuthPrincipal): List<QuestionSetSummaryResponse> {
+        val admin = principal.role == UserRole.ADMIN
+        return questionSetRepository.findAllByVisibilityAndStatusAndDeletedAtIsNullOrderByCreatedAtDesc(
+            visibility = QuestionSetVisibility.GLOBAL,
+            status = QuestionSetStatus.ACTIVE
+        )
+            .filter { set ->
+                // 관리자도 조회 가능하며, 일반 사용자는 비삭제된 공용 세트만 조회합니다.
+                admin || set.deletedAt == null
+            }
+            .map { set ->
+                normalizeLegacyTitleIfNeeded(set)
+                val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
+                toSummary(set, count)
+            }
     }
 
     @Transactional
@@ -162,14 +176,96 @@ class QuestionSetService(
             .map { toQuestionSummary(it.question) }
     }
 
-    @Transactional(readOnly = true)
-    fun getAllSetsForAdmin(principal: AuthPrincipal): List<QuestionSetSummaryResponse> {
+    @Transactional
+    fun getAllSetsForAdmin(principal: AuthPrincipal, keyword: String? = null): List<QuestionSetSummaryResponse> {
         ensureAdmin(principal)
+        val normalizedKeyword = keyword?.trim().orEmpty().lowercase()
         return questionSetRepository.findAllByDeletedAtIsNullOrderByCreatedAtDesc()
+            .filter { set ->
+                if (normalizedKeyword.isBlank()) return@filter true
+                listOf(
+                    set.title,
+                    set.description,
+                    set.jobName,
+                    set.skillName,
+                    set.ownerUser?.name,
+                    set.ownerUser?.id?.toString()
+                )
+                    .filterNotNull()
+                    .joinToString(" ")
+                    .lowercase()
+                    .contains(normalizedKeyword)
+            }
             .map { set ->
+                normalizeLegacyTitleIfNeeded(set)
                 val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
                 toSummary(set, count)
             }
+    }
+
+    @Transactional
+    fun updateSetByAdmin(
+        principal: AuthPrincipal,
+        setId: Long,
+        request: UpdateQuestionSetRequest
+    ): QuestionSetSummaryResponse {
+        ensureAdmin(principal)
+        val actor = loadUser(principal.userId)
+        val set = questionSetRepository.findByIdAndDeletedAtIsNull(setId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "질문 세트를 찾을 수 없습니다.")
+
+        request.title?.let { title ->
+            val normalized = title.trim()
+            if (normalized.isBlank()) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 세트 제목은 비어 있을 수 없습니다.")
+            }
+            set.title = normalized
+        }
+        request.description?.let { set.description = it.trim().ifBlank { null } }
+        request.visibility?.let { set.visibility = it }
+        request.status?.let { set.status = it }
+        set.promotedBy = actor
+        set.promotedAt = OffsetDateTime.now()
+
+        val saved = questionSetRepository.save(set)
+        val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(saved.id).toInt()
+        return toSummary(saved, count)
+    }
+
+    @Transactional
+    fun deleteSetByAdmin(principal: AuthPrincipal, setId: Long) {
+        ensureAdmin(principal)
+        val set = questionSetRepository.findByIdAndDeletedAtIsNull(setId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "질문 세트를 찾을 수 없습니다.")
+        softDeleteSet(set)
+    }
+
+    @Transactional
+    fun updateMySet(
+        principal: AuthPrincipal,
+        setId: Long,
+        request: UpdateQuestionSetRequest
+    ): QuestionSetSummaryResponse {
+        val set = getOwnedUserSet(principal, setId)
+        request.title?.let { title ->
+            val normalized = title.trim()
+            if (normalized.isBlank()) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 세트 제목은 비어 있을 수 없습니다.")
+            }
+            set.title = normalized
+        }
+        request.description?.let { set.description = it.trim().ifBlank { null } }
+        request.visibility?.let { set.visibility = it }
+        request.status?.let { set.status = it }
+        val saved = questionSetRepository.save(set)
+        val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(saved.id).toInt()
+        return toSummary(saved, count)
+    }
+
+    @Transactional
+    fun deleteMySet(principal: AuthPrincipal, setId: Long) {
+        val set = getOwnedUserSet(principal, setId)
+        softDeleteSet(set)
     }
 
     @Transactional
@@ -183,7 +279,7 @@ class QuestionSetService(
             QaQuestionSet(
                 ownerUser = actor,
                 ownerType = QuestionSetOwnerType.ADMIN,
-                title = "${sourceSet.title} (공용)",
+                title = normalizeLegacyTitle(sourceSet.title),
                 jobName = sourceSet.jobName,
                 skillName = sourceSet.skillName,
                 description = sourceSet.description,
@@ -224,6 +320,29 @@ class QuestionSetService(
         return set
     }
 
+    private fun getOwnedUserSet(principal: AuthPrincipal, setId: Long): QaQuestionSet {
+        val set = questionSetRepository.findByIdAndDeletedAtIsNull(setId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "질문 세트를 찾을 수 없습니다.")
+        val ownerId = set.ownerUser?.id
+        if (ownerId != principal.userId) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "소유자만 질문 세트를 수정/삭제할 수 있습니다.")
+        }
+        if (set.ownerType != QuestionSetOwnerType.USER) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "사용자 생성 질문 세트만 수정/삭제할 수 있습니다.")
+        }
+        return set
+    }
+
+    private fun softDeleteSet(set: QaQuestionSet) {
+        val now = OffsetDateTime.now()
+        set.deletedAt = now
+        set.status = QuestionSetStatus.ARCHIVED
+        questionSetItemRepository.findAllBySet_IdOrderByOrderNoAsc(set.id).forEach { item ->
+            item.isActive = false
+        }
+        questionSetRepository.save(set)
+    }
+
     private fun ensureAdmin(principal: AuthPrincipal) {
         if (principal.role != UserRole.ADMIN) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "관리자만 접근 가능합니다.")
@@ -234,18 +353,49 @@ class QuestionSetService(
         .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "사용자 정보를 찾을 수 없습니다.") }
 
     private fun toSummary(set: QaQuestionSet, questionCount: Int): QuestionSetSummaryResponse {
+        val owner = set.ownerUser
+        val certified = set.ownerType == QuestionSetOwnerType.ADMIN || set.isPromoted || set.visibility == QuestionSetVisibility.GLOBAL
+        val aiGenerated = set.ownerType == QuestionSetOwnerType.USER &&
+            questionSetItemRepository.existsBySet_IdAndQuestion_SourceTag(set.id, QuestionSourceTag.SYSTEM)
         return QuestionSetSummaryResponse(
             setId = set.id,
             title = set.title,
             description = set.description,
             jobName = set.jobName,
             skillName = set.skillName,
+            ownerUserId = owner?.id,
+            ownerName = owner?.name,
             ownerType = set.ownerType,
             visibility = set.visibility,
+            status = set.status,
             questionCount = questionCount,
+            certified = certified,
+            aiGenerated = aiGenerated,
             isPromoted = set.isPromoted,
             createdAt = set.createdAt
         )
+    }
+
+    private fun normalizeLegacyTitleIfNeeded(set: QaQuestionSet) {
+        val normalized = normalizeLegacyTitle(set.title)
+        if (normalized != set.title) {
+            set.title = normalized
+            questionSetRepository.save(set)
+        }
+    }
+
+    private fun normalizeLegacyTitle(raw: String): String {
+        var normalized = raw.trim()
+        if (normalized.startsWith("AUTO:", ignoreCase = true)) {
+            normalized = normalized.substringAfter(":").trim()
+        }
+        if (normalized.endsWith("(공용)")) {
+            normalized = normalized.removeSuffix("(공용)").trim()
+        }
+        if (normalized.isBlank()) {
+            normalized = "AI 질문 세트"
+        }
+        return normalized
     }
 
     private fun toQuestionSummary(question: QaQuestion): QuestionSummaryResponse {

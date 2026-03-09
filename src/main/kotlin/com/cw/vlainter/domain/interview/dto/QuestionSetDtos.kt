@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.interview.dto
 
 import com.cw.vlainter.domain.interview.entity.QuestionDifficulty
 import com.cw.vlainter.domain.interview.entity.QuestionSetOwnerType
+import com.cw.vlainter.domain.interview.entity.QuestionSetStatus
 import com.cw.vlainter.domain.interview.entity.QuestionSetVisibility
 import com.cw.vlainter.domain.interview.entity.QuestionSourceTag
 import jakarta.validation.constraints.NotBlank
@@ -21,6 +22,15 @@ data class CreateQuestionSetRequest(
     @field:Size(max = 2000, message = "질문 세트 설명은 2000자 이하여야 합니다.")
     val description: String? = null,
     val visibility: QuestionSetVisibility = QuestionSetVisibility.PRIVATE
+)
+
+data class UpdateQuestionSetRequest(
+    @field:Size(max = 200, message = "질문 세트 제목은 200자 이하여야 합니다.")
+    val title: String? = null,
+    @field:Size(max = 2000, message = "질문 세트 설명은 2000자 이하여야 합니다.")
+    val description: String? = null,
+    val visibility: QuestionSetVisibility? = null,
+    val status: QuestionSetStatus? = null
 )
 
 data class AddQuestionToSetRequest(
@@ -44,9 +54,14 @@ data class QuestionSetSummaryResponse(
     val description: String?,
     val jobName: String?,
     val skillName: String?,
+    val ownerUserId: Long?,
+    val ownerName: String?,
     val ownerType: QuestionSetOwnerType,
     val visibility: QuestionSetVisibility,
+    val status: QuestionSetStatus,
     val questionCount: Int,
+    val certified: Boolean,
+    val aiGenerated: Boolean,
     val isPromoted: Boolean,
     val createdAt: OffsetDateTime?
 )

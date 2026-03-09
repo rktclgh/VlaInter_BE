@@ -12,30 +12,24 @@ interface QaQuestionSetRepository : JpaRepository<QaQuestionSet, Long> {
 
     @Query(
         """
-        select q
-        from QaQuestionSet q
-        where q.ownerUser.id = :userId
-          and q.title = :title
-          and q.deletedAt is null
-        order by q.createdAt desc
-        """
-    )
-    fun findLatestByOwnerUserIdAndTitle(
-        @Param("userId") userId: Long,
-        @Param("title") title: String
-    ): QaQuestionSet?
-
-    @Query(
-        """
         select s
         from QaQuestionSet s
         where s.ownerUser.id = :userId
+          and s.ownerType = com.cw.vlainter.domain.interview.entity.QuestionSetOwnerType.USER
           and s.deletedAt is null
-          and upper(s.title) not like 'AUTO:%'
         order by s.createdAt desc
         """
     )
     fun findVisibleUserSets(@Param("userId") userId: Long): List<QaQuestionSet>
+
+    fun findFirstByOwnerUser_IdAndOwnerTypeAndVisibilityAndJobNameAndSkillNameAndDescriptionAndDeletedAtIsNullOrderByCreatedAtDesc(
+        userId: Long,
+        ownerType: com.cw.vlainter.domain.interview.entity.QuestionSetOwnerType,
+        visibility: QuestionSetVisibility,
+        jobName: String,
+        skillName: String,
+        description: String
+    ): QaQuestionSet?
 
     fun findAllByVisibilityAndStatusAndDeletedAtIsNullOrderByCreatedAtDesc(
         visibility: QuestionSetVisibility,
