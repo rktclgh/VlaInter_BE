@@ -769,11 +769,14 @@ class DocumentInterviewService(
                         jobName = jobName,
                         skillName = skillName,
                         difficulty = difficulty ?: QuestionDifficulty.MEDIUM,
-                        sourceTag = QuestionSourceTag.USER,
+                        sourceTag = QuestionSourceTag.SYSTEM,
                         tagsJson = objectMapper.writeValueAsString(item.tags.distinct()),
                         createdBy = actor
                     )
                 )
+            if (question.sourceTag != QuestionSourceTag.SYSTEM) {
+                question.sourceTag = QuestionSourceTag.SYSTEM
+            }
             if (!questionSetItemRepository.existsBySet_IdAndQuestion_Id(autoSet.id, question.id)) {
                 val nextOrder = questionSetItemRepository.findMaxOrderNo(autoSet.id) + 1
                 questionSetItemRepository.save(
@@ -840,9 +843,13 @@ class DocumentInterviewService(
                 InterviewTurn(
                     session = session,
                     turnNo = 1,
-                    sourceTag = when (question.sourceTag.name) {
-                        "SYSTEM" -> TurnSourceTag.SYSTEM
-                        else -> TurnSourceTag.USER
+                    sourceTag = if (questionSetItemRepository.existsInAutoSetByQuestionId(question.id)) {
+                        TurnSourceTag.SYSTEM
+                    } else {
+                        when (question.sourceTag) {
+                            QuestionSourceTag.SYSTEM -> TurnSourceTag.SYSTEM
+                            QuestionSourceTag.USER -> TurnSourceTag.USER
+                        }
                     },
                     question = question,
                     questionTextSnapshot = question.questionText,

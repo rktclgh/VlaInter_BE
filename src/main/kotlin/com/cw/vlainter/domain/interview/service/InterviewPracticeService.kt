@@ -279,6 +279,7 @@ class InterviewPracticeService(
         }
 
         turn.isBookmarked = true
+        val normalizedSourceTag = normalizedTurnSourceTag(turn)
         val saved = savedQuestionRepository.save(
             SavedQuestion(
                 user = turn.session.user,
@@ -291,7 +292,7 @@ class InterviewPracticeService(
                 skillSnapshot = turn.skillSnapshot,
                 category = turn.category,
                 difficulty = turn.difficulty,
-                sourceTag = turn.sourceTag.name,
+                sourceTag = normalizedSourceTag.name,
                 tagsJson = turn.tagsJson,
                 note = request.note?.trim()
             )
@@ -347,7 +348,7 @@ class InterviewPracticeService(
                     answerText = turn.userAnswer,
                     category = turn.categorySnapshot,
                     difficulty = turn.difficulty,
-                    sourceTag = turn.sourceTag,
+                    sourceTag = normalizedTurnSourceTag(turn),
                     tags = parseTags(turn.tagsJson),
                     bookmarked = turn.isBookmarked,
                     evaluation = evaluation?.let {
@@ -463,11 +464,14 @@ class InterviewPracticeService(
                         jobName = jobName,
                         skillName = skillName,
                         difficulty = request.difficulty ?: QuestionDifficulty.MEDIUM,
-                        sourceTag = QuestionSourceTag.USER,
+                        sourceTag = QuestionSourceTag.SYSTEM,
                         tagsJson = objectMapper.writeValueAsString(item.tags.distinct()),
                         createdBy = owner
                     )
                 )
+            if (question.sourceTag != QuestionSourceTag.SYSTEM) {
+                question.sourceTag = QuestionSourceTag.SYSTEM
+            }
             if (!questionSetItemRepository.existsBySet_IdAndQuestion_Id(autoSet.id, question.id)) {
                 val nextOrder = questionSetItemRepository.findMaxOrderNo(autoSet.id) + 1
                 questionSetItemRepository.save(
@@ -516,6 +520,9 @@ class InterviewPracticeService(
     }
 
     private fun toTurnSource(question: QaQuestion): TurnSourceTag {
+        if (questionSetItemRepository.existsInAutoSetByQuestionId(question.id)) {
+            return TurnSourceTag.SYSTEM
+        }
         return when (question.sourceTag) {
             QuestionSourceTag.SYSTEM -> TurnSourceTag.SYSTEM
             QuestionSourceTag.USER -> TurnSourceTag.USER
@@ -571,7 +578,7 @@ class InterviewPracticeService(
             questionKind = if (turn.question != null) InterviewQuestionKind.TECH else InterviewQuestionKind.DOCUMENT,
             categoryId = turn.category?.id,
             questionText = turn.questionTextSnapshot,
-            sourceTag = turn.sourceTag,
+            sourceTag = normalizedTurnSourceTag(turn),
             category = turn.categorySnapshot,
             difficulty = turn.difficulty,
             tags = parseTags(turn.tagsJson)
@@ -601,11 +608,27 @@ class InterviewPracticeService(
             answerText = saved.sourceTurn?.userAnswer,
             category = saved.categorySnapshot,
             difficulty = saved.difficulty,
-            sourceTag = saved.sourceTag,
+            sourceTag = normalizeSavedSourceTag(saved),
             tags = parseTags(saved.tagsJson),
             note = saved.note,
             createdAt = saved.createdAt
         )
+    }
+
+    private fun normalizedTurnSourceTag(turn: InterviewTurn): TurnSourceTag {
+        if (turn.sourceTag == TurnSourceTag.USER && turn.question?.id?.let { questionSetItemRepository.existsInAutoSetByQuestionId(it) } == true) {
+            return TurnSourceTag.SYSTEM
+        }
+        return turn.sourceTag
+    }
+
+    private fun normalizeSavedSourceTag(saved: SavedQuestion): String? {
+        val current = saved.sourceTag ?: return null
+        if (current != TurnSourceTag.USER.name) return current
+        if (saved.question?.id?.let { questionSetItemRepository.existsInAutoSetByQuestionId(it) } == true) {
+            return TurnSourceTag.SYSTEM.name
+        }
+        return current
     }
 
     private fun runAfterCommit(callback: () -> Unit) {
