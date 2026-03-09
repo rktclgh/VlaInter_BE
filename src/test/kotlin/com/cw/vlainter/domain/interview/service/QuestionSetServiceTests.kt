@@ -10,7 +10,6 @@ import com.cw.vlainter.domain.interview.entity.QaQuestionSetItem
 import com.cw.vlainter.domain.interview.entity.QuestionDifficulty
 import com.cw.vlainter.domain.interview.entity.QuestionSetOwnerType
 import com.cw.vlainter.domain.interview.entity.QuestionSetVisibility
-import com.cw.vlainter.domain.interview.entity.QuestionSourceTag
 import com.cw.vlainter.domain.interview.repository.QaQuestionRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetItemRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetRepository

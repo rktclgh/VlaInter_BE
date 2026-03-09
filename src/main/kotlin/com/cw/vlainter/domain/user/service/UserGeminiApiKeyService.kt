@@ -36,13 +36,6 @@ class UserGeminiApiKeyService(
         return apiKeyContextHolder.withApiKey(key, block)
     }
 
-    @Transactional(readOnly = true)
-    fun hasGeminiApiKey(userId: Long): Boolean {
-        val user = userRepository.findById(userId)
-            .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "인증이 필요합니다.") }
-        return hasGeminiApiKey(user)
-    }
-
     fun hasGeminiApiKey(user: User): Boolean {
         return !user.geminiApiKeyEncrypted.isNullOrBlank()
     }
