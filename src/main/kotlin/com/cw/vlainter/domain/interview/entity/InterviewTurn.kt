@@ -53,6 +53,12 @@ class InterviewTurn(
     @Column(name = "category_snapshot", length = 80)
     var categorySnapshot: String? = null,
 
+    @Column(name = "job_snapshot", length = 120)
+    var jobSnapshot: String? = null,
+
+    @Column(name = "skill_snapshot", length = 120)
+    var skillSnapshot: String? = null,
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "category_id")
     var category: QaCategory? = null,

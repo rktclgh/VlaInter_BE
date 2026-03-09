@@ -2,7 +2,6 @@ package com.cw.vlainter.domain.interview.ai
 
 import com.cw.vlainter.domain.interview.entity.QaQuestion
 import com.cw.vlainter.domain.interview.entity.QuestionDifficulty
-import com.cw.vlainter.domain.interview.service.buildIdealModelAnswer
 import com.cw.vlainter.global.config.properties.AiProperties
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -18,43 +17,6 @@ class InterviewAiOrchestrator(
     private val objectMapper: ObjectMapper
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
-    private val jobLabels = mapOf(
-        "BACKEND" to "백엔드 개발자",
-        "FRONTEND" to "프론트엔드 개발자",
-        "EMBEDDED" to "임베디드 개발자",
-        "SYSTEM_ARCH" to "시스템 아키텍트",
-        "MOBILE" to "모바일 개발자",
-        "DATA" to "데이터 직무",
-        "AI" to "AI 개발자",
-        "DEVOPS" to "데브옵스 엔지니어",
-        "SECURITY" to "보안 엔지니어",
-        "FINANCE" to "재무",
-        "ACCOUNTING" to "회계",
-        "SALES" to "영업",
-        "MARKETING" to "마케팅",
-        "HR" to "인사",
-        "DESIGN" to "디자인",
-        "PM" to "프로덕트 매니저"
-    )
-    private val skillLabels = mapOf(
-        "SPRING" to "Spring",
-        "REACT" to "React",
-        "NODEJS" to "Node.js",
-        "MSA" to "MSA",
-        "RTOS" to "RTOS",
-        "DDD" to "DDD",
-        "MCU" to "MCU",
-        "CI_CD" to "CI/CD",
-        "GITHUB_ACTIONS" to "GitHub Actions",
-        "JPA" to "JPA",
-        "HIBERNATE" to "Hibernate",
-        "DOCKER" to "Docker",
-        "KUBERNETES" to "Kubernetes",
-        "K8S" to "Kubernetes",
-        "RAG" to "RAG",
-        "STATE_MANAGEMENT" to "상태 관리",
-        "CLOUD" to "클라우드"
-    )
 
     fun evaluateTechAnswer(question: QaQuestion?, userAnswer: String): AiTurnEvaluation? {
         if (userAnswer.isBlank()) return null
@@ -78,46 +40,116 @@ class InterviewAiOrchestrator(
         contextSnippets: List<String>
     ): List<GeneratedDocumentQuestion> {
         require(questionCount > 0) { "questionCount must be positive." }
-        val prompt = buildDocumentQuestionPrompt(fileTypeLabel, difficulty, questionCount, contextSnippets)
-        return runCatching {
-            val generated = llmProviderRouter.generateJson(prompt, temperature = 0.4)
-            parseGeneratedDocumentQuestions(generated.text, fileTypeLabel).take(questionCount)
-        }.onFailure { ex ->
-            logger.warn("문서 질문 생성 실패(provider={}): {}", aiProperties.provider, ex.message)
-        }.getOrElse { ex ->
-            if (aiProperties.fallbackToHeuristic) {
-                buildHeuristicDocumentQuestions(fileTypeLabel, difficulty, questionCount, contextSnippets)
-            } else {
-                throw ex
+        val temperatures = listOf(0.40, 0.50, 0.60, 0.70, 0.80)
+        val collected = linkedMapOf<String, GeneratedDocumentQuestion>()
+        val maxRounds = temperatures.size
+        var round = 0
+        var lastError: Exception? = null
+
+        while (collected.size < questionCount && round < maxRounds) {
+            val remaining = questionCount - collected.size
+            val temperature = temperatures[minOf(round, temperatures.lastIndex)]
+            val prompt = buildDocumentQuestionPrompt(fileTypeLabel, difficulty, remaining, contextSnippets)
+            try {
+                val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
+                val parsed = parseGeneratedDocumentQuestions(generated.text, fileTypeLabel)
+                val validated = validateGeneratedDocumentQuestions(parsed, fileTypeLabel)
+                validated.forEach { item ->
+                    val key = item.questionText.trim().lowercase()
+                    if (key.isNotBlank() && !collected.containsKey(key)) {
+                        collected[key] = item.copy(questionNo = collected.size + 1)
+                    }
+                }
+            } catch (ex: Exception) {
+                lastError = ex
+                logger.warn(
+                    "문서 질문 생성 재시도 실패(provider={}, round={}, remaining={}, temp={}): {}",
+                    aiProperties.provider,
+                    round + 1,
+                    remaining,
+                    temperature,
+                    ex.message
+                )
+                if (isRateLimitError(ex)) {
+                    logger.warn("문서 질문 생성 재시도 중단: rate limit/quota 감지")
+                    break
+                }
             }
+            round += 1
         }
+
+        if (collected.size >= questionCount) {
+            return collected.values.take(questionCount).toList()
+        }
+
+        val cause = lastError?.message?.takeIf { it.isNotBlank() }
+        throw IllegalStateException(
+            "생성된 문서 질문/모범답안이 품질 기준을 충족하지 못했습니다. 잠시 후 다시 시도해 주세요.${cause?.let { " ($it)" } ?: ""}"
+        )
     }
 
     fun generateTechQuestions(
-        categoryPath: String,
+        jobName: String,
+        skillName: String,
         difficulty: QuestionDifficulty?,
         questionCount: Int
     ): List<GeneratedTechQuestion> {
         require(questionCount > 0) { "questionCount must be positive." }
-        val labels = parseCategoryLabels(categoryPath)
-        val prompt = buildTechQuestionPrompt(categoryPath, difficulty, questionCount)
-        return runCatching {
-            val generated = llmProviderRouter.generateJson(prompt, temperature = 0.5)
-            val parsed = parseGeneratedTechQuestions(generated.text)
-            val validated = validateGeneratedTechQuestions(parsed, labels, difficulty)
-            if (validated.isEmpty()) {
-                throw IllegalStateException("생성된 기술 질문 품질 검증에 실패했습니다.")
+        val labels = CategoryLabels(
+            jobLabel = jobName.trim().ifBlank { "직무" },
+            skillLabel = skillName.trim().ifBlank { "기술" }
+        )
+        val temperatures = listOf(0.45, 0.55, 0.65, 0.75, 0.85)
+        val collected = linkedMapOf<String, GeneratedTechQuestion>()
+        val maxRounds = temperatures.size
+        var round = 0
+        var lastError: Exception? = null
+
+        while (collected.size < questionCount && round < maxRounds) {
+            val remaining = questionCount - collected.size
+            val temperature = temperatures[minOf(round, temperatures.lastIndex)]
+            val prompt = buildTechQuestionPrompt(
+                jobName = labels.jobLabel,
+                skillName = labels.skillLabel,
+                difficulty = difficulty,
+                questionCount = remaining
+            )
+            try {
+                val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
+                val parsed = parseGeneratedTechQuestions(generated.text)
+                val validated = validateGeneratedTechQuestions(parsed, labels)
+                validated.forEach { item ->
+                    val key = item.questionText.trim().lowercase()
+                    if (key.isNotBlank() && !collected.containsKey(key)) {
+                        collected[key] = item
+                    }
+                }
+            } catch (ex: Exception) {
+                lastError = ex
+                logger.warn(
+                    "기술 질문 생성 재시도 실패(provider={}, round={}, remaining={}, temp={}): {}",
+                    aiProperties.provider,
+                    round + 1,
+                    remaining,
+                    temperature,
+                    ex.message
+                )
+                if (isRateLimitError(ex)) {
+                    logger.warn("기술 질문 생성 재시도 중단: rate limit/quota 감지")
+                    break
+                }
             }
-            backfillTechQuestions(validated, labels, difficulty, questionCount)
-        }.onFailure { ex ->
-            logger.warn("기술 질문 생성 실패(provider={}): {}", aiProperties.provider, ex.message)
-        }.getOrElse { ex ->
-            if (aiProperties.fallbackToHeuristic) {
-                buildHeuristicTechQuestions(categoryPath, difficulty, questionCount)
-            } else {
-                throw ex
-            }
+            round += 1
         }
+
+        if (collected.size >= questionCount) {
+            return collected.values.take(questionCount).toList()
+        }
+
+        val cause = lastError?.message?.takeIf { it.isNotBlank() }
+        throw IllegalStateException(
+            "생성된 기술 질문/모범답안이 품질 기준을 충족하지 못했습니다. 잠시 후 다시 시도해 주세요.${cause?.let { " ($it)" } ?: ""}"
+        )
     }
 
     fun evaluateDocumentAnswer(
@@ -174,10 +206,36 @@ class InterviewAiOrchestrator(
         }
     }
 
+    fun validateEvidenceSnippets(fileTypeLabel: String, snippets: List<String>): SnippetValidationResult {
+        if (snippets.isEmpty()) {
+            return SnippetValidationResult(emptyList(), emptyList())
+        }
+
+        val prompt = buildSnippetValidationPrompt(fileTypeLabel, snippets)
+        return runCatching {
+            val generated = llmProviderRouter.generateJson(prompt, temperature = 0.2)
+            parseSnippetValidation(generated.text, snippets)
+        }.onFailure { ex ->
+            logger.warn("문서 발췌 유효성 검증 실패(provider={}): {}", aiProperties.provider, ex.message)
+        }.getOrElse {
+            // 검증 실패 시에는 보수적으로 휴리스틱만 통과한 항목만 사용한다.
+            val accepted = snippets.filter(::isMeaningfulEvidence)
+            val details = snippets.mapIndexed { index, snippet ->
+                ValidatedSnippet(
+                    index = index,
+                    snippet = snippet,
+                    accepted = accepted.contains(snippet),
+                    reason = if (accepted.contains(snippet)) "heuristic_pass" else "heuristic_reject"
+                )
+            }
+            SnippetValidationResult(acceptedSnippets = accepted, details = details)
+        }
+    }
+
     private fun buildEvaluationPrompt(question: QaQuestion?, userAnswer: String): String {
         val questionText = question?.questionText.orEmpty()
         val canonicalAnswer = question?.canonicalAnswer?.takeIf { it.isNotBlank() } ?: "(모범답안 없음)"
-        val category = question?.category?.path ?: "(카테고리 없음)"
+        val category = question?.category?.name ?: "(카테고리 없음)"
         val difficulty = question?.difficulty?.name ?: "(난이도 없음)"
         val tags = question?.tagsJson ?: "[]"
 
@@ -267,35 +325,31 @@ class InterviewAiOrchestrator(
     }
 
     private fun buildTechQuestionPrompt(
-        categoryPath: String,
+        jobName: String,
+        skillName: String,
         difficulty: QuestionDifficulty?,
         questionCount: Int
     ): String {
-        val labels = parseCategoryLabels(categoryPath)
         val difficultyGuide = when (difficulty ?: QuestionDifficulty.MEDIUM) {
-            QuestionDifficulty.EASY -> "기본 개념, 주요 구성요소, 실무에서 자주 맞닥뜨리는 입문 수준의 판단 포인트를 묻는다."
-            QuestionDifficulty.MEDIUM -> "실무 경험이 있는 지원자 기준으로 설계 이유, 장애 대응, 운영 포인트, 트레이드오프를 묻는다."
-            QuestionDifficulty.HARD -> "대규모 운영, 성능 병목, 장애 전파, 복구 전략, 기술 선택의 장단점과 의사결정 근거를 깊게 묻는다."
+            QuestionDifficulty.EASY -> "기본 개념, 핵심 구성요소, 대표 사용 사례 중심으로 묻습니다."
+            QuestionDifficulty.MEDIUM -> "실무 적용 상황, 설계 이유, 트레이드오프 판단을 묻습니다."
+            QuestionDifficulty.HARD -> "복합적인 문제 해결, 대안 비교, 의사결정 근거를 깊게 묻습니다."
         }
-        val skillHints = buildSkillKnowledgeHints(labels.skillLabel)
         return """
             당신은 기술면접 질문 출제관입니다.
             아래 직무와 기술을 기준으로 실전형 기술면접 질문과 모범답안을 생성하세요.
 
             [직무]
-            ${labels.jobLabel}
+            $jobName
 
             [기술]
-            ${labels.skillLabel}
+            $skillName
 
             [난이도]
             ${difficulty?.name ?: "MEDIUM"}
 
             [난이도 기준]
             $difficultyGuide
-
-            [반영해야 할 기술 포인트]
-            $skillHints
 
             출력 JSON 스키마:
             {
@@ -310,12 +364,12 @@ class InterviewAiOrchestrator(
 
             규칙:
             - 총 ${questionCount}개 질문 생성
-            - 질문은 반드시 ${labels.skillLabel} 자체 또는 그 핵심 개념/구성요소/운영 이슈를 중심으로 만들어야 함
-            - 질문은 개념/트러블슈팅/설계/운영 관점을 섞되, 같은 유형의 질문을 반복하지 말 것
+            - 질문은 반드시 ${skillName} 자체 또는 그 핵심 개념/구성요소를 중심으로 만들어야 함
+            - 질문은 개념/문제해결/설계 관점을 섞되, 같은 유형의 질문을 반복하지 말 것
             - 단순 정의 암기형 질문만 내지 말고, 실무 상황과 의사결정이 드러나는 질문을 우선할 것
+            - ${skillName}과 직접 관련 없는 운영/배포 일반론 질문은 금지
             - 질문 문장에 raw category code, path, BACKEND SPRING 같은 기계적인 표현을 넣지 말 것
             - 자연스러운 한국어 면접 문장으로 작성할 것
-            - 널리 알려진 실무 관행과 운영 포인트를 반영할 것
             - 너무 포괄적인 질문, 어느 기술에도 통할 법한 질문, 기술명이 빠진 질문은 금지
             - 모범답안은 실제 면접에서 답하는 문장으로 4~8문장 작성하고, 핵심 근거와 실무 포인트를 포함할 것
             - 반드시 JSON만 출력
@@ -342,6 +396,41 @@ class InterviewAiOrchestrator(
             .orEmpty()
     }
 
+    private fun validateGeneratedDocumentQuestions(
+        generated: List<GeneratedDocumentQuestion>,
+        fileTypeLabel: String
+    ): List<GeneratedDocumentQuestion> {
+        val seen = linkedSetOf<String>()
+        return generated.mapNotNull { item ->
+            val normalizedQuestion = item.questionText.replace(Regex("\\s+"), " ").trim()
+            if (!isUsableDocumentQuestion(normalizedQuestion, fileTypeLabel)) return@mapNotNull null
+
+            val fingerprint = normalizedQuestion
+                .lowercase()
+                .replace(Regex("[^a-z0-9가-힣]+"), "")
+            if (!seen.add(fingerprint)) return@mapNotNull null
+
+            val normalizedAnswer = item.referenceAnswer
+                ?.replace(Regex("\\s+"), " ")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() && !isGuideLikeModelAnswer(it) && isDocumentAnswerLinkedToQuestion(it, normalizedQuestion) }
+                ?: return@mapNotNull null
+
+            val normalizedEvidence = item.evidence
+                .map { it.replace(Regex("\\s+"), " ").trim() }
+                .filter { it.length >= 8 }
+                .distinct()
+                .take(4)
+            if (normalizedEvidence.isEmpty()) return@mapNotNull null
+
+            item.copy(
+                questionText = normalizedQuestion,
+                referenceAnswer = normalizedAnswer,
+                evidence = normalizedEvidence
+            )
+        }
+    }
+
     private fun parseGeneratedTechQuestions(raw: String): List<GeneratedTechQuestion> {
         val node = objectMapper.readTree(raw)
         return node["questions"]
@@ -362,8 +451,7 @@ class InterviewAiOrchestrator(
 
     private fun validateGeneratedTechQuestions(
         generated: List<GeneratedTechQuestion>,
-        labels: CategoryLabels,
-        difficulty: QuestionDifficulty?
+        labels: CategoryLabels
     ): List<GeneratedTechQuestion> {
         val seen = linkedSetOf<String>()
         return generated.mapNotNull { item ->
@@ -378,11 +466,7 @@ class InterviewAiOrchestrator(
                 ?.replace(Regex("\\s+"), " ")
                 ?.trim()
                 ?.takeIf { it.isNotBlank() && !isGuideLikeModelAnswer(it) }
-                ?: buildIdealModelAnswer(
-                    questionText = normalizedQuestion,
-                    difficulty = difficulty?.name,
-                    categoryLabel = labels.skillLabel
-                )
+                ?: return@mapNotNull null
 
             item.copy(
                 questionText = normalizedQuestion,
@@ -392,162 +476,60 @@ class InterviewAiOrchestrator(
         }
     }
 
-    private fun backfillTechQuestions(
-        validated: List<GeneratedTechQuestion>,
-        labels: CategoryLabels,
-        difficulty: QuestionDifficulty?,
-        questionCount: Int
-    ): List<GeneratedTechQuestion> {
-        if (validated.size >= questionCount) return validated.take(questionCount)
-        val fallback = buildHeuristicTechQuestions("${labels.jobLabel}/${labels.skillLabel}", difficulty, questionCount * 2)
-        val merged = buildList {
-            addAll(validated)
-            addAll(fallback)
+    private fun isUsableDocumentQuestion(questionText: String, fileTypeLabel: String): Boolean {
+        if (questionText.length < 18) return false
+        if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED)\\b").containsMatchIn(questionText)) return false
+        val lowered = questionText.lowercase()
+        val banned = listOf("어떤 기술에도", "일반적으로", "상식적으로", "포괄적으로")
+        if (banned.any { lowered.contains(it) }) return false
+
+        val contextKeywords = when (fileTypeLabel.trim().uppercase()) {
+            "RESUME", "이력서" -> listOf("경험", "프로젝트", "역할", "성과", "업무")
+            "PORTFOLIO", "포트폴리오" -> listOf("프로젝트", "구현", "아키텍처", "문제", "개선")
+            "INTRODUCE", "자기소개서" -> listOf("동기", "경험", "배운", "가치", "강점")
+            else -> listOf("경험", "프로젝트", "문서", "근거")
         }
-        val seen = linkedSetOf<String>()
-        return merged.filter { candidate ->
-            val fingerprint = candidate.questionText
-                .lowercase()
-                .replace(Regex("[^a-z0-9가-힣]+"), "")
-            seen.add(fingerprint)
-        }.take(questionCount)
+        return contextKeywords.any { lowered.contains(it) }
     }
 
-    private fun buildHeuristicDocumentQuestions(
-        fileTypeLabel: String,
-        difficulty: QuestionDifficulty?,
-        questionCount: Int,
-        contextSnippets: List<String>
-    ): List<GeneratedDocumentQuestion> {
-        val evidencePool = contextSnippets
-            .flatMap { snippet ->
-                snippet.split("\n", ".", "?", "!")
-                    .map { it.replace(Regex("\\s+"), " ").trim() }
-            }
-            .filter { it.length in 18..220 && isMeaningfulEvidence(it) }
-            .distinct()
-            .take(questionCount.coerceAtLeast(3) * 2)
+    private fun isDocumentAnswerLinkedToQuestion(answer: String, questionText: String): Boolean {
+        val answerTokens = answer.lowercase()
+            .split(Regex("[^0-9a-zA-Z가-힣]+"))
+            .filter { it.length >= 2 }
+            .toSet()
+        if (answerTokens.size < 6) return false
 
-        val questionType = toDocumentQuestionType(fileTypeLabel)
+        val questionTokens = questionText.lowercase()
+            .split(Regex("[^0-9a-zA-Z가-힣]+"))
+            .filter { it.length >= 2 }
+            .toSet()
 
-        val templates = when (questionType) {
-            "RESUME_EXPERIENCE" -> listOf(
-                "이 경험에서 맡은 역할과 실제로 기여한 부분을 구체적으로 설명해 주세요.",
-                "이 활동을 통해 가장 크게 성장한 역량은 무엇이었나요?",
-                "이력에 적은 성과를 만들기 위해 어떤 의사결정을 했는지 말씀해 주세요."
-            )
-            "PORTFOLIO_PROJECT" -> listOf(
-                "이 프로젝트에서 본인이 담당한 역할과 핵심 기술 선택 이유를 설명해 주세요.",
-                "구현 과정에서 가장 어려웠던 문제와 해결 방식을 구체적으로 말씀해 주세요.",
-                "이 결과물을 다시 만든다면 어떤 부분을 개선할지 설명해 주세요."
-            )
-            else -> listOf(
-                "자기소개서에서 강조한 강점을 실제 경험과 연결해서 설명해 주세요.",
-                "이 내용을 바탕으로 지원 동기와 직무 적합성을 구체적으로 말씀해 주세요.",
-                "이 경험이 현재 지원 직무와 어떻게 연결되는지 설명해 주세요."
-            )
-        }
-
-        val safeEvidencePool = evidencePool.ifEmpty { listOf("") }
-
-        return (0 until questionCount).map { index ->
-            val evidence = safeEvidencePool[index % safeEvidencePool.size]
-            val template = templates[index % templates.size]
-            val questionText = if (evidence.isNotBlank()) {
-                "$template\n특히 문서에 드러난 구체적인 사례와 의사결정을 중심으로 말씀해 주세요."
-            } else {
-                template
-            }
-            GeneratedDocumentQuestion(
-                questionNo = index + 1,
-                questionText = questionText,
-                questionType = questionType,
-                referenceAnswer = buildIdealModelAnswer(
-                    questionText = questionText,
-                    difficulty = difficulty?.name,
-                    categoryLabel = fileTypeLabel
-                ),
-                evidence = listOfNotNull(evidence.takeIf { it.isNotBlank() })
-            )
-        }
+        return questionTokens.intersect(answerTokens).size >= 2
     }
 
-    private fun buildHeuristicTechQuestions(
-        categoryPath: String,
-        difficulty: QuestionDifficulty?,
-        questionCount: Int
-    ): List<GeneratedTechQuestion> {
-        val labels = parseCategoryLabels(categoryPath)
-        val skillLabel = labels.skillLabel
-        val skillTopic = toSkillTopic(skillLabel)
-        val difficultyName = difficulty?.name
-        val scenarioTemplates = when (difficulty ?: QuestionDifficulty.MEDIUM) {
-            QuestionDifficulty.EASY -> listOf(
-                "${skillTopic}을 실제 프로젝트에 도입할 때 반드시 이해해야 하는 핵심 개념을 설명해 주세요.",
-                "${skillTopic}을 처음 적용하는 팀원이 알아야 할 구성요소와 역할을 설명해 주세요.",
-                "${skillTopic}을 사용할 때 자주 발생하는 기본 설정 실수와 예방 방법을 설명해 주세요.",
-                "${skillTopic}이 다른 대안보다 적합했던 상황을 하나 가정하고 선택 이유를 설명해 주세요.",
-                "${skillTopic}을 운영에 올리기 전 최소한 어떤 점검을 해야 하는지 설명해 주세요."
-            )
-            QuestionDifficulty.MEDIUM -> listOf(
-                "${skillTopic}을 도입한 서비스에서 장애가 반복된다면 어떤 관점으로 원인을 좁혀갈지 설명해 주세요.",
-                "${skillTopic} 기반 구조를 설계할 때 성능, 운영 편의성, 장애 대응 관점의 트레이드오프를 설명해 주세요.",
-                "${skillTopic}을 실제 프로젝트에서 선택한 이유와 다른 대안 대비 장단점을 설명해 주세요.",
-                "${skillTopic}을 운영 환경에 적용할 때 모니터링, 배포, 롤백 전략을 어떻게 가져갈지 설명해 주세요.",
-                "${skillTopic}을 사용하는 팀에서 자주 겪는 병목이나 장애 상황과 해결 접근을 설명해 주세요."
-            )
-            QuestionDifficulty.HARD -> listOf(
-                "${skillTopic}이 대규모 트래픽 환경에서 병목이 된다면 어떤 지표를 먼저 보고 어떻게 개선할지 설명해 주세요.",
-                "${skillTopic}을 사용하는 구조에서 장애 전파를 줄이기 위한 설계 원칙과 운영 전략을 설명해 주세요.",
-                "${skillTopic} 기반 시스템을 장기적으로 운영할 때 성능 최적화와 안정성 확보 사이에서 어떤 의사결정을 할지 설명해 주세요.",
-                "${skillTopic} 관련 장애가 복합적으로 발생했을 때 원인 분리, 대응 우선순위, 사후 개선까지 어떤 흐름으로 처리할지 설명해 주세요.",
-                "${skillTopic}을 다른 아키텍처 대안과 비교해 선택하거나 포기해야 하는 기준을 깊게 설명해 주세요."
-            )
-        }
-        return scenarioTemplates.take(questionCount).map {
-            GeneratedTechQuestion(
-                questionText = it,
-                canonicalAnswer = buildIdealModelAnswer(
-                    questionText = it,
-                    difficulty = difficultyName,
-                    categoryLabel = skillLabel
-                ),
-                tags = listOf(skillLabel.uppercase().replace(Regex("[^A-Z0-9가-힣]+"), "_").trim('_'))
-            )
-        }
-    }
-
-    private fun buildSkillKnowledgeHints(skillLabel: String): String {
-        val key = skillLabel.trim().lowercase()
-        return when {
-            "spring" in key -> "DI/IoC, 트랜잭션, JPA 연동, 예외 처리, 테스트 전략, 운영 환경 설정, 성능 병목, Bean 생명주기"
-            "react" in key -> "상태 관리, 렌더링 최적화, 훅 사용 규칙, 비동기 데이터 흐름, 컴포넌트 분리 기준, 에러 처리"
-            "docker" in key -> "이미지 경량화, 레이어 캐시, 컨테이너 라이프사이클, 네트워크/볼륨, 운영 배포 전략"
-            "kubernetes" in key || "k8s" in key -> "Pod/Deployment, 오토스케일링, 서비스 디스커버리, 롤링 업데이트, 자원 제한, 장애 복구"
-            "jpa" in key || "hibernate" in key -> "영속성 컨텍스트, N+1, fetch 전략, flush/dirty checking, 트랜잭션 경계"
-            "rag" in key -> "검색 품질, chunking, embedding 전략, hallucination 방지, retrieval 평가, 비용 최적화"
-            "cloud" in key -> "고가용성, 오토스케일링, 네트워크 격리, 모니터링, 비용 최적화, 장애 복구, IAM 보안"
-            "ci/cd" in key || "github actions" in key -> "파이프라인 분리, 캐시, 시크릿 관리, 실패 복구, 배포 전략, 검증 단계"
-            else -> "${skillLabel}의 핵심 개념, 실제 적용 시 주의점, 운영 중 자주 발생하는 문제, 다른 대안과의 비교 기준"
-        }
+    private fun isRateLimitError(ex: Exception): Boolean {
+        val message = ex.message?.lowercase().orEmpty()
+        return "http 429" in message ||
+            "resource_exhausted" in message ||
+            "quota exceeded" in message ||
+            "rate limit" in message
     }
 
     private fun isUsableTechQuestion(questionText: String, labels: CategoryLabels): Boolean {
         if (questionText.length < 18) return false
-        val lowered = questionText.lowercase()
-        val bannedFragments = listOf(
-            "backend spring",
-            "frontend react",
-            "/tech/",
-            "raw category",
-            "category path"
-        )
-        if (bannedFragments.any { lowered.contains(it) }) return false
-        if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED)\\b").containsMatchIn(questionText)) return false
-        if (Regex("설명해 주세요\\.?$").find(questionText)?.range?.first == 0 && questionText.length < 24) return false
-
-        val skillKeywords = buildSkillKeywords(labels.skillLabel)
-        return skillKeywords.any { keyword -> keyword.isNotBlank() && lowered.contains(keyword) }
+        // NOTE:
+        // 아래 하드 필터는 난이도/도메인 다양성에서 과도하게 탈락을 발생시켜 비활성화한다.
+        // - raw enum/path 포함 즉시 탈락
+        // - 기술 키워드 미포함 즉시 탈락
+        // 품질 보정은 프롬프트 규칙과 후속 평가 단계에서 처리한다.
+        // val lowered = questionText.lowercase()
+        // val bannedFragments = listOf("backend spring", "frontend react", "/tech/", "raw category", "category path")
+        // if (bannedFragments.any { lowered.contains(it) }) return false
+        // if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED)\\b").containsMatchIn(questionText)) return false
+        // if (Regex("설명해 주세요\\.?$").find(questionText)?.range?.first == 0 && questionText.length < 24) return false
+        // val skillKeywords = buildSkillKeywords(labels.skillLabel)
+        // return skillKeywords.any { keyword -> keyword.isNotBlank() && lowered.contains(keyword) }
+        return true
     }
 
     private fun buildSkillKeywords(skillLabel: String): Set<String> {
@@ -592,6 +574,90 @@ class InterviewAiOrchestrator(
         return normalized
     }
 
+    private fun isAnswerLinkedToQuestion(answer: String, questionText: String, skillLabel: String): Boolean {
+        val answerTokens = answer.lowercase()
+            .split(Regex("[^0-9a-zA-Z가-힣]+"))
+            .filter { it.length >= 2 }
+            .toSet()
+        if (answerTokens.size < 6) return false
+
+        val questionTokens = questionText.lowercase()
+            .split(Regex("[^0-9a-zA-Z가-힣]+"))
+            .filter { it.length >= 2 }
+            .toSet()
+
+        val skillTokens = skillLabel.lowercase()
+            .split(Regex("[^0-9a-zA-Z가-힣]+"))
+            .filter { it.length >= 2 }
+            .toSet()
+
+        val overlapWithQuestion = questionTokens.intersect(answerTokens).size
+        val overlapWithSkill = skillTokens.intersect(answerTokens).size
+        return overlapWithQuestion >= 2 && overlapWithSkill >= 1
+    }
+
+    private fun buildSnippetValidationPrompt(fileTypeLabel: String, snippets: List<String>): String {
+        val payload = snippets.mapIndexed { index, snippet ->
+            mapOf("index" to index, "snippet" to snippet)
+        }
+        return """
+            당신은 OCR/문서 발췌 품질 검증기입니다.
+            아래는 ${fileTypeLabel} 문서에서 추출한 발췌 목록입니다.
+            각 발췌가 질문 생성 근거로 사용 가능한지 판정하세요.
+
+            [입력]
+            ${objectMapper.writeValueAsString(payload)}
+
+            출력 JSON 스키마:
+            {
+              "results": [
+                { "index": 0, "accepted": true, "reason": "판정 근거 요약" }
+              ]
+            }
+
+            규칙:
+            - 반드시 JSON만 출력
+            - accepted=true 조건:
+              1) 문장이 문법적으로 읽을 수 있고
+              2) 의미가 끊기지 않으며
+              3) 면접 질문 근거로 쓸 수 있는 구체성이 있음
+            - OCR 잡음, 깨진 토큰 나열, 의미 없는 숫자/대문자열은 rejected
+            - reason은 1문장으로 간결하게
+        """.trimIndent()
+    }
+
+    private fun parseSnippetValidation(raw: String, snippets: List<String>): SnippetValidationResult {
+        val node = objectMapper.readTree(raw)
+        val results = node["results"]
+            ?.takeIf { it.isArray }
+            ?.mapNotNull { item ->
+                val index = item["index"]?.asInt() ?: return@mapNotNull null
+                if (index !in snippets.indices) return@mapNotNull null
+                ValidatedSnippet(
+                    index = index,
+                    snippet = snippets[index],
+                    accepted = item["accepted"]?.asBoolean() == true,
+                    reason = item["reason"]?.asText()?.trim().orEmpty()
+                )
+            }
+            .orEmpty()
+            .distinctBy { it.index }
+
+        val merged = snippets.mapIndexed { index, snippet ->
+            results.find { it.index == index } ?: ValidatedSnippet(
+                index = index,
+                snippet = snippet,
+                accepted = false,
+                reason = "no_result"
+            )
+        }
+        val accepted = merged.filter { it.accepted }.map { it.snippet }
+        return SnippetValidationResult(
+            acceptedSnippets = accepted,
+            details = merged
+        )
+    }
+
     private fun isMeaningfulEvidence(text: String): Boolean {
         val letters = text.filter { it.isLetter() }
         if (letters.isEmpty()) return false
@@ -601,24 +667,6 @@ class InterviewAiOrchestrator(
             token.length >= 6 && token.count(Char::isUpperCase) >= 4
         }
         return tokenCount >= 4 && uppercaseRatio < 0.72 && suspiciousTokens <= 2
-    }
-
-    private fun parseCategoryLabels(categoryPath: String): CategoryLabels {
-        val parts = categoryPath.split("/").filter { it.isNotBlank() }
-        val jobCode = parts.getOrNull(parts.lastIndex - 1)?.uppercase()
-        val skillCode = parts.lastOrNull().orEmpty().uppercase()
-        return CategoryLabels(
-            jobLabel = jobLabels[jobCode] ?: jobCode?.replace("_", " ") ?: "기술 직무",
-            skillLabel = skillLabels[skillCode] ?: skillCode.replace("_", " ").trim().ifBlank { "기술" }
-        )
-    }
-
-    private fun toSkillTopic(skillLabel: String): String {
-        return when (skillLabel) {
-            "클라우드" -> "클라우드 환경"
-            "상태 관리" -> "프론트엔드 상태 관리"
-            else -> skillLabel
-        }
     }
 
     private fun toDocumentQuestionType(fileTypeLabel: String): String {
@@ -634,7 +682,7 @@ class InterviewAiOrchestrator(
         val node = objectMapper.readTree(raw)
         val score = node.decimal("score").coerceIn(BigDecimal.ZERO, BigDecimal("100.00"))
         val feedback = node.text("feedback").ifBlank { "AI 피드백 생성에 실패했습니다." }
-        val bestPractice = node.text("bestPractice").ifBlank { "질문 의도에 맞춰 핵심-근거-결론 구조로 답변하세요." }
+        val bestPractice = node.text("bestPractice").ifBlank { "" }
 
         val rubricNode = node["rubric"]
         val rubric = linkedMapOf(
@@ -697,6 +745,18 @@ data class GeneratedTechQuestion(
     val questionText: String,
     val canonicalAnswer: String? = null,
     val tags: List<String> = emptyList()
+)
+
+data class SnippetValidationResult(
+    val acceptedSnippets: List<String>,
+    val details: List<ValidatedSnippet>
+)
+
+data class ValidatedSnippet(
+    val index: Int,
+    val snippet: String,
+    val accepted: Boolean,
+    val reason: String
 )
 
 private data class CategoryLabels(

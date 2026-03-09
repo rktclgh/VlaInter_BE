@@ -12,10 +12,6 @@ enum class QuestionSetStatus {
     ACTIVE, ARCHIVED
 }
 
-enum class EmbeddingStatus {
-    NOT_EMBEDDED, QUEUED, PROCESSING, READY, FAILED
-}
-
 enum class QuestionDifficulty {
     EASY, MEDIUM, HARD
 }
@@ -25,7 +21,7 @@ enum class QuestionSourceTag {
 }
 
 enum class InterviewMode {
-    DOC, TECH, MIXED
+    DOC, TECH, MIXED, QUESTION_SET_PRACTICE
 }
 
 enum class InterviewStatus {

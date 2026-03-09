@@ -8,4 +8,5 @@ interface DocumentIngestionJobRepository : JpaRepository<DocumentIngestionJob, L
     fun findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(userId: Long, documentFileId: Long): DocumentIngestionJob?
     fun findTopByDocumentFileIdOrderByRequestedAtDesc(documentFileId: Long): DocumentIngestionJob?
     fun findAllByUserIdAndStatusOrderByRequestedAtDesc(userId: Long, status: DocumentIngestionStatus): List<DocumentIngestionJob>
+    fun deleteAllByUserIdAndDocumentFileId(userId: Long, documentFileId: Long): Long
 }

@@ -2,7 +2,6 @@ package com.cw.vlainter.domain.interview.controller
 
 import com.cw.vlainter.domain.interview.dto.AddQuestionToSetRequest
 import com.cw.vlainter.domain.interview.dto.CreateQuestionSetRequest
-import com.cw.vlainter.domain.interview.dto.EmbeddingRequestResponse
 import com.cw.vlainter.domain.interview.dto.QuestionSetSummaryResponse
 import com.cw.vlainter.domain.interview.dto.QuestionSummaryResponse
 import com.cw.vlainter.domain.interview.service.QuestionSetService
@@ -52,13 +51,5 @@ class QuestionSetController(
         @Valid @RequestBody request: AddQuestionToSetRequest
     ): ResponseEntity<QuestionSummaryResponse> {
         return ResponseEntity.ok(questionSetService.addQuestionToSet(principal, setId, request))
-    }
-
-    @PostMapping("/{setId}/embedding-jobs")
-    fun requestEmbedding(
-        @AuthenticationPrincipal principal: AuthPrincipal,
-        @PathVariable setId: Long
-    ): ResponseEntity<EmbeddingRequestResponse> {
-        return ResponseEntity.ok(questionSetService.requestEmbedding(principal, setId))
     }
 }

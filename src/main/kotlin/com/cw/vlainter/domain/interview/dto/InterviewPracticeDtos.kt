@@ -13,8 +13,11 @@ import java.time.OffsetDateTime
 data class StartTechInterviewRequest(
     val setId: Long? = null,
     val categoryId: Long? = null,
+    val jobName: String? = null,
+    val skillName: String? = null,
     val difficulty: QuestionDifficulty? = null,
     val sourceTag: QuestionSourceTag? = null,
+    val saveHistory: Boolean = true,
     @field:Min(value = 1, message = "questionCount는 1 이상이어야 합니다.")
     @field:Max(value = 20, message = "questionCount는 20 이하여야 합니다.")
     val questionCount: Int = 5

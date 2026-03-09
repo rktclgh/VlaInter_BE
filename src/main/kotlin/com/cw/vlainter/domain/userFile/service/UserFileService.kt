@@ -1,5 +1,6 @@
 package com.cw.vlainter.domain.userFile.service
 
+import com.cw.vlainter.domain.interview.repository.DocChunkEmbeddingRepository
 import com.cw.vlainter.domain.interview.repository.DocumentIngestionJobRepository
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
@@ -35,6 +36,7 @@ import java.util.UUID
 class UserFileService(
     private val userRepository: UserRepository,
     private val userFileRepository: UserFileRepository,
+    private val docChunkEmbeddingRepository: DocChunkEmbeddingRepository,
     private val documentIngestionJobRepository: DocumentIngestionJobRepository,
     private val s3Client: S3Client,
     private val s3Properties: S3Properties,
@@ -172,6 +174,13 @@ class UserFileService(
         }
 
         val deletionKey = resolveDeletionKey(target.storageKey, target.fileUrl)
+        val targetOwnerId = target.user.id
+
+        if (target.fileType.isInterviewDocument()) {
+            // 문서 삭제 시 임베딩/ingestion 이력도 함께 정리한다.
+            docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(targetOwnerId, target.id)
+            documentIngestionJobRepository.deleteAllByUserIdAndDocumentFileId(targetOwnerId, target.id)
+        }
 
         userFileRepository.delete(target)
         runAfterCommit {
@@ -382,5 +391,9 @@ class UserFileService(
         FileType.INTRODUCE -> "자기소개서"
         FileType.PORTFOLIO -> "포트폴리오"
         FileType.PROFILE_IMAGE -> "프로필 이미지"
+    }
+
+    private fun FileType.isInterviewDocument(): Boolean {
+        return this == FileType.RESUME || this == FileType.INTRODUCE || this == FileType.PORTFOLIO
     }
 }

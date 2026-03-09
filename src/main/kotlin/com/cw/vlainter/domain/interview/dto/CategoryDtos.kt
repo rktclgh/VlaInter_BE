@@ -5,9 +5,8 @@ import jakarta.validation.constraints.Size
 
 data class CreateCategoryRequest(
     val parentId: Long? = null,
-    @field:NotBlank(message = "카테고리 코드는 필수입니다.")
     @field:Size(max = 80, message = "카테고리 코드는 80자 이하여야 합니다.")
-    val code: String,
+    val code: String? = null,
     @field:NotBlank(message = "카테고리 이름은 필수입니다.")
     @field:Size(max = 120, message = "카테고리 이름은 120자 이하여야 합니다.")
     val name: String,

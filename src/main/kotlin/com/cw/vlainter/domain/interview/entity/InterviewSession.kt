@@ -30,7 +30,7 @@ class InterviewSession(
     val user: User,
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "mode", nullable = false, length = 10)
+    @Column(name = "mode", nullable = false, length = 32)
     var mode: InterviewMode,
 
     @Enumerated(EnumType.STRING)

@@ -13,7 +13,6 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
-import java.util.Locale
 
 @Service
 class CategoryAdminService(
@@ -28,13 +27,16 @@ class CategoryAdminService(
 
     @Transactional
     fun createCategory(principal: AuthPrincipal, request: CreateCategoryRequest): CategoryResponse {
-        ensureAdmin(principal)
         val actor = loadUser(principal.userId)
         val parent = request.parentId?.let { findActiveCategory(it) }
+        val normalizedName = request.name.trim()
+        if (normalizedName.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카테고리 이름은 필수입니다.")
+        }
 
-        val normalizedCode = normalizeCode(request.code)
-        if (parent != null && categoryRepository.existsByParent_IdAndCodeAndDeletedAtIsNull(parent.id, normalizedCode)) {
-            throw ResponseStatusException(HttpStatus.CONFLICT, "같은 부모 카테고리 아래에 동일 코드가 이미 존재합니다.")
+        val normalizedCode = allocateUniqueCode(parent?.id, normalizeCode(request.code ?: normalizedName))
+        if (hasDuplicateName(parent, normalizedName)) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "같은 위치에 동일한 이름의 카테고리가 이미 존재합니다.")
         }
 
         val depth = (parent?.depth ?: -1) + 1
@@ -43,7 +45,7 @@ class CategoryAdminService(
             QaCategory(
                 parent = parent,
                 code = normalizedCode,
-                name = request.name.trim(),
+                name = normalizedName,
                 description = request.description?.trim(),
                 depth = depth,
                 path = path,
@@ -91,16 +93,21 @@ class CategoryAdminService(
         if (newParent != null && newParent.path.startsWith("${category.path}/")) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "하위 카테고리를 부모로 이동할 수 없습니다.")
         }
+        if (hasDuplicateName(newParent, category.name)) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "같은 위치에 동일한 이름의 카테고리가 이미 존재합니다.")
+        }
 
+        val oldPath = category.path
         category.parent = newParent
         category.depth = (newParent?.depth ?: -1) + 1
         category.path = (newParent?.path ?: "") + "/${category.code}"
         category.updatedBy = actor
 
-        // direct children path update
-        categoryRepository.findAllByParent_IdAndDeletedAtIsNullOrderBySortOrderAsc(category.id).forEach { child ->
-            child.path = "${category.path}/${child.code}"
-            child.depth = category.depth + 1
+        categoryRepository.findAllByPathStartingWithAndDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc("$oldPath/")
+            .forEach { child ->
+            val suffix = child.path.removePrefix(oldPath)
+            child.path = "${category.path}$suffix"
+            child.depth = child.path.split("/").count { it.isNotBlank() } - 1
             child.updatedBy = actor
         }
 
@@ -129,12 +136,42 @@ class CategoryAdminService(
     private fun loadUser(userId: Long) = userRepository.findById(userId)
         .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "사용자 정보를 찾을 수 없습니다.") }
 
+    private fun hasDuplicateName(parent: QaCategory?, name: String): Boolean {
+        return if (parent == null) {
+            categoryRepository.existsByParentIsNullAndNameIgnoreCaseAndDeletedAtIsNull(name)
+        } else {
+            categoryRepository.existsByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(parent.id, name)
+        }
+    }
+
+    private fun allocateUniqueCode(parentId: Long?, baseCode: String): String {
+        var sequence = 1
+        var candidate = baseCode
+        while (existsCode(parentId, candidate)) {
+            sequence += 1
+            val suffix = "_$sequence"
+            val prefixMax = (80 - suffix.length).coerceAtLeast(1)
+            val prefix = baseCode.take(prefixMax).trimEnd('_').ifBlank { "CATEGORY" }
+            candidate = (prefix + suffix).take(80)
+        }
+        return candidate
+    }
+
+    private fun existsCode(parentId: Long?, code: String): Boolean {
+        return if (parentId == null) {
+            categoryRepository.existsByParentIsNullAndCodeAndDeletedAtIsNull(code)
+        } else {
+            categoryRepository.existsByParent_IdAndCodeAndDeletedAtIsNull(parentId, code)
+        }
+    }
+
     private fun normalizeCode(raw: String): String {
         return raw.trim()
-            .uppercase(Locale.getDefault())
-            .replace(Regex("[^A-Z0-9_]+"), "_")
+            .uppercase()
+            .replace(Regex("[^A-Z0-9가-힣_]+"), "_")
             .trim('_')
-            .ifBlank { throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효한 코드 형식이 아닙니다.") }
+            .ifBlank { "CUSTOM_${raw.hashCode().toUInt().toString(16).uppercase()}" }
+            .take(80)
     }
 
     private fun toResponse(category: QaCategory): CategoryResponse {

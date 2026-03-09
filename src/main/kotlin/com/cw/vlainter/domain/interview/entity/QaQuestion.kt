@@ -38,6 +38,12 @@ class QaQuestion(
     @JoinColumn(name = "category_id", nullable = false)
     var category: QaCategory,
 
+    @Column(name = "job_name", length = 120)
+    var jobName: String? = null,
+
+    @Column(name = "skill_name", length = 120)
+    var skillName: String? = null,
+
     @Enumerated(EnumType.STRING)
     @Column(name = "difficulty", nullable = false, length = 20)
     var difficulty: QuestionDifficulty,

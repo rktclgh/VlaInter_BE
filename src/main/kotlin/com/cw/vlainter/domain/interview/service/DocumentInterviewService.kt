@@ -14,7 +14,6 @@ import com.cw.vlainter.domain.interview.entity.DocumentIngestionJob
 import com.cw.vlainter.domain.interview.entity.DocumentIngestionStatus
 import com.cw.vlainter.domain.interview.entity.DocumentQuestion
 import com.cw.vlainter.domain.interview.entity.DocumentQuestionSet
-import com.cw.vlainter.domain.interview.entity.EmbeddingStatus
 import com.cw.vlainter.domain.interview.entity.InterviewMode
 import com.cw.vlainter.domain.interview.entity.InterviewQuestionKind
 import com.cw.vlainter.domain.interview.entity.InterviewSession
@@ -43,6 +42,7 @@ import com.cw.vlainter.domain.interview.repository.QaQuestionSetRepository
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.domain.user.service.UserGeminiApiKeyService
 import com.cw.vlainter.domain.userFile.entity.FileType
 import com.cw.vlainter.domain.userFile.entity.UserFile
 import com.cw.vlainter.domain.userFile.repository.UserFileRepository
@@ -54,8 +54,11 @@ import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.rendering.PDFRenderer
 import org.apache.pdfbox.text.PDFTextStripper
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.http.HttpStatus
+import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import software.amazon.awssdk.services.s3.S3Client
@@ -80,6 +83,8 @@ class DocumentInterviewService(
     private val documentQuestionRepository: DocumentQuestionRepository,
     private val questionRepository: QaQuestionRepository,
     private val categoryRepository: QaCategoryRepository,
+    private val categoryContextResolver: InterviewCategoryContextResolver,
+    private val jobSkillCatalogService: JobSkillCatalogService,
     private val questionSetRepository: QaQuestionSetRepository,
     private val questionSetItemRepository: QaQuestionSetItemRepository,
     private val interviewSessionRepository: InterviewSessionRepository,
@@ -89,7 +94,9 @@ class DocumentInterviewService(
     private val objectMapper: ObjectMapper,
     private val s3Client: S3Client,
     private val s3Properties: S3Properties,
-    private val ocrProperties: OcrProperties
+    private val ocrProperties: OcrProperties,
+    private val selfProvider: ObjectProvider<DocumentInterviewService>,
+    private val userGeminiApiKeyService: UserGeminiApiKeyService
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     @Volatile
@@ -122,7 +129,12 @@ class DocumentInterviewService(
     @Transactional
     fun ingestDocument(principal: AuthPrincipal, fileId: Long): DocumentIngestionResponse {
         val actor = loadActiveUser(principal.userId)
+        userGeminiApiKeyService.assertGeminiApiKeyConfigured(actor.id)
         val file = loadOwnedInterviewDocument(actor.id, fileId)
+        val latestJob = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
+        if (latestJob != null && (latestJob.status == DocumentIngestionStatus.QUEUED || latestJob.status == DocumentIngestionStatus.PROCESSING)) {
+            return toIngestionResponse(latestJob)
+        }
 
         val job = documentIngestionJobRepository.save(
             DocumentIngestionJob(
@@ -132,11 +144,33 @@ class DocumentInterviewService(
             )
         )
 
-        try {
-            job.status = DocumentIngestionStatus.PROCESSING
-            job.startedAt = OffsetDateTime.now()
-            documentIngestionJobRepository.save(job)
+        selfProvider.getObject().ingestDocumentAsync(job.id)
 
+        return toIngestionResponse(job)
+    }
+
+    @Async
+    fun ingestDocumentAsync(jobId: Long) {
+        runCatching { selfProvider.getObject().ingestDocumentSync(jobId) }
+            .onFailure { ex ->
+                logger.warn("document ingestion async failed jobId={} reason={}", jobId, ex.message)
+                selfProvider.getObject().markIngestionFailed(jobId, ex.message)
+            }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun ingestDocumentSync(jobId: Long) {
+        val job = documentIngestionJobRepository.findById(jobId).orElse(null) ?: return
+        if (job.status == DocumentIngestionStatus.CANCELLED || job.status == DocumentIngestionStatus.READY) return
+        val file = loadOwnedInterviewDocument(job.userId, job.documentFileId)
+
+        job.status = DocumentIngestionStatus.PROCESSING
+        job.startedAt = OffsetDateTime.now()
+        job.finishedAt = null
+        job.errorMessage = null
+        documentIngestionJobRepository.save(job)
+
+        try {
             val extracted = extractPdfText(file)
             val text = extracted.text
             val chunks = splitIntoChunks(text)
@@ -144,27 +178,34 @@ class DocumentInterviewService(
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "문서에서 분석 가능한 텍스트를 찾지 못했습니다.")
             }
 
-            val embeddings = chunks.mapIndexed { index, chunk ->
-                val embedded = embeddingProviderRouter.embedText(chunk)
-                DocChunkEmbedding(
-                    userFileId = file.id,
-                    userId = actor.id,
-                    chunkNo = index + 1,
-                    chunkText = chunk,
-                    tokenCount = estimateTokenCount(chunk),
-                    model = embedded.model,
-                    modelVersion = embedded.modelVersion ?: "unknown",
-                    embedding = embedded.values.toVectorLiteral(),
-                    metadataJson = objectMapper.writeValueAsString(
-                        mapOf(
-                            "fileType" to file.fileType.name,
-                            "originalFileName" to file.originalFileName
+            val embeddings = userGeminiApiKeyService.withUserApiKey(job.userId) {
+                chunks.mapIndexed { index, chunk ->
+                    val embedded = embeddingProviderRouter.embedText(chunk)
+                    DocChunkEmbedding(
+                        userFileId = file.id,
+                        userId = job.userId,
+                        chunkNo = index + 1,
+                        chunkText = chunk,
+                        tokenCount = estimateTokenCount(chunk),
+                        model = embedded.model,
+                        modelVersion = embedded.modelVersion ?: "unknown",
+                        embedding = embedded.values.toVectorLiteral(),
+                        metadataJson = objectMapper.writeValueAsString(
+                            mapOf(
+                                "fileType" to file.fileType.name,
+                                "originalFileName" to file.originalFileName
+                            )
                         )
                     )
-                )
+                }
             }
 
-            docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(actor.id, file.id)
+            val stillExists = userFileRepository.findByIdAndUser_IdAndDeletedAtIsNull(file.id, job.userId) != null
+            if (!stillExists) {
+                throw ResponseStatusException(HttpStatus.CONFLICT, "분석 중 문서가 삭제되었습니다.")
+            }
+
+            docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(job.userId, file.id)
             docChunkEmbeddingRepository.saveAll(embeddings)
 
             val firstEmbedding = embeddings.first()
@@ -185,21 +226,25 @@ class DocumentInterviewService(
             job.finishedAt = OffsetDateTime.now()
             documentIngestionJobRepository.save(job)
         } catch (ex: Exception) {
-            logger.warn("document ingestion failed fileId={} reason={}", fileId, ex.message)
-            job.status = DocumentIngestionStatus.FAILED
-            job.errorMessage = ex.message?.take(1000)
-            job.finishedAt = OffsetDateTime.now()
-            documentIngestionJobRepository.save(job)
-            if (ex is ResponseStatusException) throw ex
-            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "문서 분석에 실패했습니다.")
+            logger.warn("document ingestion failed fileId={} reason={}", file.id, ex.message)
+            throw ex
         }
+    }
 
-        return toIngestionResponse(job)
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun markIngestionFailed(jobId: Long, message: String?) {
+        val job = documentIngestionJobRepository.findById(jobId).orElse(null) ?: return
+        if (job.status == DocumentIngestionStatus.READY || job.status == DocumentIngestionStatus.CANCELLED) return
+        job.status = DocumentIngestionStatus.FAILED
+        job.errorMessage = message?.take(1000)
+        job.finishedAt = OffsetDateTime.now()
+        documentIngestionJobRepository.save(job)
     }
 
     @Transactional
     fun startMockInterview(principal: AuthPrincipal, request: StartMockInterviewRequest): StartTechInterviewResponse {
         val actor = loadActiveUser(principal.userId)
+        userGeminiApiKeyService.assertGeminiApiKeyConfigured(actor.id)
         val documentIds = request.documentFileIds.distinct()
         val files = documentIds.map { loadOwnedInterviewDocument(actor.id, it) }
         if (files.isEmpty()) {
@@ -213,11 +258,36 @@ class DocumentInterviewService(
             }
         }
 
+        val categoryContext = categoryContextResolver.resolve(
+            actor = actor,
+            categoryId = request.categoryId,
+            jobName = request.jobName,
+            skillName = request.skillName,
+            createIfMissing = true
+        ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접에는 기술 선택이 필요합니다.")
+        jobSkillCatalogService.ensureCatalog(categoryContext.jobName, categoryContext.skillName)
+
         val requestedCount = request.questionCount.coerceAtLeast(5).coerceAtMost(20)
-        val techCandidates = if (request.categoryId != null) {
-            resolveOrGenerateTechCandidates(actor, request.categoryId, request.difficulty, requestedCount)
-        } else {
-            emptyList()
+        val (techCandidates, generatedQuestions) = userGeminiApiKeyService.withUserApiKey(actor.id) {
+            val resolvedTechCandidates = resolveOrGenerateTechCandidates(
+                actor = actor,
+                categoryId = categoryContext.category.id,
+                difficulty = request.difficulty,
+                requestedCount = requestedCount,
+                context = categoryContext
+            )
+            val techTarget = if (resolvedTechCandidates.isNotEmpty()) {
+                min(resolvedTechCandidates.size, max(1, (requestedCount * 0.4).roundToInt()))
+            } else {
+                0
+            }
+            val documentTarget = max(1, requestedCount - techTarget)
+            val resolvedDocumentQuestions = generateDocumentQuestions(actor, files, request.difficulty, documentTarget)
+            resolvedTechCandidates to resolvedDocumentQuestions
+        }
+
+        if (generatedQuestions.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "문서 기반 질문 생성에 실패했습니다.")
         }
 
         val techTarget = if (techCandidates.isNotEmpty()) {
@@ -225,21 +295,11 @@ class DocumentInterviewService(
         } else {
             0
         }
-        val documentTarget = max(1, requestedCount - techTarget)
-
-        val generatedQuestions = generateDocumentQuestions(actor, files, request.difficulty, documentTarget)
-        if (generatedQuestions.isEmpty()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "문서 기반 질문 생성에 실패했습니다.")
-        }
-
         val selectedTech = techCandidates.shuffled().take(techTarget)
         val queue = buildList {
             addAll(generatedQuestions.map { InterviewPracticeService.QuestionRef(InterviewQuestionKind.DOCUMENT, it.id) })
             addAll(selectedTech.map { InterviewPracticeService.QuestionRef(InterviewQuestionKind.TECH, it.id) })
         }.shuffled()
-        val selectedCategory = request.categoryId?.let { categoryRepository.findByIdAndDeletedAtIsNull(it) }
-        val selectedJob = selectedCategory?.parent ?: selectedCategory
-
         val session = interviewSessionRepository.save(
             InterviewSession(
                 user = actor,
@@ -254,9 +314,9 @@ class DocumentInterviewService(
                             "questionCount" to queue.size,
                             "difficulty" to request.difficulty?.name,
                             "difficultyRating" to difficultyToRating(request.difficulty),
-                            "categoryId" to selectedCategory?.id,
-                            "categoryName" to selectedCategory?.name,
-                            "jobName" to selectedJob?.name,
+                            "categoryId" to categoryContext.category.id,
+                            "categoryName" to categoryContext.skillName,
+                            "jobName" to categoryContext.jobName,
                             "selectedDocuments" to files.map { file ->
                                 mapOf(
                                     "fileId" to file.id,
@@ -288,6 +348,7 @@ class DocumentInterviewService(
     ): List<DocumentQuestion> {
         val allocation = distribute(questionCount, files.size)
         val results = mutableListOf<DocumentQuestion>()
+        val skippedReasons = mutableListOf<String>()
 
         files.forEachIndexed { index, file ->
             val targetCount = allocation[index]
@@ -296,16 +357,67 @@ class DocumentInterviewService(
             val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(actor.id, file.id)
                 .map { it.chunkText }
             if (chunks.isEmpty()) {
-                throw ResponseStatusException(HttpStatus.CONFLICT, "문서 분석 결과가 없습니다: ${file.originalFileName}")
+                val reason = "문서 분석 결과 없음(fileId=${file.id}, name=${file.originalFileName})"
+                logger.warn("document question generation skipped: {}", reason)
+                skippedReasons += reason
+                return@forEachIndexed
             }
 
             val snippets = retrievePromptSnippets(actor.id, file, difficulty, targetCount)
-            val generated = interviewAiOrchestrator.generateDocumentQuestions(
+            val snippetValidation = interviewAiOrchestrator.validateEvidenceSnippets(
                 fileTypeLabel = file.fileType.toPromptLabel(),
-                difficulty = difficulty,
-                questionCount = targetCount,
-                contextSnippets = snippets
+                snippets = snippets
             )
+            val strictValidatedSnippets = snippetValidation.acceptedSnippets
+                .map(::sanitizePromptSnippet)
+                .filter(::isUsablePromptSnippet)
+                .distinct()
+                .take(max(2, min(targetCount + 1, 5)))
+
+            val relaxedValidatedSnippets = if (strictValidatedSnippets.isNotEmpty()) {
+                strictValidatedSnippets
+            } else {
+                (snippets + fallbackPromptSnippets(chunks))
+                    .map(::sanitizePromptSnippet)
+                    .filter(::isUsablePromptSnippet)
+                    .distinct()
+                    .take(max(2, min(targetCount + 1, 5)))
+            }
+            if (relaxedValidatedSnippets.isEmpty()) {
+                val reason = "발췌 검증/완화 모두 실패(fileId=${file.id}, name=${file.originalFileName})"
+                logger.warn("document question generation skipped: {}", reason)
+                skippedReasons += reason
+                return@forEachIndexed
+            }
+            val usedRelaxedFallback = strictValidatedSnippets.isEmpty()
+            if (usedRelaxedFallback) {
+                logger.warn(
+                    "snippet validation strict pass failed -> relaxed fallback applied fileId={} name={}",
+                    file.id,
+                    file.originalFileName
+                )
+            }
+
+            val generated = runCatching {
+                interviewAiOrchestrator.generateDocumentQuestions(
+                    fileTypeLabel = file.fileType.toPromptLabel(),
+                    difficulty = difficulty,
+                    questionCount = targetCount,
+                    contextSnippets = relaxedValidatedSnippets
+                )
+            }.onFailure { ex ->
+                logger.warn(
+                    "document question generation failed fileId={} name={} reason={}",
+                    file.id,
+                    file.originalFileName,
+                    ex.message
+                )
+                skippedReasons += "질문 생성 실패(fileId=${file.id}, name=${file.originalFileName}): ${ex.message}"
+            }.getOrElse { return@forEachIndexed }
+            if (generated.isEmpty()) {
+                skippedReasons += "질문 생성 결과 비어있음(fileId=${file.id}, name=${file.originalFileName})"
+                return@forEachIndexed
+            }
 
             val set = documentQuestionSetRepository.save(
                 DocumentQuestionSet(
@@ -320,7 +432,20 @@ class DocumentInterviewService(
                         mapOf(
                             "difficulty" to difficulty?.name,
                             "requestedQuestionCount" to targetCount,
-                            "generatedAt" to OffsetDateTime.now().toString()
+                            "generatedAt" to OffsetDateTime.now().toString(),
+                            "snippetValidation" to mapOf(
+                                "inputCount" to snippets.size,
+                                "acceptedCount" to relaxedValidatedSnippets.size,
+                                "strictAcceptedCount" to strictValidatedSnippets.size,
+                                "usedRelaxedFallback" to usedRelaxedFallback,
+                                "details" to snippetValidation.details.map {
+                                    mapOf(
+                                        "index" to it.index,
+                                        "accepted" to it.accepted,
+                                        "reason" to it.reason
+                                    )
+                                }
+                            )
                         )
                     ),
                     questionCount = generated.size
@@ -345,6 +470,18 @@ class DocumentInterviewService(
             results += persisted
         }
 
+        if (results.isEmpty()) {
+            val reason = skippedReasons.firstOrNull()?.let { "($it)" } ?: ""
+            throw ResponseStatusException(HttpStatus.CONFLICT, "문서 질문 생성에 사용할 유효 근거가 부족합니다. $reason".trim())
+        }
+        if (results.size < questionCount) {
+            logger.warn(
+                "document question generation partial success requested={} generated={} skipped={}",
+                questionCount,
+                results.size,
+                skippedReasons.size
+            )
+        }
         return results.take(questionCount)
     }
 
@@ -566,46 +703,62 @@ class DocumentInterviewService(
         actor: User,
         categoryId: Long,
         difficulty: QuestionDifficulty?,
-        requestedCount: Int
+        requestedCount: Int,
+        context: InterviewCategoryContextResolver.ResolvedCategoryContext? = null
     ): List<QaQuestion> {
         val existing = resolveTechCandidates(actor.id, categoryId, difficulty)
         if (existing.isNotEmpty()) return existing
-        return generateTechQuestionsForCategory(actor, categoryId, difficulty, requestedCount)
+        return generateTechQuestionsForCategory(actor, categoryId, difficulty, requestedCount, context)
     }
 
     private fun generateTechQuestionsForCategory(
         actor: User,
         categoryId: Long,
         difficulty: QuestionDifficulty?,
-        requestedCount: Int
+        requestedCount: Int,
+        context: InterviewCategoryContextResolver.ResolvedCategoryContext? = null
     ): List<QaQuestion> {
         val category = categoryRepository.findByIdAndDeletedAtIsNull(categoryId)
             ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효하지 않은 categoryId 입니다: $categoryId")
+        val jobName = context?.jobName ?: category.parent?.name?.trim().orEmpty().ifBlank { "직무" }
+        val skillName = context?.skillName ?: category.name.trim().ifBlank { "기술" }
+        jobSkillCatalogService.ensureCatalog(jobName, skillName)
 
-        val generated = interviewAiOrchestrator.generateTechQuestions(
-            categoryPath = category.path,
-            difficulty = difficulty,
-            questionCount = requestedCount.coerceAtLeast(5)
-        )
+        val generated = try {
+            interviewAiOrchestrator.generateTechQuestions(
+                jobName = jobName,
+                skillName = skillName,
+                difficulty = difficulty,
+                questionCount = requestedCount.coerceAtLeast(5)
+            )
+        } catch (ex: IllegalStateException) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, ex.message ?: "기술 질문 생성에 실패했습니다.")
+        } catch (ex: ResponseStatusException) {
+            throw ex
+        } catch (ex: Exception) {
+            logger.warn("tech question generation error categoryId={} reason={}", categoryId, ex.message)
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "기술 질문 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+        }
         if (generated.isEmpty()) return emptyList()
 
-        val autoSetTitle = "AUTO:${category.path}"
+        val autoSetTitle = "AUTO:$jobName/$skillName"
         val autoSet = questionSetRepository.findFirstByOwnerUser_IdAndTitleAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id, autoSetTitle)
             ?: questionSetRepository.save(
                 QaQuestionSet(
                     ownerUser = actor,
                     ownerType = QuestionSetOwnerType.USER,
                     title = autoSetTitle,
+                    jobName = jobName,
+                    skillName = skillName,
                     description = "모의면접 시작 시 자동 생성된 기술 문답",
                     visibility = QuestionSetVisibility.PRIVATE,
-                    status = QuestionSetStatus.ACTIVE,
-                    embeddingStatus = EmbeddingStatus.NOT_EMBEDDED
+                    status = QuestionSetStatus.ACTIVE
                 )
             )
 
         val collected = mutableListOf<QaQuestion>()
         generated.forEach { item ->
-            val fingerprint = fingerprintFor(item.questionText, category.path, (difficulty ?: QuestionDifficulty.MEDIUM).name)
+            val fingerprint = fingerprintFor(item.questionText, categoryKey(category), (difficulty ?: QuestionDifficulty.MEDIUM).name)
             val question = questionRepository.findByFingerprintAndDeletedAtIsNull(fingerprint)
                 ?: questionRepository.save(
                     QaQuestion(
@@ -613,6 +766,8 @@ class DocumentInterviewService(
                         questionText = item.questionText.trim(),
                         canonicalAnswer = item.canonicalAnswer?.trim(),
                         category = category,
+                        jobName = jobName,
+                        skillName = skillName,
                         difficulty = difficulty ?: QuestionDifficulty.MEDIUM,
                         sourceTag = QuestionSourceTag.USER,
                         tagsJson = objectMapper.writeValueAsString(item.tags.distinct()),
@@ -637,11 +792,19 @@ class DocumentInterviewService(
     private fun isAcceptableTechQuestion(question: QaQuestion): Boolean {
         val normalized = question.questionText.replace(Regex("\\s+"), " ").trim()
         if (normalized.length < 18) return false
-        if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED)\\b").containsMatchIn(normalized)) return false
-
-        val rawCategoryCode = question.category.code.trim().uppercase()
-        if (rawCategoryCode.isNotBlank() && normalized.contains(rawCategoryCode)) return false
-
+        // NOTE:
+        // 과도한 하드 필터를 비활성화한다.
+        // 품질 보정은 생성 프롬프트/평가 단계에서 처리한다.
+        // if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED)\\b").containsMatchIn(normalized)) return false
+        // val focusTokens = question.category.name
+        //     .lowercase()
+        //     .split(Regex("[^a-z0-9가-힣]+"))
+        //     .filter { it.length >= 2 }
+        //     .toSet()
+        // if (focusTokens.isNotEmpty()) {
+        //     val lowered = normalized.lowercase()
+        //     if (focusTokens.none { lowered.contains(it) }) return false
+        // }
         return true
     }
 
@@ -684,6 +847,8 @@ class DocumentInterviewService(
                     question = question,
                     questionTextSnapshot = question.questionText,
                     categorySnapshot = question.category.name,
+                    jobSnapshot = question.jobName ?: question.category.parent?.name?.trim(),
+                    skillSnapshot = question.skillName ?: question.category.name.trim(),
                     category = question.category,
                     difficulty = question.difficulty.name,
                     tagsJson = question.tagsJson
@@ -780,6 +945,11 @@ class DocumentInterviewService(
         val digest = MessageDigest.getInstance("SHA-256")
         return digest.digest(normalized.toByteArray())
             .joinToString("") { "%02x".format(it) }
+    }
+
+    private fun categoryKey(category: com.cw.vlainter.domain.interview.entity.QaCategory): String {
+        val job = category.parent?.name?.trim().orEmpty()
+        return "$job/${category.name.trim()}".trim()
     }
 
     private fun FileType.toPromptLabel(): String = when (this) {

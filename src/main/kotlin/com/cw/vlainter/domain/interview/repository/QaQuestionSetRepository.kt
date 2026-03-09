@@ -4,13 +4,25 @@ import com.cw.vlainter.domain.interview.entity.QaQuestionSet
 import com.cw.vlainter.domain.interview.entity.QuestionSetStatus
 import com.cw.vlainter.domain.interview.entity.QuestionSetVisibility
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Query
+import org.springframework.data.repository.query.Param
 
 interface QaQuestionSetRepository : JpaRepository<QaQuestionSet, Long> {
     fun findByIdAndDeletedAtIsNull(id: Long): QaQuestionSet?
 
     fun findFirstByOwnerUser_IdAndTitleAndDeletedAtIsNullOrderByCreatedAtDesc(userId: Long, title: String): QaQuestionSet?
 
-    fun findAllByOwnerUser_IdAndDeletedAtIsNullOrderByCreatedAtDesc(userId: Long): List<QaQuestionSet>
+    @Query(
+        """
+        select s
+        from QaQuestionSet s
+        where s.ownerUser.id = :userId
+          and s.deletedAt is null
+          and upper(s.title) not like 'AUTO:%'
+        order by s.createdAt desc
+        """
+    )
+    fun findVisibleUserSets(@Param("userId") userId: Long): List<QaQuestionSet>
 
     fun findAllByVisibilityAndStatusAndDeletedAtIsNullOrderByCreatedAtDesc(
         visibility: QuestionSetVisibility,
@@ -18,8 +30,4 @@ interface QaQuestionSetRepository : JpaRepository<QaQuestionSet, Long> {
     ): List<QaQuestionSet>
 
     fun findAllByDeletedAtIsNullOrderByCreatedAtDesc(): List<QaQuestionSet>
-
-    fun findTop10ByEmbeddingStatusAndDeletedAtIsNullOrderByEmbeddingRequestedAtAsc(
-        status: com.cw.vlainter.domain.interview.entity.EmbeddingStatus
-    ): List<QaQuestionSet>
 }

@@ -37,6 +37,12 @@ class QaQuestionSet(
     @Column(name = "description")
     var description: String? = null,
 
+    @Column(name = "job_name", length = 120)
+    var jobName: String? = null,
+
+    @Column(name = "skill_name", length = 120)
+    var skillName: String? = null,
+
     @Enumerated(EnumType.STRING)
     @Column(name = "visibility", nullable = false, length = 10)
     var visibility: QuestionSetVisibility = QuestionSetVisibility.PRIVATE,
@@ -44,25 +50,6 @@ class QaQuestionSet(
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     var status: QuestionSetStatus = QuestionSetStatus.ACTIVE,
-
-    @Enumerated(EnumType.STRING)
-    @Column(name = "embedding_status", nullable = false, length = 20)
-    var embeddingStatus: EmbeddingStatus = EmbeddingStatus.NOT_EMBEDDED,
-
-    @Column(name = "embedding_model", length = 120)
-    var embeddingModel: String? = null,
-
-    @Column(name = "embedding_version", length = 120)
-    var embeddingVersion: String? = null,
-
-    @Column(name = "embedding_requested_at")
-    var embeddingRequestedAt: OffsetDateTime? = null,
-
-    @Column(name = "embedded_at")
-    var embeddedAt: OffsetDateTime? = null,
-
-    @Column(name = "embedding_error")
-    var embeddingError: String? = null,
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "source_set_id")

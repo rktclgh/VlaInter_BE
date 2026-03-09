@@ -6,8 +6,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 data class GeminiProperties(
     val apiKey: String = "",
     val baseUrl: String = "https://generativelanguage.googleapis.com",
-    val chatModel: String = "gemini-2.5-flash",
+    val chatModel: String = "gemini-3.1-flash-lite",
     val embeddingModel: String = "gemini-embedding-001",
+    val chatMaxRequestsPerMinute: Int = 5,
     val embeddingOutputDimensionality: Int = 768,
     val temperature: Double = 0.2,
     val connectTimeoutSeconds: Long = 3,

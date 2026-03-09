@@ -4,14 +4,17 @@ import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.dto.TurnEvaluationResponse
 import com.cw.vlainter.domain.interview.entity.InterviewTurn
 import com.cw.vlainter.domain.interview.entity.InterviewTurnEvaluation
+import com.cw.vlainter.domain.interview.entity.QuestionSourceTag
 import com.cw.vlainter.domain.interview.entity.TurnEvaluationStatus
 import com.cw.vlainter.domain.interview.repository.InterviewTurnEvaluationRepository
 import com.cw.vlainter.domain.interview.repository.InterviewTurnRepository
 import com.cw.vlainter.domain.interview.repository.UserQuestionAttemptRepository
 import com.cw.vlainter.domain.interview.entity.UserQuestionAttempt
+import com.cw.vlainter.domain.user.service.UserGeminiApiKeyService
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
@@ -30,6 +33,7 @@ class InterviewEvaluationService(
     private val interviewTurnRepository: InterviewTurnRepository,
     private val interviewTurnEvaluationRepository: InterviewTurnEvaluationRepository,
     private val userQuestionAttemptRepository: UserQuestionAttemptRepository,
+    private val userGeminiApiKeyService: UserGeminiApiKeyService,
     private val objectMapper: ObjectMapper,
     private val selfProvider: ObjectProvider<InterviewEvaluationService>
 ) {
@@ -58,9 +62,11 @@ class InterviewEvaluationService(
                 return@withLock existing.toResponse()
             }
 
-            val evaluation = buildEvaluation(turn, answer)
+            val evaluation = userGeminiApiKeyService.withUserApiKey(turn.session.user.id) {
+                buildEvaluation(turn, answer)
+            }
 
-            val saved = existing?.apply {
+            val candidate = existing?.apply {
                 totalScore = evaluation.score
                 feedback = evaluation.feedback
                 bestPractice = evaluation.bestPractice
@@ -79,10 +85,10 @@ class InterviewEvaluationService(
                 modelVersion = evaluation.modelVersion
             )
 
-            interviewTurnEvaluationRepository.save(saved)
+            val saved = saveTurnEvaluationWithConflictRecovery(turn.id, candidate)
             turn.evaluationStatus = TurnEvaluationStatus.DONE
 
-            if (turn.question != null && !userQuestionAttemptRepository.existsByTurn_Id(turn.id)) {
+            if (turn.question != null && shouldStoreHistory(turn.session.configJson) && !userQuestionAttemptRepository.existsByTurn_Id(turn.id)) {
                 userQuestionAttemptRepository.save(
                     UserQuestionAttempt(
                         user = turn.session.user,
@@ -100,6 +106,26 @@ class InterviewEvaluationService(
         }
     }
 
+    private fun saveTurnEvaluationWithConflictRecovery(turnId: Long, candidate: InterviewTurnEvaluation): InterviewTurnEvaluation {
+        return try {
+            interviewTurnEvaluationRepository.saveAndFlush(candidate)
+        } catch (ex: DataIntegrityViolationException) {
+            val existing = interviewTurnEvaluationRepository.findByTurn_Id(turnId)
+            if (existing == null) {
+                throw ex
+            }
+            logger.warn("turn evaluation race recovered turnId={}", turnId)
+            existing.totalScore = candidate.totalScore
+            existing.feedback = candidate.feedback
+            existing.bestPractice = candidate.bestPractice
+            existing.rubricScoresJson = candidate.rubricScoresJson
+            existing.evidenceJson = candidate.evidenceJson
+            existing.model = candidate.model
+            existing.modelVersion = candidate.modelVersion
+            interviewTurnEvaluationRepository.saveAndFlush(existing)
+        }
+    }
+
     @Transactional
     fun evaluateOutstandingTurnsSync(sessionId: Long) {
         interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(sessionId)
@@ -114,6 +140,7 @@ class InterviewEvaluationService(
     }
 
     private fun buildEvaluation(turn: InterviewTurn, answer: String): EvaluationResult {
+        val userGeneratedQuestion = turn.question?.sourceTag == QuestionSourceTag.USER
         val resolvedAnswer = resolveAnswerContent(
             questionText = turn.questionTextSnapshot,
             rawModelAnswer = turn.question?.canonicalAnswer ?: turn.documentQuestion?.referenceAnswer,
@@ -126,7 +153,8 @@ class InterviewEvaluationService(
             return EvaluationResult(
                 score = BigDecimal.ZERO.setScale(2),
                 feedback = "답변이 비어 있습니다. 핵심 내용을 포함해 다시 작성해 주세요.",
-                bestPractice = resolvedAnswer.guideText ?: "질문 의도 1문장, 근거 2~3문장, 결론 1문장 구조로 답변하세요.",
+                bestPractice = if (userGeneratedQuestion) "" else resolvedAnswer.guideText
+                    .orEmpty(),
                 modelAnswer = resolvedAnswer.modelAnswer,
                 rubricScoresJson = """{"coverage":0,"accuracy":0,"communication":0}""",
                 evidenceJson = "[]",
@@ -153,7 +181,7 @@ class InterviewEvaluationService(
             return EvaluationResult(
                 score = aiEvaluation.score,
                 feedback = aiEvaluation.feedback,
-                bestPractice = aiEvaluation.bestPractice.ifBlank { resolvedAnswer.guideText.orEmpty() },
+                bestPractice = if (userGeneratedQuestion) "" else aiEvaluation.bestPractice.ifBlank { resolvedAnswer.guideText.orEmpty() },
                 modelAnswer = resolvedAnswer.modelAnswer,
                 rubricScoresJson = aiEvaluation.rubricScoresJson,
                 evidenceJson = aiEvaluation.evidenceJson,
@@ -184,12 +212,7 @@ class InterviewEvaluationService(
             else -> "핵심 포인트 누락이 있습니다. 용어 정의와 문제 해결 흐름을 분리해 작성해 보세요."
         }
 
-        val bestPractice = resolvedAnswer.guideText
-            ?: if (canonical.isBlank()) {
-                "질문 의도를 재진술한 뒤, 실무 예시와 트레이드오프를 포함해 답변하세요."
-            } else {
-                "모범답안의 핵심 키워드를 기준으로 1) 정의 2) 적용 사례 3) 한계/개선 순서로 답변하세요."
-            }
+        val bestPractice = if (userGeneratedQuestion) "" else resolvedAnswer.guideText.orEmpty()
 
         return EvaluationResult(
             score = score,
@@ -236,9 +259,16 @@ class InterviewEvaluationService(
         return TurnEvaluationResponse(
             score = totalScore,
             feedback = feedback,
-            bestPractice = resolved.guideText ?: bestPractice,
+            bestPractice = if (turn.question?.sourceTag == QuestionSourceTag.USER) "" else resolved.guideText ?: bestPractice,
             modelAnswer = resolved.modelAnswer
         )
+    }
+
+    private fun shouldStoreHistory(configJson: String?): Boolean {
+        if (configJson.isNullOrBlank()) return true
+        val root = runCatching { objectMapper.readTree(configJson) }.getOrNull() ?: return true
+        val saveHistoryNode = root.path("meta").path("saveHistory")
+        return !saveHistoryNode.isBoolean || saveHistoryNode.asBoolean()
     }
 
     private data class EvaluationResult(

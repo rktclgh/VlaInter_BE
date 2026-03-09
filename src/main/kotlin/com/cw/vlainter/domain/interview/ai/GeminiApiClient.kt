@@ -14,15 +14,19 @@ import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Component
 import org.springframework.web.client.RestClientResponseException
 import org.springframework.web.client.RestTemplate
+import java.util.ArrayDeque
 import java.util.function.Supplier
 
 @Component
 class GeminiApiClient(
     restTemplateBuilder: RestTemplateBuilder,
     private val geminiProperties: GeminiProperties,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val apiKeyContextHolder: GeminiApiKeyContextHolder
 ) : LlmProviderClient, EmbeddingProviderClient {
     override val provider: AiProvider = AiProvider.GEMINI
+    private val chatRateLock = Any()
+    private val chatRequestTimes = ArrayDeque<Long>()
 
     private val restTemplate: RestTemplate = restTemplateBuilder
         .requestFactory(Supplier {
@@ -33,11 +37,12 @@ class GeminiApiClient(
         })
         .build()
 
-    override fun isEnabled(): Boolean = geminiProperties.apiKey.isNotBlank()
+    override fun isEnabled(): Boolean = resolveApiKey().isNotBlank()
 
     override fun generateJson(prompt: String, temperature: Double?): LlmGenerationResult {
-        val apiKey = geminiProperties.apiKey.trim()
+        val apiKey = resolveApiKey()
         require(apiKey.isNotBlank()) { "Gemini API key is missing." }
+        waitForChatRateLimitSlot()
 
         val model = geminiProperties.chatModel.trim()
         val url = "${geminiProperties.baseUrl.trim().trimEnd('/')}/v1beta/models/$model:generateContent?key=$apiKey"
@@ -82,7 +87,7 @@ class GeminiApiClient(
     }
 
     override fun embedText(text: String): EmbeddingGenerationResult {
-        val apiKey = geminiProperties.apiKey.trim()
+        val apiKey = resolveApiKey()
         require(apiKey.isNotBlank()) { "Gemini API key is missing." }
 
         val model = geminiProperties.embeddingModel.trim()
@@ -132,6 +137,38 @@ class GeminiApiClient(
             }
             error("Gemini 호출 실패: ${ex.message}")
         }
+    }
+
+    private fun waitForChatRateLimitSlot() {
+        val maxPerMinute = geminiProperties.chatMaxRequestsPerMinute.coerceAtLeast(1)
+        val windowMillis = 60_000L
+        while (true) {
+            val waitMillis = synchronized(chatRateLock) {
+                val now = System.currentTimeMillis()
+                while (chatRequestTimes.isNotEmpty() && now - chatRequestTimes.first() >= windowMillis) {
+                    chatRequestTimes.removeFirst()
+                }
+                if (chatRequestTimes.size < maxPerMinute) {
+                    chatRequestTimes.addLast(now)
+                    0L
+                } else {
+                    val earliest = chatRequestTimes.first()
+                    (windowMillis - (now - earliest)).coerceAtLeast(100L)
+                }
+            }
+            if (waitMillis <= 0L) return
+            try {
+                Thread.sleep(waitMillis)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                error("Gemini 호출 대기 중 인터럽트가 발생했습니다.")
+            }
+        }
+    }
+
+    private fun resolveApiKey(): String {
+        return apiKeyContextHolder.currentApiKey()
+            ?: geminiProperties.apiKey.trim()
     }
 }
 

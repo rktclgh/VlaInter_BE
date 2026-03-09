@@ -39,6 +39,9 @@ class User (
     @Column(nullable = false)
     var point: Long = 0,
 
+    @Column(name = "gemini_api_key_encrypted", length = 4096)
+    var geminiApiKeyEncrypted: String? = null,
+
     @Column(name = "created_at", nullable = false)
     var createdAt: OffsetDateTime? = null,
 
