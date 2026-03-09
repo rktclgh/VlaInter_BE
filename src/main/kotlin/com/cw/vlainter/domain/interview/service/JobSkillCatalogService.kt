@@ -60,15 +60,18 @@ class JobSkillCatalogService(
     fun listSkills(jobName: String?, query: String?): List<SkillSummaryResponse> {
         val normalizedJob = jobName?.trim()?.lowercase().orEmpty()
         val normalizedQuery = query?.trim()?.lowercase().orEmpty()
+        val resolvedJob = if (normalizedJob.isNotBlank()) {
+            jobRepository.findByNormalizedName(normalizedJob) ?: return emptyList()
+        } else {
+            null
+        }
 
         val skills = when {
-            normalizedJob.isNotBlank() && normalizedQuery.isNotBlank() -> {
-                val job = jobRepository.findByNormalizedName(normalizedJob) ?: return emptyList()
-                skillRepository.findTop20ByJob_IdAndNormalizedNameContainingOrderByNameAsc(job.id, normalizedQuery)
+            resolvedJob != null && normalizedQuery.isNotBlank() -> {
+                skillRepository.findTop20ByJob_IdAndNormalizedNameContainingOrderByNameAsc(resolvedJob.id, normalizedQuery)
             }
-            normalizedJob.isNotBlank() -> {
-                val job = jobRepository.findByNormalizedName(normalizedJob) ?: return emptyList()
-                skillRepository.findTop20ByJob_IdOrderByNameAsc(job.id)
+            resolvedJob != null -> {
+                skillRepository.findTop20ByJob_IdOrderByNameAsc(resolvedJob.id)
             }
             normalizedQuery.isNotBlank() -> {
                 skillRepository.findTop20ByNormalizedNameContainingOrderByNameAsc(normalizedQuery)

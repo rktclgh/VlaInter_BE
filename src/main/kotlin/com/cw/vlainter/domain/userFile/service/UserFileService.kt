@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.userFile.service
 
 import com.cw.vlainter.domain.interview.repository.DocChunkEmbeddingRepository
 import com.cw.vlainter.domain.interview.repository.DocumentIngestionJobRepository
+import com.cw.vlainter.domain.interview.entity.DocumentIngestionStatus
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
@@ -114,6 +115,16 @@ class UserFileService(
         val storedPath = buildStoredPath(objectKey)
         val contentType = file.contentType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
 
+        if (fileType != FileType.PROFILE_IMAGE) {
+            val currentCount = userFileRepository.countByUser_IdAndFileTypeAndDeletedAtIsNull(actor.id, fileType)
+            if (currentCount >= MAX_DOCUMENT_FILES_PER_TYPE) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "${fileType.koreanLabel()} 파일은 최대 ${MAX_DOCUMENT_FILES_PER_TYPE}개까지 보관할 수 있습니다."
+                )
+            }
+        }
+
         putObject(objectKey, contentType, file.bytes)
 
         val saved = try {
@@ -129,14 +140,6 @@ class UserFileService(
                             deleteObjectQuietly(oldDeletionKey)
                         }
                     }
-                }
-            } else {
-                val currentCount = userFileRepository.countByUser_IdAndFileTypeAndDeletedAtIsNull(actor.id, fileType)
-                if (currentCount >= MAX_DOCUMENT_FILES_PER_TYPE) {
-                    throw ResponseStatusException(
-                        HttpStatus.BAD_REQUEST,
-                        "${fileType.koreanLabel()} 파일은 최대 ${MAX_DOCUMENT_FILES_PER_TYPE}개까지 보관할 수 있습니다."
-                    )
                 }
             }
 
@@ -369,7 +372,7 @@ class UserFileService(
             versionNo = file.versionNo,
             active = file.isActive,
             ingestionStatus = latestIngestionJob?.status?.name,
-            ingested = latestIngestionJob?.status?.name == "READY",
+            ingested = latestIngestionJob?.status == DocumentIngestionStatus.READY,
             extractionMethod = extractionMethod,
             ocrUsed = extractionMethod == "OCR_TESSERACT"
         )

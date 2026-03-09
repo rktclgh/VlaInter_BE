@@ -45,7 +45,7 @@ class SavedQuestion(
     @JoinColumn(name = "source_turn_id")
     val sourceTurn: InterviewTurn? = null,
 
-    @Column(name = "question_text_snapshot", nullable = false)
+    @Column(name = "question_text_snapshot", nullable = false, columnDefinition = "text")
     var questionTextSnapshot: String,
 
     @Column(name = "category_snapshot", length = 80)

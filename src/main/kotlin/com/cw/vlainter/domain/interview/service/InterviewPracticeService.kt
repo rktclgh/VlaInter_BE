@@ -309,6 +309,11 @@ class InterviewPracticeService(
     fun deleteSavedQuestion(principal: AuthPrincipal, savedQuestionId: Long) {
         val saved = savedQuestionRepository.findByIdAndUser_Id(savedQuestionId, principal.userId)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "저장된 질문을 찾을 수 없습니다.")
+        val sourceTurn = saved.sourceTurn
+        if (sourceTurn != null) {
+            sourceTurn.isBookmarked = false
+            interviewTurnRepository.save(sourceTurn)
+        }
         savedQuestionRepository.delete(saved)
     }
 
@@ -352,11 +357,8 @@ class InterviewPracticeService(
                     bookmarked = turn.isBookmarked,
                     evaluation = evaluation?.let {
                         val resolved = resolveAnswerContent(
-                            questionText = turn.questionTextSnapshot,
                             rawModelAnswer = turn.question?.canonicalAnswer ?: turn.documentQuestion?.referenceAnswer,
-                            rawGuideText = it.bestPractice,
-                            difficulty = turn.difficulty,
-                            categoryLabel = turn.categorySnapshot
+                            rawGuideText = it.bestPractice
                         )
                         TurnEvaluationResponse(
                             score = it.totalScore,
@@ -400,6 +402,9 @@ class InterviewPracticeService(
             if (!canAccess) {
                 throw ResponseStatusException(HttpStatus.FORBIDDEN, "해당 질문 세트에 접근할 수 없습니다.")
             }
+            if (set.status != QuestionSetStatus.ACTIVE) {
+                throw ResponseStatusException(HttpStatus.FORBIDDEN, "비활성 질문 세트는 연습에 사용할 수 없습니다.")
+            }
             return questionSetItemRepository.findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(set.id)
                 .map { it.question }
                 .filter { matchesFilter(it, request, filterCategoryIds) }
@@ -436,7 +441,7 @@ class InterviewPracticeService(
         if (generated.isEmpty()) return emptyList()
 
         val setTitle = "AUTO:$jobName/$skillName"
-        val autoSet = questionSetRepository.findFirstByOwnerUser_IdAndTitleAndDeletedAtIsNullOrderByCreatedAtDesc(owner.id, setTitle)
+        val autoSet = questionSetRepository.findLatestByOwnerUserIdAndTitle(owner.id, setTitle)
             ?: questionSetRepository.save(
                 QaQuestionSet(
                     ownerUser = owner,
@@ -587,11 +592,8 @@ class InterviewPracticeService(
     private fun toSavedQuestionResponse(saved: SavedQuestion): SavedQuestionResponse {
         val evaluation = saved.sourceTurn?.id?.let { interviewTurnEvaluationRepository.findByTurn_Id(it) }
         val resolved = resolveAnswerContent(
-            questionText = saved.questionTextSnapshot,
             rawModelAnswer = saved.question?.canonicalAnswer ?: saved.documentQuestion?.referenceAnswer,
-            rawGuideText = evaluation?.bestPractice,
-            difficulty = saved.difficulty,
-            categoryLabel = saved.categorySnapshot
+            rawGuideText = evaluation?.bestPractice
         )
         return SavedQuestionResponse(
             savedQuestionId = saved.id,

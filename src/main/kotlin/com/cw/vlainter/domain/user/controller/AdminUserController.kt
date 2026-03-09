@@ -52,6 +52,15 @@ class AdminUserController(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @PathVariable memberId: Long
     ): ResponseEntity<Map<String, String>> {
+        userService.hardDeleteMemberByAdmin(principal, memberId)
+        return ResponseEntity.ok(mapOf("message" to "User has been permanently deleted."))
+    }
+
+    @PatchMapping("/{memberId}/deactivate")
+    fun deactivateMember(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable memberId: Long
+    ): ResponseEntity<Map<String, String>> {
         userService.softDeleteMemberByAdmin(principal, memberId)
         return ResponseEntity.ok(mapOf("message" to "회원 계정이 비활성화 처리되었습니다."))
     }

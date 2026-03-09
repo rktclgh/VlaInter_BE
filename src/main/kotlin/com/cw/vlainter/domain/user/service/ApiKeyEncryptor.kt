@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.user.service
 
 import com.cw.vlainter.global.config.properties.ApiKeyEncryptionProperties
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -14,6 +15,7 @@ import javax.crypto.spec.SecretKeySpec
 class ApiKeyEncryptor(
     private val properties: ApiKeyEncryptionProperties
 ) {
+    private val logger = LoggerFactory.getLogger(javaClass)
     private val secureRandom = SecureRandom()
     private val encoder = Base64.getEncoder()
     private val decoder = Base64.getDecoder()
@@ -57,7 +59,8 @@ class ApiKeyEncryptor(
             val bytes = cipher.doFinal(encrypted)
             String(bytes, StandardCharsets.UTF_8)
         }.getOrElse {
-            throw IllegalArgumentException("API 키 복호화에 실패했습니다.")
+            logger.error("API 키 복호화 실패: {}", it.message, it)
+            throw IllegalArgumentException("API 키 복호화에 실패했습니다.", it)
         }
     }
 }

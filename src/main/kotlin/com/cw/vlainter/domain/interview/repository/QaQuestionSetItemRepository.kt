@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param
 
 interface QaQuestionSetItemRepository : JpaRepository<QaQuestionSetItem, Long> {
     fun findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(setId: Long): List<QaQuestionSetItem>
+    fun countBySet_IdAndIsActiveTrue(setId: Long): Long
 
     fun existsBySet_IdAndQuestion_Id(setId: Long, questionId: Long): Boolean
 

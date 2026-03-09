@@ -4,7 +4,7 @@ import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.dto.TurnEvaluationResponse
 import com.cw.vlainter.domain.interview.entity.InterviewTurn
 import com.cw.vlainter.domain.interview.entity.InterviewTurnEvaluation
-import com.cw.vlainter.domain.interview.entity.QuestionSourceTag
+import com.cw.vlainter.domain.interview.entity.TurnSourceTag
 import com.cw.vlainter.domain.interview.entity.TurnEvaluationStatus
 import com.cw.vlainter.domain.interview.repository.InterviewTurnEvaluationRepository
 import com.cw.vlainter.domain.interview.repository.InterviewTurnRepository
@@ -52,57 +52,63 @@ class InterviewEvaluationService(
     @Transactional
     fun evaluateTurnSync(turnId: Long): TurnEvaluationResponse? {
         val lock = turnLocks.computeIfAbsent(turnId) { ReentrantLock() }
-        return lock.withLock {
-            val turn = interviewTurnRepository.findById(turnId).orElse(null) ?: return@withLock null
-            val answer = turn.userAnswer?.trim().orEmpty()
-            if (answer.isBlank()) return@withLock null
+        return try {
+            lock.withLock {
+                val turn = interviewTurnRepository.findById(turnId).orElse(null) ?: return@withLock null
+                val answer = turn.userAnswer?.trim().orEmpty()
+                if (answer.isBlank()) return@withLock null
 
-            val existing = interviewTurnEvaluationRepository.findByTurn_Id(turn.id)
-            if (turn.evaluationStatus == TurnEvaluationStatus.DONE && existing != null) {
-                return@withLock existing.toResponse()
-            }
+                val existing = interviewTurnEvaluationRepository.findByTurn_Id(turn.id)
+                if (turn.evaluationStatus == TurnEvaluationStatus.DONE && existing != null) {
+                    return@withLock existing.toResponse()
+                }
 
-            val evaluation = userGeminiApiKeyService.withUserApiKey(turn.session.user.id) {
-                buildEvaluation(turn, answer)
-            }
+                val evaluation = userGeminiApiKeyService.withUserApiKey(turn.session.user.id) {
+                    buildEvaluation(turn, answer)
+                }
 
-            val candidate = existing?.apply {
-                totalScore = evaluation.score
-                feedback = evaluation.feedback
-                bestPractice = evaluation.bestPractice
-                rubricScoresJson = evaluation.rubricScoresJson
-                evidenceJson = evaluation.evidenceJson
-                model = evaluation.model
-                modelVersion = evaluation.modelVersion
-            } ?: InterviewTurnEvaluation(
-                turn = turn,
-                totalScore = evaluation.score,
-                feedback = evaluation.feedback,
-                bestPractice = evaluation.bestPractice,
-                rubricScoresJson = evaluation.rubricScoresJson,
-                evidenceJson = evaluation.evidenceJson,
-                model = evaluation.model,
-                modelVersion = evaluation.modelVersion
-            )
-
-            val saved = saveTurnEvaluationWithConflictRecovery(turn.id, candidate)
-            turn.evaluationStatus = TurnEvaluationStatus.DONE
-
-            if (turn.question != null && shouldStoreHistory(turn.session.configJson) && !userQuestionAttemptRepository.existsByTurn_Id(turn.id)) {
-                userQuestionAttemptRepository.save(
-                    UserQuestionAttempt(
-                        user = turn.session.user,
-                        question = turn.question,
-                        session = turn.session,
-                        turn = turn,
-                        answerText = answer,
-                        totalScore = evaluation.score,
-                        feedbackSummary = evaluation.feedback
-                    )
+                val candidate = existing?.apply {
+                    totalScore = evaluation.score
+                    feedback = evaluation.feedback
+                    bestPractice = evaluation.bestPractice
+                    rubricScoresJson = evaluation.rubricScoresJson
+                    evidenceJson = evaluation.evidenceJson
+                    model = evaluation.model
+                    modelVersion = evaluation.modelVersion
+                } ?: InterviewTurnEvaluation(
+                    turn = turn,
+                    totalScore = evaluation.score,
+                    feedback = evaluation.feedback,
+                    bestPractice = evaluation.bestPractice,
+                    rubricScoresJson = evaluation.rubricScoresJson,
+                    evidenceJson = evaluation.evidenceJson,
+                    model = evaluation.model,
+                    modelVersion = evaluation.modelVersion
                 )
-            }
 
-            saved.toResponse()
+                val saved = saveTurnEvaluationWithConflictRecovery(turn.id, candidate)
+                turn.evaluationStatus = TurnEvaluationStatus.DONE
+
+                if (turn.question != null && shouldStoreHistory(turn.session.configJson) && !userQuestionAttemptRepository.existsByTurn_Id(turn.id)) {
+                    userQuestionAttemptRepository.save(
+                        UserQuestionAttempt(
+                            user = turn.session.user,
+                            question = turn.question,
+                            session = turn.session,
+                            turn = turn,
+                            answerText = answer,
+                            totalScore = evaluation.score,
+                            feedbackSummary = evaluation.feedback
+                        )
+                    )
+                }
+
+                saved.toResponse()
+            }
+        } finally {
+            if (!lock.hasQueuedThreads()) {
+                turnLocks.remove(turnId, lock)
+            }
         }
     }
 
@@ -140,13 +146,10 @@ class InterviewEvaluationService(
     }
 
     private fun buildEvaluation(turn: InterviewTurn, answer: String): EvaluationResult {
-        val userGeneratedQuestion = turn.question?.sourceTag == QuestionSourceTag.USER
+        val userGeneratedQuestion = turn.sourceTag == TurnSourceTag.USER
         val resolvedAnswer = resolveAnswerContent(
-            questionText = turn.questionTextSnapshot,
             rawModelAnswer = turn.question?.canonicalAnswer ?: turn.documentQuestion?.referenceAnswer,
-            rawGuideText = null,
-            difficulty = turn.difficulty,
-            categoryLabel = turn.categorySnapshot
+            rawGuideText = null
         )
 
         if (answer.isBlank()) {
@@ -250,16 +253,13 @@ class InterviewEvaluationService(
 
     private fun InterviewTurnEvaluation.toResponse(): TurnEvaluationResponse {
         val resolved = resolveAnswerContent(
-            questionText = turn.questionTextSnapshot,
             rawModelAnswer = turn.question?.canonicalAnswer ?: turn.documentQuestion?.referenceAnswer,
-            rawGuideText = bestPractice,
-            difficulty = turn.difficulty,
-            categoryLabel = turn.categorySnapshot
+            rawGuideText = bestPractice
         )
         return TurnEvaluationResponse(
             score = totalScore,
             feedback = feedback,
-            bestPractice = if (turn.question?.sourceTag == QuestionSourceTag.USER) "" else resolved.guideText ?: bestPractice,
+            bestPractice = if (turn.sourceTag == TurnSourceTag.USER) "" else resolved.guideText ?: bestPractice,
             modelAnswer = resolved.modelAnswer
         )
     }

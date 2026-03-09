@@ -11,6 +11,10 @@ import org.springframework.web.server.ResponseStatusException
 class InterviewCategoryContextResolver(
     private val categoryRepository: QaCategoryRepository
 ) {
+    private companion object {
+        const val BUILD_CODE_MAX_ATTEMPTS = 1000
+    }
+
     data class ResolvedCategoryContext(
         val category: QaCategory,
         val jobName: String,
@@ -139,7 +143,12 @@ class InterviewCategoryContextResolver(
 
         var candidate = normalized
         var suffix = 2
+        var attempts = 0
         while (categoryRepository.existsByParent_IdAndCodeAndDeletedAtIsNull(parentId, candidate)) {
+            attempts += 1
+            if (attempts > BUILD_CODE_MAX_ATTEMPTS) {
+                throw ResponseStatusException(HttpStatus.CONFLICT, "카테고리 코드 생성 충돌이 반복되어 중단했습니다.")
+            }
             candidate = "${normalized}_$suffix"
             suffix += 1
         }

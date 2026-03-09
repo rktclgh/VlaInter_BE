@@ -1,3 +1,5 @@
+@file:Suppress("JpaDataSourceORMInspection", "unused")
+
 package com.cw.vlainter.domain.interview.entity
 
 import jakarta.persistence.Column
@@ -10,12 +12,18 @@ import jakarta.persistence.Id
 import jakarta.persistence.PrePersist
 import jakarta.persistence.PreUpdate
 import jakarta.persistence.Table
+import jakarta.persistence.UniqueConstraint
 import org.hibernate.annotations.JdbcTypeCode
 import org.hibernate.type.SqlTypes
 import java.time.OffsetDateTime
 
 @Entity
-@Table(name = "document_ingestion_jobs")
+@Table(
+    name = "document_ingestion_jobs",
+    uniqueConstraints = [
+        UniqueConstraint(name = "uq_document_ingestion_jobs_user_file", columnNames = ["user_id", "document_file_id"])
+    ]
+)
 class DocumentIngestionJob(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

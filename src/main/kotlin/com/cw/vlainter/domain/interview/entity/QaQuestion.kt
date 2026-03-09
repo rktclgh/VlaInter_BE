@@ -66,10 +66,10 @@ class QaQuestion(
     var createdBy: User? = null,
 
     @Column(name = "created_at", nullable = false)
-    var createdAt: OffsetDateTime? = null,
+    var createdAt: OffsetDateTime = OffsetDateTime.now(),
 
     @Column(name = "updated_at", nullable = false)
-    var updatedAt: OffsetDateTime? = null,
+    var updatedAt: OffsetDateTime = OffsetDateTime.now(),
 
     @Column(name = "deleted_at")
     var deletedAt: OffsetDateTime? = null

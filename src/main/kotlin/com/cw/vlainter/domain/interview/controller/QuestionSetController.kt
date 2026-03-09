@@ -7,6 +7,7 @@ import com.cw.vlainter.domain.interview.dto.QuestionSummaryResponse
 import com.cw.vlainter.domain.interview.service.QuestionSetService
 import com.cw.vlainter.global.security.AuthPrincipal
 import jakarta.validation.Valid
+import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.GetMapping
@@ -26,7 +27,8 @@ class QuestionSetController(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @Valid @RequestBody request: CreateQuestionSetRequest
     ): ResponseEntity<QuestionSetSummaryResponse> {
-        return ResponseEntity.ok(questionSetService.createMySet(principal, request))
+        return ResponseEntity.status(HttpStatus.CREATED)
+            .body(questionSetService.createMySet(principal, request))
     }
 
     @GetMapping

@@ -55,11 +55,14 @@ import org.apache.pdfbox.rendering.PDFRenderer
 import org.apache.pdfbox.text.PDFTextStripper
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
@@ -131,22 +134,91 @@ class DocumentInterviewService(
         val actor = loadActiveUser(principal.userId)
         userGeminiApiKeyService.assertGeminiApiKeyConfigured(actor.id)
         val file = loadOwnedInterviewDocument(actor.id, fileId)
-        val latestJob = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
-        if (latestJob != null && (latestJob.status == DocumentIngestionStatus.QUEUED || latestJob.status == DocumentIngestionStatus.PROCESSING)) {
-            return toIngestionResponse(latestJob)
+
+        val existing = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
+        if (existing != null && (existing.status == DocumentIngestionStatus.QUEUED || existing.status == DocumentIngestionStatus.PROCESSING)) {
+            return toIngestionResponse(existing)
         }
 
-        val job = documentIngestionJobRepository.save(
-            DocumentIngestionJob(
-                userId = actor.id,
-                documentFileId = file.id,
-                status = DocumentIngestionStatus.QUEUED
-            )
+        val target = existing ?: DocumentIngestionJob(
+            userId = actor.id,
+            documentFileId = file.id,
+            status = DocumentIngestionStatus.QUEUED
         )
 
-        selfProvider.getObject().ingestDocumentAsync(job.id)
+        target.status = DocumentIngestionStatus.QUEUED
+        target.errorMessage = null
+        target.startedAt = null
+        target.finishedAt = null
+        target.requestedAt = OffsetDateTime.now()
+
+        val job = try {
+            documentIngestionJobRepository.saveAndFlush(target)
+        } catch (ex: DataIntegrityViolationException) {
+            val recovered = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
+            if (recovered != null) {
+                recovered
+            } else {
+                throw ex
+            }
+        }
+
+        runAfterCommit {
+            selfProvider.getObject().ingestDocumentAsync(job.id)
+        }
 
         return toIngestionResponse(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun markIngestionProcessing(jobId: Long): DocumentIngestionJob? {
+        val job = documentIngestionJobRepository.findById(jobId).orElse(null) ?: return null
+        if (job.status == DocumentIngestionStatus.CANCELLED || job.status == DocumentIngestionStatus.READY) return null
+        job.status = DocumentIngestionStatus.PROCESSING
+        job.startedAt = OffsetDateTime.now()
+        job.finishedAt = null
+        job.errorMessage = null
+        return documentIngestionJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun completeIngestion(
+        jobId: Long,
+        userId: Long,
+        fileId: Long,
+        extractionMethod: String,
+        ocrLanguages: String?,
+        text: String,
+        embeddings: List<DocChunkEmbedding>
+    ) {
+        val job = documentIngestionJobRepository.findById(jobId).orElse(null) ?: return
+        if (job.status == DocumentIngestionStatus.CANCELLED) return
+
+        val stillExists = userFileRepository.findByIdAndUser_IdAndDeletedAtIsNull(fileId, userId) != null
+        if (!stillExists) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "분석 중 문서가 삭제되었습니다.")
+        }
+
+        docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(userId, fileId)
+        docChunkEmbeddingRepository.saveAll(embeddings)
+
+        val firstEmbedding = embeddings.first()
+        job.status = DocumentIngestionStatus.READY
+        job.errorMessage = null
+        job.parserName = "pdfbox"
+        job.embeddingModel = firstEmbedding.model
+        job.embeddingVersion = firstEmbedding.modelVersion
+        job.chunkCount = embeddings.size
+        job.metadataJson = objectMapper.writeValueAsString(
+            mapOf(
+                "characterCount" to text.length,
+                "preview" to text.take(500),
+                "extractionMethod" to extractionMethod,
+                "ocrLanguages" to ocrLanguages
+            )
+        )
+        job.finishedAt = OffsetDateTime.now()
+        documentIngestionJobRepository.save(job)
     }
 
     @Async
@@ -158,17 +230,9 @@ class DocumentInterviewService(
             }
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun ingestDocumentSync(jobId: Long) {
-        val job = documentIngestionJobRepository.findById(jobId).orElse(null) ?: return
-        if (job.status == DocumentIngestionStatus.CANCELLED || job.status == DocumentIngestionStatus.READY) return
+        val job = selfProvider.getObject().markIngestionProcessing(jobId) ?: return
         val file = loadOwnedInterviewDocument(job.userId, job.documentFileId)
-
-        job.status = DocumentIngestionStatus.PROCESSING
-        job.startedAt = OffsetDateTime.now()
-        job.finishedAt = null
-        job.errorMessage = null
-        documentIngestionJobRepository.save(job)
 
         try {
             val extracted = extractPdfText(file)
@@ -200,31 +264,15 @@ class DocumentInterviewService(
                 }
             }
 
-            val stillExists = userFileRepository.findByIdAndUser_IdAndDeletedAtIsNull(file.id, job.userId) != null
-            if (!stillExists) {
-                throw ResponseStatusException(HttpStatus.CONFLICT, "분석 중 문서가 삭제되었습니다.")
-            }
-
-            docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(job.userId, file.id)
-            docChunkEmbeddingRepository.saveAll(embeddings)
-
-            val firstEmbedding = embeddings.first()
-            job.status = DocumentIngestionStatus.READY
-            job.errorMessage = null
-            job.parserName = "pdfbox"
-            job.embeddingModel = firstEmbedding.model
-            job.embeddingVersion = firstEmbedding.modelVersion
-            job.chunkCount = embeddings.size
-            job.metadataJson = objectMapper.writeValueAsString(
-                mapOf(
-                    "characterCount" to text.length,
-                    "preview" to text.take(500),
-                    "extractionMethod" to extracted.method,
-                    "ocrLanguages" to extracted.ocrLanguages
-                )
+            selfProvider.getObject().completeIngestion(
+                jobId = job.id,
+                userId = job.userId,
+                fileId = file.id,
+                extractionMethod = extracted.method,
+                ocrLanguages = extracted.ocrLanguages,
+                text = text,
+                embeddings = embeddings
             )
-            job.finishedAt = OffsetDateTime.now()
-            documentIngestionJobRepository.save(job)
         } catch (ex: Exception) {
             logger.warn("document ingestion failed fileId={} reason={}", file.id, ex.message)
             throw ex
@@ -742,7 +790,7 @@ class DocumentInterviewService(
         if (generated.isEmpty()) return emptyList()
 
         val autoSetTitle = "AUTO:$jobName/$skillName"
-        val autoSet = questionSetRepository.findFirstByOwnerUser_IdAndTitleAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id, autoSetTitle)
+        val autoSet = questionSetRepository.findLatestByOwnerUserIdAndTitle(actor.id, autoSetTitle)
             ?: questionSetRepository.save(
                 QaQuestionSet(
                     ownerUser = actor,
@@ -1127,9 +1175,9 @@ class DocumentInterviewService(
                 }
         }.onFailure {
             logger.warn("tesseract language detection failed reason={}", it.message)
-        }.getOrDefault(emptySet()).also {
-            availableTesseractLanguages = it
-        }
+        }.getOrNull()?.also { detected ->
+            availableTesseractLanguages = detected
+        } ?: return null
 
         if (available.isEmpty()) return null
 
@@ -1140,6 +1188,18 @@ class DocumentInterviewService(
 
         val fallback = available.filter { it != "osd" }
         return fallback.takeIf { it.isNotEmpty() }?.joinToString("+")
+    }
+
+    private fun runAfterCommit(action: () -> Unit) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            action()
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCommit() {
+                action()
+            }
+        })
     }
 
     private fun normalizeText(text: String): String {

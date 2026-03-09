@@ -70,7 +70,7 @@ class QuestionSetService(
             .sortedByDescending { it.createdAt }
 
         return merged.map { set ->
-            val count = questionSetItemRepository.findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(set.id).size
+            val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
             toSummary(set, count)
         }
     }
@@ -94,6 +94,22 @@ class QuestionSetService(
             skillName = request.skillName,
             createIfMissing = true
         ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 세트에는 직무와 기술 입력이 필요합니다.")
+
+        val existingJob = set.jobName?.trim().orEmpty()
+        if (existingJob.isNotBlank() && !existingJob.equals(context.jobName, ignoreCase = true)) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "질문 세트 직무(${existingJob})와 추가 질문 직무(${context.jobName})가 일치하지 않습니다."
+            )
+        }
+        val existingSkill = set.skillName?.trim().orEmpty()
+        if (existingSkill.isNotBlank() && !existingSkill.equals(context.skillName, ignoreCase = true)) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "질문 세트 기술(${existingSkill})과 추가 질문 기술(${context.skillName})이 일치하지 않습니다."
+            )
+        }
+
         jobSkillCatalogService.ensureCatalog(context.jobName, context.skillName)
         if (set.jobName.isNullOrBlank()) set.jobName = context.jobName
         if (set.skillName.isNullOrBlank()) set.skillName = context.skillName
@@ -124,16 +140,17 @@ class QuestionSetService(
                 )
             )
 
-        if (!questionSetItemRepository.existsBySet_IdAndQuestion_Id(set.id, question.id)) {
-            val nextOrder = questionSetItemRepository.findMaxOrderNo(set.id) + 1
-            questionSetItemRepository.save(
-                QaQuestionSetItem(
-                    set = set,
-                    question = question,
-                    orderNo = nextOrder
-                )
-            )
+        if (questionSetItemRepository.existsBySet_IdAndQuestion_Id(set.id, question.id)) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "이미 질문 세트에 포함된 질문입니다.")
         }
+        val nextOrder = questionSetItemRepository.findMaxOrderNo(set.id) + 1
+        questionSetItemRepository.save(
+            QaQuestionSetItem(
+                set = set,
+                question = question,
+                orderNo = nextOrder
+            )
+        )
 
         return toQuestionSummary(question)
     }
@@ -150,7 +167,7 @@ class QuestionSetService(
         ensureAdmin(principal)
         return questionSetRepository.findAllByDeletedAtIsNullOrderByCreatedAtDesc()
             .map { set ->
-                val count = questionSetItemRepository.findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(set.id).size
+                val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
                 toSummary(set, count)
             }
     }

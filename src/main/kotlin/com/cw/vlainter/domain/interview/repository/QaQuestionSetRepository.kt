@@ -10,7 +10,20 @@ import org.springframework.data.repository.query.Param
 interface QaQuestionSetRepository : JpaRepository<QaQuestionSet, Long> {
     fun findByIdAndDeletedAtIsNull(id: Long): QaQuestionSet?
 
-    fun findFirstByOwnerUser_IdAndTitleAndDeletedAtIsNullOrderByCreatedAtDesc(userId: Long, title: String): QaQuestionSet?
+    @Query(
+        """
+        select q
+        from QaQuestionSet q
+        where q.ownerUser.id = :userId
+          and q.title = :title
+          and q.deletedAt is null
+        order by q.createdAt desc
+        """
+    )
+    fun findLatestByOwnerUserIdAndTitle(
+        @Param("userId") userId: Long,
+        @Param("title") title: String
+    ): QaQuestionSet?
 
     @Query(
         """

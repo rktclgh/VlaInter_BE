@@ -49,7 +49,7 @@ class InterviewTurn(
     @JoinColumn(name = "document_question_id")
     val documentQuestion: DocumentQuestion? = null,
 
-    @Column(name = "question_text_snapshot", nullable = false)
+    @Column(name = "question_text_snapshot", nullable = false, columnDefinition = "text")
     val questionTextSnapshot: String,
 
     @Column(name = "category_snapshot", length = 80)
@@ -79,7 +79,7 @@ class InterviewTurn(
     @Column(name = "served_at", nullable = false)
     var servedAt: OffsetDateTime = OffsetDateTime.now(),
 
-    @Column(name = "user_answer")
+    @Column(name = "user_answer", columnDefinition = "text")
     var userAnswer: String? = null,
 
     @Column(name = "answered_at")

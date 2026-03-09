@@ -20,6 +20,7 @@ import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.ArgumentMatchers.any
@@ -27,6 +28,8 @@ import org.mockito.ArgumentMatchers.anyString
 import org.mockito.BDDMockito.given
 import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
+import org.springframework.http.HttpStatus
+import org.springframework.web.server.ResponseStatusException
 import java.util.Optional
 
 @ExtendWith(MockitoExtension::class)
@@ -100,15 +103,7 @@ class QuestionSetServiceTests {
         given(questionSetItemRepository.findMaxOrderNo(100L)).willReturn(0)
         given(questionSetItemRepository.save(any(QaQuestionSetItem::class.java))).willAnswer { it.getArgument(0) }
 
-        val service = QuestionSetService(
-            categoryContextResolver = categoryContextResolver,
-            jobSkillCatalogService = jobSkillCatalogService,
-            questionSetRepository = questionSetRepository,
-            questionRepository = questionRepository,
-            questionSetItemRepository = questionSetItemRepository,
-            userRepository = userRepository,
-            objectMapper = ObjectMapper()
-        )
+        val service = createService()
 
         val result = service.addQuestionToSet(
             principal = AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
@@ -132,9 +127,131 @@ class QuestionSetServiceTests {
         assertThat(set.skillName).isEqualTo("재무회계")
     }
 
-    private fun createUser(): User = User(
-        id = 7L,
-        email = "tester@vlainter.com",
+    @Test
+    fun `다른 사용자의 세트에는 질문을 추가할 수 없다`() {
+        val actor = createUser(id = 7L)
+        val owner = createUser(id = 99L, email = "owner@vlainter.com")
+        val set = QaQuestionSet(
+            id = 100L,
+            ownerUser = owner,
+            ownerType = QuestionSetOwnerType.USER,
+            title = "소유자 전용 세트",
+            visibility = QuestionSetVisibility.PRIVATE
+        )
+        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
+        given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
+
+        val exception = assertThrows(ResponseStatusException::class.java) {
+            createService().addQuestionToSet(
+                principal = AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
+                setId = 100L,
+                request = baseAddRequest()
+            )
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.FORBIDDEN)
+    }
+
+    @Test
+    fun `이미 포함된 질문은 중복 추가할 수 없다`() {
+        val actor = createUser(id = 7L)
+        val set = QaQuestionSet(
+            id = 100L,
+            ownerUser = actor,
+            ownerType = QuestionSetOwnerType.USER,
+            title = "재무회계 세트",
+            visibility = QuestionSetVisibility.PRIVATE
+        )
+        val category = createCategory()
+        val resolvedContext = InterviewCategoryContextResolver.ResolvedCategoryContext(
+            category = category,
+            jobName = "회계사",
+            skillName = "재무회계"
+        )
+        val existingQuestion = QaQuestion(
+            id = 200L,
+            fingerprint = "fingerprint",
+            questionText = "재무제표 신뢰성을 높이기 위한 내부통제 핵심을 설명해 주세요.",
+            canonicalAnswer = "통제환경, 위험평가, 통제활동, 정보/소통, 모니터링을 기준으로 설명합니다.",
+            category = category,
+            jobName = "회계사",
+            skillName = "재무회계",
+            difficulty = QuestionDifficulty.MEDIUM,
+            sourceTag = com.cw.vlainter.domain.interview.entity.QuestionSourceTag.USER,
+            tagsJson = "[]"
+        )
+
+        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
+        given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
+        given(
+            categoryContextResolver.resolve(
+                actor = actor,
+                categoryId = null,
+                jobName = "회계사",
+                skillName = "재무회계",
+                createIfMissing = true
+            )
+        ).willReturn(resolvedContext)
+        given(questionRepository.findByFingerprintAndDeletedAtIsNull(anyString())).willReturn(existingQuestion)
+        given(questionSetItemRepository.existsBySet_IdAndQuestion_Id(100L, 200L)).willReturn(true)
+
+        val exception = assertThrows(ResponseStatusException::class.java) {
+            createService().addQuestionToSet(
+                principal = AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
+                setId = 100L,
+                request = baseAddRequest()
+            )
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.CONFLICT)
+    }
+
+    @Test
+    fun `존재하지 않는 질문 세트 ID면 예외를 던진다`() {
+        given(userRepository.findById(7L)).willReturn(Optional.of(createUser(id = 7L)))
+        given(questionSetRepository.findByIdAndDeletedAtIsNull(999L)).willReturn(null)
+
+        val exception = assertThrows(ResponseStatusException::class.java) {
+            createService().addQuestionToSet(
+                principal = AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
+                setId = 999L,
+                request = baseAddRequest()
+            )
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.NOT_FOUND)
+    }
+
+    private fun createService(): QuestionSetService {
+        return QuestionSetService(
+            categoryContextResolver = categoryContextResolver,
+            jobSkillCatalogService = jobSkillCatalogService,
+            questionSetRepository = questionSetRepository,
+            questionRepository = questionRepository,
+            questionSetItemRepository = questionSetItemRepository,
+            userRepository = userRepository,
+            objectMapper = ObjectMapper()
+        )
+    }
+
+    private fun baseAddRequest(): AddQuestionToSetRequest {
+        return AddQuestionToSetRequest(
+            questionText = "재무제표 신뢰성을 높이기 위한 내부통제 핵심을 설명해 주세요.",
+            canonicalAnswer = "통제환경, 위험평가, 통제활동, 정보/소통, 모니터링을 기준으로 설명합니다.",
+            categoryId = null,
+            jobName = "회계사",
+            skillName = "재무회계",
+            difficulty = QuestionDifficulty.MEDIUM,
+            tags = listOf("재무제표", "내부통제")
+        )
+    }
+
+    private fun createUser(
+        id: Long = 7L,
+        email: String = "tester@vlainter.com"
+    ): User = User(
+        id = id,
+        email = email,
         password = "encoded-password",
         name = "Tester",
         status = UserStatus.ACTIVE,

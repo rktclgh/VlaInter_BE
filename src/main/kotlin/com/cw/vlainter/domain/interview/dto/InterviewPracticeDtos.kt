@@ -7,6 +7,7 @@ import com.cw.vlainter.domain.interview.entity.TurnSourceTag
 import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.Size
 import java.math.BigDecimal
 import java.time.OffsetDateTime
 
@@ -46,6 +47,7 @@ data class StartTechInterviewResponse(
 
 data class SubmitInterviewAnswerRequest(
     @field:NotBlank(message = "답변은 비어 있을 수 없습니다.")
+    @field:Size(max = 2000, message = "답변은 2000자 이하여야 합니다.")
     val answer: String
 )
 

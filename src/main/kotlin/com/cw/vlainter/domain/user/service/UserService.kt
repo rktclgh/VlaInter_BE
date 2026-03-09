@@ -170,6 +170,9 @@ class UserService(
         targetUser.email = "deletedUser${targetUser.id}@vlainter.online"
         targetUser.name = "Deleted User ${targetUser.id}"
         userRepository.save(targetUser)
+        runAfterCommit {
+            loginSessionStore.deleteAllByUserId(targetUser.id)
+        }
     }
 
     @Transactional

@@ -5,6 +5,7 @@ import com.cw.vlainter.domain.interview.dto.CreateCategoryRequest
 import com.cw.vlainter.domain.interview.service.CategoryAdminService
 import com.cw.vlainter.global.security.AuthPrincipal
 import jakarta.validation.Valid
+import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
@@ -28,6 +29,7 @@ class InterviewCatalogController(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @Valid @RequestBody request: CreateCategoryRequest
     ): ResponseEntity<CategoryResponse> {
-        return ResponseEntity.ok(categoryAdminService.createCategory(principal, request))
+        return ResponseEntity.status(HttpStatus.CREATED)
+            .body(categoryAdminService.createCategory(principal, request))
     }
 }

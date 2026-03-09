@@ -20,13 +20,9 @@ fun isGuideLikeText(value: String?): Boolean {
     return GUIDE_LIKE_PATTERNS.any { it.containsMatchIn(text) }
 }
 
-@Suppress("UNUSED_PARAMETER")
 fun resolveAnswerContent(
-    questionText: String,
     rawModelAnswer: String?,
-    rawGuideText: String?,
-    difficulty: String? = null,
-    categoryLabel: String? = null
+    rawGuideText: String?
 ): ResolvedAnswerContent {
     val modelAnswer = rawModelAnswer
         ?.trim()

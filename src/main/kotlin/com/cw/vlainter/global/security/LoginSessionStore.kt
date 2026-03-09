@@ -75,6 +75,20 @@ class LoginSessionStore(
         redisTemplate.delete(key(sessionId))
     }
 
+    fun deleteAllByUserId(userId: Long) {
+        val sessionKeys = redisTemplate.keys("auth:session:*")
+        if (sessionKeys.isEmpty()) return
+
+        sessionKeys.forEach { sessionKey ->
+            val storedUserId = redisTemplate.opsForHash<String, String>()
+                .get(sessionKey, "userId")
+                ?.toLongOrNull()
+            if (storedUserId == userId) {
+                redisTemplate.delete(sessionKey)
+            }
+        }
+    }
+
     /**
      * Redis 세션 키 생성.
      */

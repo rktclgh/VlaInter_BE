@@ -10,10 +10,16 @@ import jakarta.persistence.Id
 import jakarta.persistence.PrePersist
 import jakarta.persistence.PreUpdate
 import jakarta.persistence.Table
+import jakarta.persistence.UniqueConstraint
 import java.time.OffsetDateTime
 
 @Entity
-@Table(name = "jobs")
+@Table(
+    name = "jobs",
+    uniqueConstraints = [
+        UniqueConstraint(name = "uq_jobs_normalized_name", columnNames = ["normalized_name"])
+    ]
+)
 class Job(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -22,7 +28,7 @@ class Job(
     @Column(name = "name", nullable = false, length = 120)
     var name: String,
 
-    @Column(name = "normalized_name", nullable = false, length = 120)
+    @Column(name = "normalized_name", nullable = false, length = 120, unique = true)
     var normalizedName: String,
 
     @Column(name = "slug", length = 140)

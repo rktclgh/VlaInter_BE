@@ -45,11 +45,8 @@ class GeminiApiClient(
         waitForChatRateLimitSlot()
 
         val model = geminiProperties.chatModel.trim()
-        val url = "${geminiProperties.baseUrl.trim().trimEnd('/')}/v1beta/models/$model:generateContent?key=$apiKey"
-
-        val headers = HttpHeaders()
-        headers.contentType = MediaType.APPLICATION_JSON
-        headers.accept = listOf(MediaType.APPLICATION_JSON)
+        val url = "${geminiProperties.baseUrl.trim().trimEnd('/')}/v1beta/models/$model:generateContent"
+        val headers = geminiHeaders(apiKey)
 
         val payload = GeminiGenerateContentRequest(
             contents = listOf(
@@ -91,11 +88,8 @@ class GeminiApiClient(
         require(apiKey.isNotBlank()) { "Gemini API key is missing." }
 
         val model = geminiProperties.embeddingModel.trim()
-        val url = "${geminiProperties.baseUrl.trim().trimEnd('/')}/v1beta/models/$model:embedContent?key=$apiKey"
-
-        val headers = HttpHeaders()
-        headers.contentType = MediaType.APPLICATION_JSON
-        headers.accept = listOf(MediaType.APPLICATION_JSON)
+        val url = "${geminiProperties.baseUrl.trim().trimEnd('/')}/v1beta/models/$model:embedContent"
+        val headers = geminiHeaders(apiKey)
 
         val payload = GeminiEmbedContentRequest(
             model = "models/$model",
@@ -169,6 +163,14 @@ class GeminiApiClient(
     private fun resolveApiKey(): String {
         return apiKeyContextHolder.currentApiKey()
             ?: geminiProperties.apiKey.trim()
+    }
+
+    private fun geminiHeaders(apiKey: String): HttpHeaders {
+        return HttpHeaders().apply {
+            contentType = MediaType.APPLICATION_JSON
+            accept = listOf(MediaType.APPLICATION_JSON)
+            set("x-goog-api-key", apiKey)
+        }
     }
 }
 
