@@ -4,6 +4,7 @@ import com.cw.vlainter.domain.user.dto.AdminMemberDetailResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberListResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberSummaryResponse
 import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
+import com.cw.vlainter.domain.user.dto.UpdateGeminiApiKeyRequest
 import com.cw.vlainter.domain.user.dto.UpdateMyProfileRequest
 import com.cw.vlainter.domain.user.dto.UpdateMemberByAdminRequest
 import com.cw.vlainter.domain.user.dto.UserProfileResponse
@@ -29,7 +30,8 @@ class UserService(
     private val userRepository: UserRepository,
     private val userFileRepository: UserFileRepository,
     private val passwordEncoder: PasswordEncoder,
-    private val loginSessionStore: LoginSessionStore
+    private val loginSessionStore: LoginSessionStore,
+    private val userGeminiApiKeyService: UserGeminiApiKeyService
 ) {
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
 
@@ -59,7 +61,19 @@ class UserService(
         }
 
         val saved = userRepository.save(user)
-        return toProfileResponse(saved.id, saved.email, saved.name, saved.status, saved.point)
+        return toProfileResponse(saved)
+    }
+
+    @Transactional
+    fun updateMyGeminiApiKey(principal: AuthPrincipal, request: UpdateGeminiApiKeyRequest): UserProfileResponse {
+        val saved = userGeminiApiKeyService.updateMyGeminiApiKey(principal, request.geminiApiKey)
+        return toProfileResponse(saved)
+    }
+
+    @Transactional
+    fun clearMyGeminiApiKey(principal: AuthPrincipal): UserProfileResponse {
+        val saved = userGeminiApiKeyService.clearMyGeminiApiKey(principal)
+        return toProfileResponse(saved)
     }
 
     @Transactional
@@ -145,14 +159,30 @@ class UserService(
     }
 
     @Transactional
-    fun hardDeleteMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
+    fun softDeleteMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
         val adminUser = authorizeAdmin(adminPrincipal)
         if (adminUser.id == targetUserId) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 완전 삭제할 수 없습니다.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 삭제 처리할 수 없습니다.")
         }
 
         val targetUser = findUserOrNotFound(targetUserId)
+        targetUser.status = UserStatus.DELETED
+        targetUser.email = "deletedUser${targetUser.id}@vlainter.online"
+        targetUser.name = "Deleted User ${targetUser.id}"
+        userRepository.save(targetUser)
+        runAfterCommit {
+            loginSessionStore.deleteAllByUserId(targetUser.id)
+        }
+    }
 
+    @Transactional
+    fun hardDeleteMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
+        val adminUser = authorizeAdmin(adminPrincipal)
+        if (adminUser.id == targetUserId) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 삭제 처리할 수 없습니다.")
+        }
+
+        val targetUser = findUserOrNotFound(targetUserId)
         userFileRepository.deleteAllByUser_Id(targetUser.id)
         userRepository.delete(targetUser)
     }
@@ -161,7 +191,7 @@ class UserService(
     fun getMyProfile(principal: AuthPrincipal): UserProfileResponse {
         val user = userRepository.findById(principal.userId)
             .orElseThrow { unauthorizedException() }
-        return toProfileResponse(user.id, user.email, user.name, user.status, user.point)
+        return toProfileResponse(user)
     }
 
     private fun ensureActiveUser(status: UserStatus) {
@@ -235,19 +265,14 @@ class UserService(
         return user
     }
 
-    private fun toProfileResponse(
-        userId: Long,
-        email: String,
-        name: String,
-        status: UserStatus,
-        point: Long
-    ): UserProfileResponse {
+    private fun toProfileResponse(user: User): UserProfileResponse {
         return UserProfileResponse(
-            userId = userId,
-            email = email,
-            name = name,
-            status = status,
-            point = point
+            userId = user.id,
+            email = user.email,
+            name = user.name,
+            status = user.status,
+            point = user.point,
+            hasGeminiApiKey = userGeminiApiKeyService.hasGeminiApiKey(user)
         )
     }
 

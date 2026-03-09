@@ -1,18 +1,23 @@
 package com.cw.vlainter.domain.userFile.entity
 
 import com.cw.vlainter.domain.user.entity.User
-import jakarta.persistence.*
+import jakarta.persistence.Column
+import jakarta.persistence.Entity
+import jakarta.persistence.EnumType
+import jakarta.persistence.Enumerated
+import jakarta.persistence.FetchType
+import jakarta.persistence.GeneratedValue
+import jakarta.persistence.GenerationType
+import jakarta.persistence.Id
+import jakarta.persistence.JoinColumn
+import jakarta.persistence.ManyToOne
+import jakarta.persistence.Table
 import org.hibernate.annotations.JdbcTypeCode
 import org.hibernate.type.SqlTypes
 import java.time.OffsetDateTime
 
 @Entity
-@Table(
-    name = "user_files",
-    uniqueConstraints = [
-        UniqueConstraint(name = "uq_user_file", columnNames = ["user_id", "file_type"])
-    ]
-)
+@Table(name = "user_files")
 class UserFile(
 
     @Id
@@ -49,9 +54,18 @@ class UserFile(
     @Column(name = "file_size_bytes")
     val fileSizeBytes: Long? = null,
 
+    @Column(name = "version_no", nullable = false)
+    val versionNo: Int = 1,
+
+    @Column(name = "is_active", nullable = false)
+    var isActive: Boolean = true,
+
+    @Column(name = "deleted_at")
+    var deletedAt: OffsetDateTime? = null,
+
     @Column(name = "created_at", nullable = false)
     val createdAt: OffsetDateTime = OffsetDateTime.now(),
 
     @Column(name = "updated_at", nullable = false)
-    val updatedAt: OffsetDateTime = OffsetDateTime.now()
+    var updatedAt: OffsetDateTime = OffsetDateTime.now()
 )

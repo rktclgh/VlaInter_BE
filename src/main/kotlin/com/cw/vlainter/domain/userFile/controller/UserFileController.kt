@@ -4,6 +4,8 @@ import com.cw.vlainter.domain.userFile.dto.UserFileResponse
 import com.cw.vlainter.domain.userFile.entity.FileType
 import com.cw.vlainter.domain.userFile.service.UserFileService
 import com.cw.vlainter.global.security.AuthPrincipal
+import org.springframework.http.CacheControl
+import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -23,6 +25,18 @@ import org.springframework.http.HttpStatus
 class UserFileController(
     private val userFileService: UserFileService
 ) {
+    @GetMapping("/me/profile-image")
+    fun getMyProfileImage(
+        @AuthenticationPrincipal principal: AuthPrincipal
+    ): ResponseEntity<ByteArray> {
+        val profileImage = userFileService.getMyProfileImage(principal) ?: return ResponseEntity.notFound().build()
+        return ResponseEntity.ok()
+            .contentType(MediaType.parseMediaType(profileImage.contentType))
+            .cacheControl(CacheControl.noCache().cachePrivate().mustRevalidate())
+            .header(HttpHeaders.PRAGMA, "no-cache")
+            .body(profileImage.bytes)
+    }
+
     @GetMapping
     fun getMyFiles(
         @AuthenticationPrincipal principal: AuthPrincipal
