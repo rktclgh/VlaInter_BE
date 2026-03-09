@@ -47,10 +47,10 @@ class AuthService(
         val user = userRepository.findByEmail(request.email)
             .orElseThrow { unauthorizedException() }
 
+        validateUserForLogin(user)
         if (!passwordEncoder.matches(request.password, user.password)) {
             throw unauthorizedException()
         }
-        validateUserForLogin(user)
         val validatedRedirectUri = redirectUriValidator.validate(request.redirectUri)
 
         return issueLoginResult(user, validatedRedirectUri)
@@ -188,8 +188,10 @@ class AuthService(
      * 로그인 가능한 계정 상태인지 검증한다.
      */
     private fun validateUserForLogin(user: User) {
-        if (user.status != UserStatus.ACTIVE) {
-            throw unauthorizedException()
+        when (user.status) {
+            UserStatus.ACTIVE -> return
+            UserStatus.BLOCKED -> throw ResponseStatusException(HttpStatus.FORBIDDEN, "정지된 계정입니다. 관리자에게 문의해 주세요.")
+            UserStatus.DELETED -> throw ResponseStatusException(HttpStatus.FORBIDDEN, "삭제 처리된 계정입니다. 관리자에게 문의해 주세요.")
         }
     }
 

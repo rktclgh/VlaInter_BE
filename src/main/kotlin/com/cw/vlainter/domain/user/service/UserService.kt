@@ -159,6 +159,41 @@ class UserService(
     }
 
     @Transactional
+    fun blockMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
+        val adminUser = authorizeAdmin(adminPrincipal)
+        if (adminUser.id == targetUserId) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 비활성화할 수 없습니다.")
+        }
+
+        val targetUser = findUserOrNotFound(targetUserId)
+        if (targetUser.status == UserStatus.DELETED) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "이미 삭제 처리된 회원입니다.")
+        }
+
+        targetUser.status = UserStatus.BLOCKED
+        userRepository.save(targetUser)
+        runAfterCommit {
+            loginSessionStore.deleteAllByUserId(targetUser.id)
+        }
+    }
+
+    @Transactional
+    fun activateMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
+        val adminUser = authorizeAdmin(adminPrincipal)
+        if (adminUser.id == targetUserId) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 활성화 처리 대상이 아닙니다.")
+        }
+
+        val targetUser = findUserOrNotFound(targetUserId)
+        if (targetUser.status == UserStatus.DELETED) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "소프트 삭제된 회원은 활성화할 수 없습니다.")
+        }
+
+        targetUser.status = UserStatus.ACTIVE
+        userRepository.save(targetUser)
+    }
+
+    @Transactional
     fun softDeleteMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
         val adminUser = authorizeAdmin(adminPrincipal)
         if (adminUser.id == targetUserId) {
