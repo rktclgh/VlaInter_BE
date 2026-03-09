@@ -7,5 +7,6 @@ data class UserProfileResponse(
     val email: String,
     val name: String,
     val status: UserStatus,
-    val point: Long
+    val point: Long,
+    val hasGeminiApiKey: Boolean
 )

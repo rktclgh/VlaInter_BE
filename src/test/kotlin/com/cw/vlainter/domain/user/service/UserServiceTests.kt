@@ -44,6 +44,9 @@ class UserServiceTests {
     @Mock
     private lateinit var loginSessionStore: LoginSessionStore
 
+    @Mock
+    private lateinit var userGeminiApiKeyService: UserGeminiApiKeyService
+
     @Test
     fun updateMyProfileUpdatesName() {
         val user = createUser()
@@ -288,7 +291,8 @@ class UserServiceTests {
             userRepository = userRepository,
             userFileRepository = userFileRepository,
             passwordEncoder = passwordEncoder,
-            loginSessionStore = loginSessionStore
+            loginSessionStore = loginSessionStore,
+            userGeminiApiKeyService = userGeminiApiKeyService
         )
     }
 

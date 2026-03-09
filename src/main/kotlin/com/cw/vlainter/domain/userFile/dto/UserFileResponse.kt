@@ -11,5 +11,11 @@ data class UserFileResponse(
     val fileUrl: String,
     val createdAt: OffsetDateTime,
     val originalFileName: String? = null,
-    val storageFileName: String? = null
+    val storageFileName: String? = null,
+    val versionNo: Int,
+    val active: Boolean,
+    val ingestionStatus: String? = null,
+    val ingested: Boolean = false,
+    val extractionMethod: String? = null,
+    val ocrUsed: Boolean = false
 )
