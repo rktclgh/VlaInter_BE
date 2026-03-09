@@ -270,6 +270,7 @@ class UserService(
             userId = user.id,
             email = user.email,
             name = user.name,
+            role = user.role,
             status = user.status,
             point = user.point,
             hasGeminiApiKey = userGeminiApiKeyService.hasGeminiApiKey(user)
