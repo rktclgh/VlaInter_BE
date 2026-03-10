@@ -6,31 +6,38 @@ import com.cw.vlainter.domain.interview.entity.Job
 import com.cw.vlainter.domain.interview.entity.Skill
 import com.cw.vlainter.domain.interview.repository.JobRepository
 import com.cw.vlainter.domain.interview.repository.SkillRepository
+import com.cw.vlainter.domain.user.entity.User
+import com.cw.vlainter.domain.user.repository.UserRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
 @Service
 class JobSkillCatalogService(
     private val jobRepository: JobRepository,
-    private val skillRepository: SkillRepository
+    private val skillRepository: SkillRepository,
+    private val userRepository: UserRepository
 ) {
     @Transactional
-    fun ensureJob(jobName: String): Job {
+    fun ensureJob(jobName: String, creatorUserId: Long? = null): Job {
         val normalizedJob = normalizeName(jobName)
+        val creator = loadCreator(creatorUserId)
         return jobRepository.findByNormalizedName(normalizedJob)
             ?: jobRepository.save(
                 Job(
                     name = jobName.trim(),
                     normalizedName = normalizedJob,
-                    slug = toSlug(jobName)
+                    slug = toSlug(jobName),
+                    createdBy = creator,
+                    updatedBy = creator
                 )
             )
     }
 
     @Transactional
-    fun ensureCatalog(jobName: String, skillName: String): Pair<Job, Skill> {
+    fun ensureCatalog(jobName: String, skillName: String, creatorUserId: Long? = null): Pair<Job, Skill> {
         val normalizedSkill = normalizeName(skillName)
-        val job = ensureJob(jobName)
+        val creator = loadCreator(creatorUserId)
+        val job = ensureJob(jobName, creatorUserId)
 
         val skill = skillRepository.findByJob_IdAndNormalizedName(job.id, normalizedSkill)
             ?: skillRepository.save(
@@ -38,7 +45,9 @@ class JobSkillCatalogService(
                     job = job,
                     name = skillName.trim(),
                     normalizedName = normalizedSkill,
-                    slug = toSlug("${job.name}-${skillName.trim()}")
+                    slug = toSlug("${job.name}-${skillName.trim()}"),
+                    createdBy = creator,
+                    updatedBy = creator
                 )
             )
 
@@ -90,6 +99,11 @@ class JobSkillCatalogService(
     }
 
     private fun normalizeName(value: String): String = value.trim().lowercase()
+
+    private fun loadCreator(userId: Long?): User? {
+        if (userId == null) return null
+        return userRepository.findById(userId).orElse(null)
+    }
 
     private fun toSlug(value: String): String {
         val normalized = value.trim().lowercase()

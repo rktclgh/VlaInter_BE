@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.interview.dto
 
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
+import com.cw.vlainter.domain.user.entity.UserStatus
 
 data class CreateCategoryRequest(
     val parentId: Long? = null,
@@ -27,6 +28,10 @@ data class MoveCategoryRequest(
     val parentId: Long?
 )
 
+data class MergeCategoryRequest(
+    val targetCategoryId: Long
+)
+
 data class CategoryResponse(
     val categoryId: Long,
     val parentId: Long?,
@@ -38,5 +43,9 @@ data class CategoryResponse(
     val path: String,
     val sortOrder: Int,
     val isActive: Boolean,
-    val isLeaf: Boolean
+    val isLeaf: Boolean,
+    val createdByUserId: Long? = null,
+    val createdByName: String? = null,
+    val createdByEmail: String? = null,
+    val createdByStatus: UserStatus? = null
 )

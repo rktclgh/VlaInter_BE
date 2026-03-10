@@ -5,8 +5,10 @@ import com.cw.vlainter.domain.interview.dto.CreateSkillRequest
 import com.cw.vlainter.domain.interview.dto.JobSummaryResponse
 import com.cw.vlainter.domain.interview.dto.SkillSummaryResponse
 import com.cw.vlainter.domain.interview.service.JobSkillCatalogService
+import com.cw.vlainter.global.security.AuthPrincipal
 import jakarta.validation.Valid
 import org.springframework.http.ResponseEntity
+import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -28,9 +30,10 @@ class InterviewJobSkillCatalogController(
 
     @PostMapping("/jobs")
     fun createJob(
+        @AuthenticationPrincipal principal: AuthPrincipal,
         @Valid @RequestBody request: CreateJobRequest
     ): ResponseEntity<JobSummaryResponse> {
-        val job = jobSkillCatalogService.ensureJob(request.name)
+        val job = jobSkillCatalogService.ensureJob(request.name, principal.userId)
         return ResponseEntity.ok(JobSummaryResponse(jobId = job.id, name = job.name))
     }
 
@@ -44,9 +47,10 @@ class InterviewJobSkillCatalogController(
 
     @PostMapping("/skills")
     fun createSkill(
+        @AuthenticationPrincipal principal: AuthPrincipal,
         @Valid @RequestBody request: CreateSkillRequest
     ): ResponseEntity<SkillSummaryResponse> {
-        val (job, skill) = jobSkillCatalogService.ensureCatalog(request.jobName, request.skillName)
+        val (job, skill) = jobSkillCatalogService.ensureCatalog(request.jobName, request.skillName, principal.userId)
         return ResponseEntity.ok(
             SkillSummaryResponse(
                 skillId = skill.id,

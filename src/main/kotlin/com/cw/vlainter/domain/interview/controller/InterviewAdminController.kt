@@ -3,6 +3,7 @@ package com.cw.vlainter.domain.interview.controller
 import com.cw.vlainter.domain.interview.dto.AdminQuestionSetSummaryResponse
 import com.cw.vlainter.domain.interview.dto.CategoryResponse
 import com.cw.vlainter.domain.interview.dto.CreateCategoryRequest
+import com.cw.vlainter.domain.interview.dto.MergeCategoryRequest
 import com.cw.vlainter.domain.interview.dto.MoveCategoryRequest
 import com.cw.vlainter.domain.interview.dto.QuestionSetSummaryResponse
 import com.cw.vlainter.domain.interview.dto.UpdateCategoryRequest
@@ -92,5 +93,23 @@ class InterviewAdminController(
         @Valid @RequestBody request: MoveCategoryRequest
     ): ResponseEntity<CategoryResponse> {
         return ResponseEntity.ok(categoryAdminService.moveCategory(principal, categoryId, request))
+    }
+
+    @PatchMapping("/categories/{categoryId}/merge")
+    fun mergeCategory(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable categoryId: Long,
+        @Valid @RequestBody request: MergeCategoryRequest
+    ): ResponseEntity<CategoryResponse> {
+        return ResponseEntity.ok(categoryAdminService.mergeCategory(principal, categoryId, request))
+    }
+
+    @DeleteMapping("/categories/{categoryId}")
+    fun deleteCategory(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable categoryId: Long
+    ): ResponseEntity<Map<String, String>> {
+        categoryAdminService.deleteCategory(principal, categoryId)
+        return ResponseEntity.ok(mapOf("message" to "카테고리가 삭제되었습니다."))
     }
 }

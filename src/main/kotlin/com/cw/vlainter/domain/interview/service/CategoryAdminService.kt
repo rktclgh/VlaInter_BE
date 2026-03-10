@@ -2,10 +2,14 @@ package com.cw.vlainter.domain.interview.service
 
 import com.cw.vlainter.domain.interview.dto.CategoryResponse
 import com.cw.vlainter.domain.interview.dto.CreateCategoryRequest
+import com.cw.vlainter.domain.interview.dto.MergeCategoryRequest
 import com.cw.vlainter.domain.interview.dto.MoveCategoryRequest
 import com.cw.vlainter.domain.interview.dto.UpdateCategoryRequest
 import com.cw.vlainter.domain.interview.entity.QaCategory
+import com.cw.vlainter.domain.interview.repository.InterviewTurnRepository
 import com.cw.vlainter.domain.interview.repository.QaCategoryRepository
+import com.cw.vlainter.domain.interview.repository.QaQuestionRepository
+import com.cw.vlainter.domain.interview.repository.SavedQuestionRepository
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.AuthPrincipal
@@ -13,10 +17,14 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
+import java.time.OffsetDateTime
 
 @Service
 class CategoryAdminService(
     private val categoryRepository: QaCategoryRepository,
+    private val questionRepository: QaQuestionRepository,
+    private val savedQuestionRepository: SavedQuestionRepository,
+    private val interviewTurnRepository: InterviewTurnRepository,
     private val userRepository: UserRepository
 ) {
     @Transactional(readOnly = true)
@@ -137,6 +145,47 @@ class CategoryAdminService(
         return toResponse(category)
     }
 
+    @Transactional
+    fun mergeCategory(principal: AuthPrincipal, categoryId: Long, request: MergeCategoryRequest): CategoryResponse {
+        ensureAdmin(principal)
+        val actor = loadUser(principal.userId)
+        val source = findActiveCategory(categoryId)
+        val target = findActiveCategory(request.targetCategoryId)
+
+        if (source.id == target.id) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "같은 카테고리끼리는 통합할 수 없습니다.")
+        }
+        if (source.depth != target.depth) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "같은 depth 카테고리끼리만 통합할 수 있습니다.")
+        }
+
+        mergeCategoryNodes(source, target, actor)
+        refreshLeafState(source.parent, actor)
+        refreshLeafState(target, actor)
+        return toResponse(target)
+    }
+
+    @Transactional
+    fun deleteCategory(principal: AuthPrincipal, categoryId: Long) {
+        ensureAdmin(principal)
+        val actor = loadUser(principal.userId)
+        val category = findCategory(categoryId)
+        val now = OffsetDateTime.now()
+
+        categoryRepository.findAllByPathStartingWithAndDeletedAtIsNullOrderByDepthDescSortOrderDesc(category.path)
+            .forEach { item ->
+                item.deletedAt = now
+                item.isActive = false
+                item.updatedBy = actor
+            }
+
+        val parent = category.parent
+        if (parent != null && !categoryRepository.existsByParent_IdAndDeletedAtIsNull(parent.id)) {
+            parent.isLeaf = true
+            parent.updatedBy = actor
+        }
+    }
+
     private fun findCategory(categoryId: Long): QaCategory {
         return categoryRepository.findByIdAndDeletedAtIsNull(categoryId)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "카테고리를 찾을 수 없습니다.")
@@ -180,6 +229,60 @@ class CategoryAdminService(
         return candidate
     }
 
+    private fun mergeCategoryNodes(source: QaCategory, target: QaCategory, actor: com.cw.vlainter.domain.user.entity.User) {
+        if (source.id == target.id) return
+
+        questionRepository.reassignCategory(source, target)
+        savedQuestionRepository.reassignCategory(source, target)
+        interviewTurnRepository.reassignCategory(source, target)
+
+        val sourceChildren = categoryRepository.findAllByParent_IdAndDeletedAtIsNullAndIsActiveTrueOrderBySortOrderAsc(source.id)
+        sourceChildren.forEach { child ->
+            val matchedTargetChild = categoryRepository.findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(target.id, child.name)
+            if (matchedTargetChild != null && matchedTargetChild.id != child.id) {
+                mergeCategoryNodes(child, matchedTargetChild, actor)
+            } else {
+                moveCategoryNode(child, target, actor)
+            }
+        }
+
+        source.deletedAt = OffsetDateTime.now()
+        source.isActive = false
+        source.updatedBy = actor
+    }
+
+    private fun moveCategoryNode(category: QaCategory, newParent: QaCategory, actor: com.cw.vlainter.domain.user.entity.User) {
+        val oldPath = category.path
+        val nextCode = if (existsCode(newParent.id, category.code)) {
+            allocateUniqueCode(newParent.id, normalizeCode(category.code))
+        } else {
+            category.code
+        }
+
+        category.code = nextCode
+        category.parent = newParent
+        category.depth = newParent.depth + 1
+        category.path = "${newParent.path}/$nextCode"
+        category.updatedBy = actor
+        newParent.isLeaf = false
+        newParent.updatedBy = actor
+
+        categoryRepository.findAllByPathStartingWithAndDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc("$oldPath/")
+            .forEach { child ->
+                val suffix = child.path.removePrefix(oldPath)
+                child.path = "${category.path}$suffix"
+                child.depth = child.path.split("/").count { it.isNotBlank() } - 1
+                child.updatedBy = actor
+            }
+    }
+
+    private fun refreshLeafState(category: QaCategory?, actor: com.cw.vlainter.domain.user.entity.User) {
+        if (category == null) return
+        val hasChildren = categoryRepository.existsByParent_IdAndDeletedAtIsNull(category.id)
+        category.isLeaf = !hasChildren
+        category.updatedBy = actor
+    }
+
     private fun existsCode(parentId: Long?, code: String): Boolean {
         return if (parentId == null) {
             categoryRepository.existsByParentIsNullAndCodeAndDeletedAtIsNull(code)
@@ -209,7 +312,11 @@ class CategoryAdminService(
             path = category.path,
             sortOrder = category.sortOrder,
             isActive = category.isActive,
-            isLeaf = category.isLeaf
+            isLeaf = category.isLeaf,
+            createdByUserId = category.createdBy?.id,
+            createdByName = category.createdBy?.name,
+            createdByEmail = category.createdBy?.email,
+            createdByStatus = category.createdBy?.status
         )
     }
 
