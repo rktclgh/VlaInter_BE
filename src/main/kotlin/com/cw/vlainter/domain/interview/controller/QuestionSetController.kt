@@ -4,6 +4,7 @@ import com.cw.vlainter.domain.interview.dto.AddQuestionToSetRequest
 import com.cw.vlainter.domain.interview.dto.CreateQuestionSetRequest
 import com.cw.vlainter.domain.interview.dto.QuestionSetSummaryResponse
 import com.cw.vlainter.domain.interview.dto.QuestionSummaryResponse
+import com.cw.vlainter.domain.interview.dto.UpdateQuestionInSetRequest
 import com.cw.vlainter.domain.interview.dto.UpdateQuestionSetRequest
 import com.cw.vlainter.domain.interview.service.QuestionSetService
 import com.cw.vlainter.global.security.AuthPrincipal
@@ -70,6 +71,26 @@ class QuestionSetController(
         @Valid @RequestBody request: AddQuestionToSetRequest
     ): ResponseEntity<QuestionSummaryResponse> {
         return ResponseEntity.ok(questionSetService.addQuestionToSet(principal, setId, request))
+    }
+
+    @PatchMapping("/{setId}/questions/{questionId}")
+    fun updateQuestionInSet(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable setId: Long,
+        @PathVariable questionId: Long,
+        @Valid @RequestBody request: UpdateQuestionInSetRequest
+    ): ResponseEntity<QuestionSummaryResponse> {
+        return ResponseEntity.ok(questionSetService.updateQuestionInSet(principal, setId, questionId, request))
+    }
+
+    @DeleteMapping("/{setId}/questions/{questionId}")
+    fun deleteQuestionFromSet(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable setId: Long,
+        @PathVariable questionId: Long
+    ): ResponseEntity<Map<String, String>> {
+        questionSetService.deleteQuestionFromSet(principal, setId, questionId)
+        return ResponseEntity.ok(mapOf("message" to "질문이 세트에서 삭제되었습니다."))
     }
 
     @PatchMapping("/{setId}")

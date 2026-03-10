@@ -6,6 +6,7 @@ import com.cw.vlainter.domain.interview.entity.Job
 import com.cw.vlainter.domain.interview.entity.Skill
 import com.cw.vlainter.domain.interview.repository.JobRepository
 import com.cw.vlainter.domain.interview.repository.SkillRepository
+import com.cw.vlainter.domain.user.repository.UserRepository
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
@@ -22,6 +23,9 @@ class JobSkillCatalogServiceTests {
 
     @Mock
     private lateinit var skillRepository: SkillRepository
+
+    @Mock
+    private lateinit var userRepository: UserRepository
 
     @Test
     fun `ensureCatalog는 없는 직무 기술을 생성한다`() {
@@ -46,7 +50,7 @@ class JobSkillCatalogServiceTests {
             )
         }
 
-        val service = JobSkillCatalogService(jobRepository, skillRepository)
+        val service = JobSkillCatalogService(jobRepository, skillRepository, userRepository)
         val (job, skill) = service.ensureCatalog("회계사", "재무회계")
 
         assertThat(job.id).isEqualTo(10L)
@@ -77,7 +81,7 @@ class JobSkillCatalogServiceTests {
             )
         )
 
-        val service = JobSkillCatalogService(jobRepository, skillRepository)
+        val service = JobSkillCatalogService(jobRepository, skillRepository, userRepository)
         val items = service.listSkills(jobName = "회계사", query = "재무")
 
         assertThat(items).hasSize(1)

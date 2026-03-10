@@ -3,6 +3,8 @@
 package com.cw.vlainter.domain.interview.service
 
 import com.cw.vlainter.domain.interview.dto.AddQuestionToSetRequest
+import com.cw.vlainter.domain.interview.dto.CreateQuestionSetRequest
+import com.cw.vlainter.domain.interview.dto.UpdateQuestionInSetRequest
 import com.cw.vlainter.domain.interview.entity.QaCategory
 import com.cw.vlainter.domain.interview.entity.QaQuestion
 import com.cw.vlainter.domain.interview.entity.QaQuestionSet
@@ -26,6 +28,7 @@ import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.ArgumentMatchers.any
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.BDDMockito.given
+import org.mockito.BDDMockito.then
 import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
 import org.springframework.http.HttpStatus
@@ -124,7 +127,232 @@ class QuestionSetServiceTests {
         assertThat(result.bestPractice).isNull()
         assertThat(result.categoryName).isEqualTo("재무회계")
         assertThat(set.jobName).isEqualTo("회계사")
-        assertThat(set.skillName).isEqualTo("재무회계")
+        assertThat(set.skillName).isNull()
+    }
+
+    @Test
+    fun `createMySet는 직무만 세트 메타로 저장하고 기술 목록은 비워둔다`() {
+        val actor = createUser()
+        val savedSet = QaQuestionSet(
+            id = 100L,
+            ownerUser = actor,
+            ownerType = QuestionSetOwnerType.USER,
+            title = "백엔드 질문 세트",
+            jobName = "백엔드개발자",
+            skillName = null,
+            visibility = QuestionSetVisibility.PRIVATE
+        )
+        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
+        given(questionSetRepository.save(any(QaQuestionSet::class.java))).willReturn(savedSet)
+        given(questionSetItemRepository.findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(100L)).willReturn(emptyList())
+
+        val result = createService().createMySet(
+            AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
+            CreateQuestionSetRequest(
+                title = "백엔드 질문 세트",
+                jobName = "백엔드개발자",
+                skillName = "Spring",
+                description = null,
+                visibility = QuestionSetVisibility.PRIVATE
+            )
+        )
+
+        assertThat(result.jobName).isEqualTo("백엔드개발자")
+        assertThat(result.skillName).isNull()
+        assertThat(result.skillNames).isEmpty()
+    }
+
+    @Test
+    fun `같은 직무 안에서는 서로 다른 기술 질문도 같은 세트에 추가할 수 있다`() {
+        val actor = createUser(id = 7L)
+        val set = QaQuestionSet(
+            id = 100L,
+            ownerUser = actor,
+            ownerType = QuestionSetOwnerType.USER,
+            title = "백엔드 질문 세트",
+            jobName = "백엔드개발자",
+            skillName = null,
+            visibility = QuestionSetVisibility.PRIVATE
+        )
+        val jpaContext = InterviewCategoryContextResolver.ResolvedCategoryContext(
+            category = createCategory(jobName = "백엔드개발자", skillName = "JPA", categoryId = 13L),
+            jobName = "백엔드개발자",
+            skillName = "JPA"
+        )
+
+        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
+        given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
+        given(
+            categoryContextResolver.resolve(
+                actor = actor,
+                categoryId = null,
+                jobName = "백엔드개발자",
+                skillName = "JPA",
+                createIfMissing = true
+            )
+        ).willReturn(jpaContext)
+        given(questionRepository.findByFingerprintAndDeletedAtIsNull(anyString())).willReturn(null)
+        given(questionRepository.save(any(QaQuestion::class.java))).willAnswer { invocation ->
+            val candidate = invocation.getArgument<QaQuestion>(0)
+            QaQuestion(
+                id = 201L,
+                fingerprint = candidate.fingerprint,
+                questionText = candidate.questionText,
+                canonicalAnswer = candidate.canonicalAnswer,
+                category = candidate.category,
+                jobName = candidate.jobName,
+                skillName = candidate.skillName,
+                difficulty = candidate.difficulty,
+                sourceTag = candidate.sourceTag,
+                tagsJson = candidate.tagsJson
+            )
+        }
+        given(questionSetItemRepository.existsBySet_IdAndQuestion_Id(100L, 201L)).willReturn(false)
+        given(questionSetItemRepository.findMaxOrderNo(100L)).willReturn(1)
+        given(questionSetItemRepository.save(any(QaQuestionSetItem::class.java))).willAnswer { it.getArgument(0) }
+
+        val result = createService().addQuestionToSet(
+            AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
+            100L,
+            AddQuestionToSetRequest(
+                questionText = "JPA 영속성 컨텍스트의 역할을 설명해 주세요.",
+                canonicalAnswer = "1차 캐시와 변경 감지를 중심으로 답합니다.",
+                categoryId = null,
+                jobName = "백엔드개발자",
+                skillName = "JPA",
+                difficulty = QuestionDifficulty.MEDIUM,
+                tags = listOf("JPA")
+            )
+        )
+
+        assertThat(result.skillName).isEqualTo("JPA")
+        assertThat(set.jobName).isEqualTo("백엔드개발자")
+        assertThat(set.skillName).isNull()
+    }
+
+    @Test
+    fun `updateQuestionInSet은 세트 내 문답의 기술과 내용을 교체한다`() {
+        val actor = createUser(id = 7L)
+        val set = QaQuestionSet(
+            id = 100L,
+            ownerUser = actor,
+            ownerType = QuestionSetOwnerType.USER,
+            title = "백엔드 질문 세트",
+            jobName = "백엔드개발자",
+            skillName = null,
+            visibility = QuestionSetVisibility.PRIVATE
+        )
+        val oldQuestion = QaQuestion(
+            id = 200L,
+            fingerprint = "old",
+            questionText = "Spring 트랜잭션을 설명해 주세요.",
+            canonicalAnswer = "기존 답변",
+            category = createCategory(jobName = "백엔드개발자", skillName = "Spring"),
+            jobName = "백엔드개발자",
+            skillName = "Spring",
+            difficulty = QuestionDifficulty.MEDIUM,
+            sourceTag = com.cw.vlainter.domain.interview.entity.QuestionSourceTag.USER,
+            tagsJson = "[]"
+        )
+        val item = QaQuestionSetItem(id = 1L, set = set, question = oldQuestion, orderNo = 0)
+        val resolvedContext = InterviewCategoryContextResolver.ResolvedCategoryContext(
+            category = createCategory(jobName = "백엔드개발자", skillName = "JPA", categoryId = 13L),
+            jobName = "백엔드개발자",
+            skillName = "JPA"
+        )
+
+        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
+        given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
+        given(questionSetItemRepository.findBySet_IdAndQuestion_IdAndIsActiveTrue(100L, 200L)).willReturn(item)
+        given(
+            categoryContextResolver.resolve(
+                actor = actor,
+                categoryId = null,
+                jobName = "백엔드개발자",
+                skillName = "JPA",
+                createIfMissing = true
+            )
+        ).willReturn(resolvedContext)
+        given(questionRepository.findByFingerprintAndDeletedAtIsNull(anyString())).willReturn(null)
+        given(questionRepository.save(any(QaQuestion::class.java))).willAnswer { invocation ->
+            val candidate = invocation.getArgument<QaQuestion>(0)
+            QaQuestion(
+                id = 201L,
+                fingerprint = candidate.fingerprint,
+                questionText = candidate.questionText,
+                canonicalAnswer = candidate.canonicalAnswer,
+                category = candidate.category,
+                jobName = candidate.jobName,
+                skillName = candidate.skillName,
+                difficulty = candidate.difficulty,
+                sourceTag = candidate.sourceTag,
+                tagsJson = candidate.tagsJson
+            )
+        }
+        given(questionSetItemRepository.existsBySet_IdAndQuestion_Id(100L, 201L)).willReturn(false)
+        given(questionSetItemRepository.save(any(QaQuestionSetItem::class.java))).willAnswer { it.getArgument(0) }
+
+        val result = createService().updateQuestionInSet(
+            AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
+            100L,
+            200L,
+            UpdateQuestionInSetRequest(
+                questionText = "JPA 영속성 컨텍스트를 설명해 주세요.",
+                canonicalAnswer = "변경 감지와 1차 캐시를 중심으로 설명합니다.",
+                categoryId = null,
+                jobName = "백엔드개발자",
+                skillName = "JPA",
+                difficulty = QuestionDifficulty.MEDIUM,
+                tags = listOf("JPA")
+            )
+        )
+
+        assertThat(result.questionId).isEqualTo(201L)
+        assertThat(item.question.id).isEqualTo(201L)
+        assertThat(result.skillName).isEqualTo("JPA")
+    }
+
+    @Test
+    fun `deleteQuestionFromSet은 세트 아이템을 비활성화한다`() {
+        val actor = createUser(id = 7L)
+        val set = QaQuestionSet(
+            id = 100L,
+            ownerUser = actor,
+            ownerType = QuestionSetOwnerType.USER,
+            title = "백엔드 질문 세트",
+            jobName = "백엔드개발자",
+            skillName = null,
+            visibility = QuestionSetVisibility.PRIVATE
+        )
+        val item = QaQuestionSetItem(
+            id = 1L,
+            set = set,
+            question = QaQuestion(
+                id = 200L,
+                fingerprint = "old",
+                questionText = "Spring 트랜잭션을 설명해 주세요.",
+                canonicalAnswer = "기존 답변",
+                category = createCategory(jobName = "백엔드개발자", skillName = "Spring"),
+                jobName = "백엔드개발자",
+                skillName = "Spring",
+                difficulty = QuestionDifficulty.MEDIUM,
+                sourceTag = com.cw.vlainter.domain.interview.entity.QuestionSourceTag.USER,
+                tagsJson = "[]"
+            ),
+            orderNo = 0
+        )
+
+        given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
+        given(questionSetItemRepository.findBySet_IdAndQuestion_IdAndIsActiveTrue(100L, 200L)).willReturn(item)
+
+        createService().deleteQuestionFromSet(
+            AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
+            100L,
+            200L
+        )
+
+        assertThat(item.isActive).isFalse()
+        then(questionSetItemRepository).should().save(item)
     }
 
     @Test
@@ -260,12 +488,16 @@ class QuestionSetServiceTests {
         point = 0
     )
 
-    private fun createCategory(): QaCategory {
+    private fun createCategory(
+        jobName: String = "회계사",
+        skillName: String = "재무회계",
+        categoryId: Long = 12L
+    ): QaCategory {
         val job = QaCategory(
             id = 11L,
             parent = null,
             code = "JOB_ACCOUNTANT",
-            name = "회계사",
+            name = jobName,
             description = null,
             depth = 1,
             path = "TECH/JOB_ACCOUNTANT",
@@ -274,10 +506,10 @@ class QuestionSetServiceTests {
             isLeaf = false
         )
         return QaCategory(
-            id = 12L,
+            id = categoryId,
             parent = job,
             code = "SKILL_FINANCE",
-            name = "재무회계",
+            name = skillName,
             description = null,
             depth = 2,
             path = "TECH/JOB_ACCOUNTANT/SKILL_FINANCE",

@@ -35,7 +35,7 @@ enum class RevealPolicy {
 }
 
 enum class TurnSourceTag {
-    SYSTEM, USER, DOC_RAG
+    SYSTEM, USER, DOC_RAG, INTRO
 }
 
 enum class TurnEvaluationStatus {
@@ -43,7 +43,7 @@ enum class TurnEvaluationStatus {
 }
 
 enum class InterviewQuestionKind {
-    TECH, DOCUMENT
+    TECH, DOCUMENT, INTRO
 }
 
 enum class DocumentIngestionStatus {

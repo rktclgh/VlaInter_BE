@@ -27,7 +27,13 @@ import java.util.UUID
         "app.cookie.access-token-name=vlainter_at",
         "app.cookie.refresh-token-name=vlainter_rt",
         "app.redirect.allowed-origins=http://localhost:5173",
-        "app.cors.allowed-origins=http://localhost:5173"
+        "app.cors.allowed-origins=http://localhost:5173",
+        "app.security.api-key.encryption-secret=test-api-key-secret",
+        "spring.mail.host=localhost",
+        "app.portone.base-url=https://api.portone.io",
+        "app.portone.api-key=test-portone-api-key",
+        "app.portone.api-secret=test-portone-api-secret",
+        "app.portone.customer-code=test-customer-code"
     ]
 )
 class LoginSessionStoreUpstashIntegrationTests {

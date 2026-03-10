@@ -31,7 +31,7 @@ class QaQuestionSetItem(
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "question_id", nullable = false)
-    val question: QaQuestion,
+    var question: QaQuestion,
 
     @Column(name = "order_no", nullable = false)
     var orderNo: Int = 0,

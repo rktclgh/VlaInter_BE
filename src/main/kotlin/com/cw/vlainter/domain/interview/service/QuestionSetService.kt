@@ -5,6 +5,7 @@ import com.cw.vlainter.domain.interview.dto.AdminQuestionSetSummaryResponse
 import com.cw.vlainter.domain.interview.dto.CreateQuestionSetRequest
 import com.cw.vlainter.domain.interview.dto.QuestionSetSummaryResponse
 import com.cw.vlainter.domain.interview.dto.QuestionSummaryResponse
+import com.cw.vlainter.domain.interview.dto.UpdateQuestionInSetRequest
 import com.cw.vlainter.domain.interview.dto.UpdateQuestionSetRequest
 import com.cw.vlainter.domain.interview.entity.QaQuestion
 import com.cw.vlainter.domain.interview.entity.QaQuestionSet
@@ -42,15 +43,16 @@ class QuestionSetService(
     fun createMySet(principal: AuthPrincipal, request: CreateQuestionSetRequest): QuestionSetSummaryResponse {
         val actor = loadUser(principal.userId)
         val normalizedJobName = request.jobName.trim()
-        val normalizedSkillName = request.skillName.trim()
-        jobSkillCatalogService.ensureCatalog(normalizedJobName, normalizedSkillName)
+        request.skillName?.trim()?.takeIf { it.isNotBlank() }?.let { normalizedSkillName ->
+            jobSkillCatalogService.ensureCatalog(normalizedJobName, normalizedSkillName)
+        }
         val saved = questionSetRepository.save(
             QaQuestionSet(
                 ownerUser = actor,
                 ownerType = QuestionSetOwnerType.USER,
                 title = request.title.trim(),
                 jobName = normalizedJobName,
-                skillName = normalizedSkillName,
+                skillName = null,
                 description = request.description?.trim(),
                 visibility = request.visibility
             )
@@ -65,10 +67,14 @@ class QuestionSetService(
 
     @Transactional
     fun getMySets(principal: AuthPrincipal): List<QuestionSetSummaryResponse> {
-        return questionSetRepository.findVisibleUserSets(principal.userId).map { set ->
+        return questionSetRepository.findVisibleUserSets(principal.userId).mapNotNull { set ->
             normalizeLegacyTitleIfNeeded(set)
             val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
-            toSummary(set, count)
+            if (isAiGeneratedSet(set, count)) {
+                null
+            } else {
+                toSummary(set, count)
+            }
         }
     }
 
@@ -112,17 +118,9 @@ class QuestionSetService(
                 "질문 세트 직무(${existingJob})와 추가 질문 직무(${context.jobName})가 일치하지 않습니다."
             )
         }
-        val existingSkill = set.skillName?.trim().orEmpty()
-        if (existingSkill.isNotBlank() && !existingSkill.equals(context.skillName, ignoreCase = true)) {
-            throw ResponseStatusException(
-                HttpStatus.BAD_REQUEST,
-                "질문 세트 기술(${existingSkill})과 추가 질문 기술(${context.skillName})이 일치하지 않습니다."
-            )
-        }
 
         jobSkillCatalogService.ensureCatalog(context.jobName, context.skillName)
         if (set.jobName.isNullOrBlank()) set.jobName = context.jobName
-        if (set.skillName.isNullOrBlank()) set.skillName = context.skillName
 
         val sourceTag = when (set.ownerType) {
             QuestionSetOwnerType.ADMIN -> QuestionSourceTag.SYSTEM
@@ -163,6 +161,84 @@ class QuestionSetService(
         )
 
         return toQuestionSummary(question)
+    }
+
+    @Transactional
+    fun updateQuestionInSet(
+        principal: AuthPrincipal,
+        setId: Long,
+        questionId: Long,
+        request: UpdateQuestionInSetRequest
+    ): QuestionSummaryResponse {
+        val actor = loadUser(principal.userId)
+        val set = getOwnedUserSet(principal, setId)
+        if (set.status != QuestionSetStatus.ACTIVE) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "ARCHIVED 상태의 세트 문답은 수정할 수 없습니다.")
+        }
+        val setItem = questionSetItemRepository.findBySet_IdAndQuestion_IdAndIsActiveTrue(set.id, questionId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "세트에 포함된 질문을 찾을 수 없습니다.")
+
+        val context = categoryContextResolver.resolve(
+            actor = actor,
+            categoryId = request.categoryId,
+            jobName = request.jobName,
+            skillName = request.skillName,
+            createIfMissing = true
+        ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 수정에는 직무와 기술 입력이 필요합니다.")
+
+        val existingJob = set.jobName?.trim().orEmpty()
+        if (existingJob.isNotBlank() && !existingJob.equals(context.jobName, ignoreCase = true)) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "질문 세트 직무(${existingJob})와 수정 질문 직무(${context.jobName})가 일치하지 않습니다."
+            )
+        }
+
+        jobSkillCatalogService.ensureCatalog(context.jobName, context.skillName)
+        if (set.jobName.isNullOrBlank()) set.jobName = context.jobName
+
+        val sourceTag = when (set.ownerType) {
+            QuestionSetOwnerType.ADMIN -> QuestionSourceTag.SYSTEM
+            QuestionSetOwnerType.USER -> QuestionSourceTag.USER
+        }
+        val fingerprint = fingerprintFor(
+            questionText = request.questionText,
+            jobName = context.jobName,
+            skillName = context.skillName,
+            difficulty = request.difficulty.name
+        )
+
+        val updatedQuestion = questionRepository.findByFingerprintAndDeletedAtIsNull(fingerprint)
+            ?: questionRepository.save(
+                QaQuestion(
+                    fingerprint = fingerprint,
+                    questionText = request.questionText.trim(),
+                    canonicalAnswer = request.canonicalAnswer?.trim(),
+                    category = context.category,
+                    jobName = context.jobName,
+                    skillName = context.skillName,
+                    difficulty = request.difficulty,
+                    sourceTag = sourceTag,
+                    tagsJson = toJsonArray(request.tags)
+                )
+            )
+
+        if (updatedQuestion.id != questionId && questionSetItemRepository.existsBySet_IdAndQuestion_Id(set.id, updatedQuestion.id)) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "이미 질문 세트에 포함된 질문입니다.")
+        }
+
+        setItem.question = updatedQuestion
+        questionSetItemRepository.save(setItem)
+        return toQuestionSummary(updatedQuestion)
+    }
+
+    @Transactional
+    fun deleteQuestionFromSet(principal: AuthPrincipal, setId: Long, questionId: Long) {
+        val set = getOwnedUserSet(principal, setId)
+        val setItem = questionSetItemRepository.findBySet_IdAndQuestion_IdAndIsActiveTrue(set.id, questionId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "세트에 포함된 질문을 찾을 수 없습니다.")
+        setItem.isActive = false
+        questionSetItemRepository.save(setItem)
     }
 
     @Transactional(readOnly = true)
@@ -350,12 +426,14 @@ class QuestionSetService(
         val owner = set.ownerUser
         val certified = set.ownerType == QuestionSetOwnerType.ADMIN || set.isPromoted
         val aiGenerated = isAiGeneratedSet(set, questionCount)
+        val skillNames = extractSkillNames(set.id)
         return QuestionSetSummaryResponse(
             setId = set.id,
             title = set.title,
             description = set.description,
             jobName = set.jobName,
-            skillName = set.skillName,
+            skillName = skillNames.firstOrNull() ?: set.skillName,
+            skillNames = skillNames,
             ownerName = owner?.name,
             ownerType = set.ownerType,
             visibility = set.visibility,
@@ -372,12 +450,14 @@ class QuestionSetService(
         val owner = set.ownerUser
         val certified = set.ownerType == QuestionSetOwnerType.ADMIN || set.isPromoted
         val aiGenerated = isAiGeneratedSet(set, questionCount)
+        val skillNames = extractSkillNames(set.id)
         return AdminQuestionSetSummaryResponse(
             setId = set.id,
             title = set.title,
             description = set.description,
             jobName = set.jobName,
-            skillName = set.skillName,
+            skillName = skillNames.firstOrNull() ?: set.skillName,
+            skillNames = skillNames,
             ownerUserId = owner?.id,
             ownerName = owner?.name,
             ownerType = set.ownerType,
@@ -444,6 +524,17 @@ class QuestionSetService(
             sourceTag = question.sourceTag,
             tags = parseJsonArray(question.tagsJson)
         )
+    }
+
+    private fun extractSkillNames(setId: Long): List<String> {
+        return questionSetItemRepository.findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(setId)
+            .mapNotNull { item ->
+                item.question.skillName
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: item.question.category.name.trim().takeIf { it.isNotBlank() }
+            }
+            .distinctBy { it.lowercase() }
     }
 
     private fun fingerprintFor(questionText: String, jobName: String, skillName: String, difficulty: String): String {

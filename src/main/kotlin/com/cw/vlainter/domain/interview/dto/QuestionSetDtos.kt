@@ -16,9 +16,8 @@ data class CreateQuestionSetRequest(
     @field:NotBlank(message = "직무명은 필수입니다.")
     @field:Size(max = 120, message = "직무명은 120자 이하여야 합니다.")
     val jobName: String,
-    @field:NotBlank(message = "기술명은 필수입니다.")
     @field:Size(max = 120, message = "기술명은 120자 이하여야 합니다.")
-    val skillName: String,
+    val skillName: String? = null,
     @field:Size(max = 2000, message = "질문 세트 설명은 2000자 이하여야 합니다.")
     val description: String? = null,
     val visibility: QuestionSetVisibility = QuestionSetVisibility.PRIVATE
@@ -54,6 +53,7 @@ data class QuestionSetSummaryResponse(
     val description: String?,
     val jobName: String?,
     val skillName: String?,
+    val skillNames: List<String>,
     val ownerName: String?,
     val ownerType: QuestionSetOwnerType,
     val visibility: QuestionSetVisibility,
@@ -71,6 +71,7 @@ data class AdminQuestionSetSummaryResponse(
     val description: String?,
     val jobName: String?,
     val skillName: String?,
+    val skillNames: List<String>,
     val ownerUserId: Long?,
     val ownerName: String?,
     val ownerType: QuestionSetOwnerType,
@@ -96,4 +97,19 @@ data class QuestionSummaryResponse(
     val difficulty: QuestionDifficulty,
     val sourceTag: QuestionSourceTag,
     val tags: List<String>
+)
+
+data class UpdateQuestionInSetRequest(
+    @field:NotBlank(message = "질문은 필수입니다.")
+    val questionText: String,
+    val canonicalAnswer: String? = null,
+    val categoryId: Long? = null,
+    @field:NotBlank(message = "직무명은 필수입니다.")
+    @field:Size(max = 120, message = "직무명은 120자 이하여야 합니다.")
+    val jobName: String,
+    @field:NotBlank(message = "기술명은 필수입니다.")
+    @field:Size(max = 120, message = "기술명은 120자 이하여야 합니다.")
+    val skillName: String,
+    val difficulty: QuestionDifficulty,
+    val tags: List<String> = emptyList()
 )

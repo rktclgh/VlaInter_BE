@@ -234,6 +234,50 @@ class InterviewAiOrchestrator(
         }
     }
 
+    fun evaluateIntroductionAnswer(userAnswer: String): AiTurnEvaluation? {
+        if (userAnswer.isBlank()) return null
+
+        val prompt = """
+            당신은 실전 모의면접의 첫 자기소개 답변을 평가하는 면접관입니다.
+            아래 사용자의 자기소개 답변을 읽고 한국어 JSON만 출력하세요.
+
+            [질문]
+            자기소개 부탁드리겠습니다.
+
+            [사용자 답변]
+            $userAnswer
+
+            출력 JSON 스키마:
+            {
+              "score": 0~100 숫자(소수점 2자리까지),
+              "feedback": "총평(2~4문장)",
+              "bestPractice": "더 좋은 자기소개를 위한 개선 가이드(2~4문장)",
+              "rubric": {
+                "coverage": 0~100,
+                "accuracy": 0~100,
+                "communication": 0~100
+              },
+              "evidence": ["평가 근거", "..."]
+            }
+
+            규칙:
+            - 반드시 JSON 객체만 반환
+            - 경력/역할/강점/지원 맥락이 드러나는지 본다
+            - 너무 길거나 핵심이 흐리면 감점한다
+            - 존댓말, 전달력, 구조적 답변 여부를 함께 평가한다
+        """.trimIndent()
+
+        return runCatching {
+            val generated = llmProviderRouter.generateJson(prompt)
+            val parsed = parseEvaluationJson(generated.text)
+            parsed.copy(model = generated.model, modelVersion = generated.modelVersion)
+        }.onFailure { ex ->
+            logger.warn("자기소개 AI 평가 실패(provider={}): {}", aiProperties.provider, ex.message)
+        }.getOrElse { ex ->
+            if (aiProperties.fallbackToHeuristic) null else throw ex
+        }
+    }
+
     fun validateEvidenceSnippets(fileTypeLabel: String, snippets: List<String>): SnippetValidationResult {
         if (snippets.isEmpty()) {
             return SnippetValidationResult(emptyList(), emptyList())

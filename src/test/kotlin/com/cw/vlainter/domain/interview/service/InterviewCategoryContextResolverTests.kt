@@ -9,11 +9,13 @@ import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.extension.ExtendWith
-import org.mockito.ArgumentMatchers.any
 import org.mockito.BDDMockito.given
 import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
+import org.springframework.http.HttpStatus
+import org.springframework.web.server.ResponseStatusException
 
 @ExtendWith(MockitoExtension::class)
 class InterviewCategoryContextResolverTests {
@@ -58,9 +60,8 @@ class InterviewCategoryContextResolverTests {
         val jobCategory = createCategory(id = 2L, parent = techRoot, code = "ACCOUNTANT", name = "회계사", depth = 1, path = "TECH/ACCOUNTANT", isLeaf = false)
         val skillCategory = createCategory(id = 3L, parent = jobCategory, code = "FINANCE", name = "재무회계", depth = 2, path = "TECH/ACCOUNTANT/FINANCE")
 
-        given(categoryRepository.findByParentIsNullAndCodeAndDeletedAtIsNull("TECH")).willReturn(techRoot)
-        given(categoryRepository.findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(1L, "회계사")).willReturn(jobCategory)
-        given(categoryRepository.findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(2L, "재무회계")).willReturn(skillCategory)
+        given(categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc())
+            .willReturn(listOf(techRoot, jobCategory, skillCategory))
 
         val resolved = resolver().resolve(
             actor = actor,
@@ -77,53 +78,26 @@ class InterviewCategoryContextResolverTests {
     }
 
     @Test
-    fun `평문 직무 기술이 없고 createIfMissing이면 카테고리를 생성한다`() {
+    fun `평문 직무 기술이 없고 createIfMissing이면 먼저 트리에서 생성하라고 안내한다`() {
         val actor = createUser()
         val techRoot = createCategory(id = 1L, code = "TECH", name = "기술", depth = 0, path = "TECH", isLeaf = false)
+        val jobCategory = createCategory(id = 20L, parent = techRoot, code = "ACCOUNTANT", name = "회계사", depth = 1, path = "TECH/ACCOUNTANT", isLeaf = false)
 
-        given(categoryRepository.findByParentIsNullAndCodeAndDeletedAtIsNull("TECH")).willReturn(techRoot)
-        given(categoryRepository.findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(1L, "회계사")).willReturn(null)
-        given(categoryRepository.findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(20L, "재무회계")).willReturn(null)
-        given(categoryRepository.existsByParent_IdAndCodeAndDeletedAtIsNull(1L, "회계사".uppercase())).willReturn(false)
-        given(categoryRepository.existsByParent_IdAndCodeAndDeletedAtIsNull(20L, "재무회계".uppercase())).willReturn(false)
-        given(categoryRepository.save(any(QaCategory::class.java))).willAnswer { invocation ->
-            val candidate = invocation.getArgument<QaCategory>(0)
-            when (candidate.parent?.id) {
-                1L -> createCategory(
-                    id = 20L,
-                    parent = techRoot,
-                    code = candidate.code,
-                    name = candidate.name,
-                    depth = 1,
-                    path = candidate.path,
-                    isLeaf = candidate.isLeaf
-                )
-                20L -> createCategory(
-                    id = 30L,
-                    parent = createCategory(id = 20L, parent = techRoot, code = "ACCOUNTANT", name = "회계사", depth = 1, path = "TECH/ACCOUNTANT", isLeaf = false),
-                    code = candidate.code,
-                    name = candidate.name,
-                    depth = 2,
-                    path = candidate.path,
-                    isLeaf = candidate.isLeaf
-                )
-                else -> candidate
-            }
+        given(categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc())
+            .willReturn(listOf(techRoot, jobCategory))
+
+        val exception = assertThrows<ResponseStatusException> {
+            resolver().resolve(
+                actor = actor,
+                categoryId = null,
+                jobName = "회계사",
+                skillName = "재무회계",
+                createIfMissing = true
+            )
         }
 
-        val resolved = resolver().resolve(
-            actor = actor,
-            categoryId = null,
-            jobName = "회계사",
-            skillName = "재무회계",
-            createIfMissing = true
-        )
-
-        assertThat(resolved).isNotNull
-        assertThat(resolved!!.jobName).isEqualTo("회계사")
-        assertThat(resolved.skillName).isEqualTo("재무회계")
-        assertThat(resolved.category.id).isEqualTo(30L)
-        assertThat(resolved.category.parent?.id).isEqualTo(20L)
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
+        assertThat(exception.reason).contains("기술 카테고리를 찾을 수 없습니다")
     }
 
     private fun createUser(): User = User(

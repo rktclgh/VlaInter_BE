@@ -168,7 +168,9 @@ class InterviewEvaluationService(
 
         val question = turn.question
         val documentQuestion = turn.documentQuestion
-        val aiEvaluation = if (question != null) {
+        val aiEvaluation = if (turn.sourceTag == TurnSourceTag.INTRO) {
+            interviewAiOrchestrator.evaluateIntroductionAnswer(answer)
+        } else if (question != null) {
             interviewAiOrchestrator.evaluateTechAnswer(question, answer)
         } else if (documentQuestion != null) {
             interviewAiOrchestrator.evaluateDocumentAnswer(

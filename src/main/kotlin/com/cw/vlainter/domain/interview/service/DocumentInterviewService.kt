@@ -310,21 +310,33 @@ class DocumentInterviewService(
             }
         }
 
-        val techContexts = resolveRequestedTechContexts(actor, request)
+        val selectedQuestionSet = request.questionSetId?.let { loadOwnedUserQuestionSet(actor.id, it) }
+        val selectedSetQuestions = selectedQuestionSet
+            ?.let { questionSetItemRepository.findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(it.id) }
+            ?.map { it.question }
+            .orEmpty()
+        if (selectedQuestionSet != null && selectedSetQuestions.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "선택한 질문 세트에 사용할 기술 질문이 없습니다.")
+        }
+
+        val techContexts = if (selectedQuestionSet == null) resolveRequestedTechContexts(actor, request) else emptyList()
         techContexts.forEach { context ->
             jobSkillCatalogService.ensureCatalog(context.jobName, context.skillName)
         }
-        val primaryContext = techContexts.first()
 
         val requestedCount = request.questionCount.coerceAtLeast(5).coerceAtMost(20)
         val desiredTechTarget = max(1, (requestedCount * 0.4).roundToInt())
         val (techCandidates, generatedQuestions) = userGeminiApiKeyService.withUserApiKey(actor.id) {
-            val resolvedTechCandidates = resolveOrGenerateTechCandidates(
-                actor = actor,
-                contexts = techContexts,
-                difficulty = request.difficulty,
-                requestedCount = desiredTechTarget
-            )
+            val resolvedTechCandidates = if (selectedSetQuestions.isNotEmpty()) {
+                selectedSetQuestions
+            } else {
+                resolveOrGenerateTechCandidates(
+                    actor = actor,
+                    contexts = techContexts,
+                    difficulty = request.difficulty,
+                    requestedCount = desiredTechTarget
+                )
+            }
             val techTarget = if (resolvedTechCandidates.isNotEmpty()) {
                 min(resolvedTechCandidates.size, desiredTechTarget)
             } else {
@@ -341,10 +353,37 @@ class DocumentInterviewService(
             0
         }
         val selectedTech = techCandidates.shuffled().take(techTarget)
+        val techMetaJobName = selectedQuestionSet?.jobName
+            ?: techContexts.firstOrNull()?.jobName
+            ?: selectedTech.firstOrNull()?.jobName
+            ?: selectedTech.firstOrNull()?.category?.parent?.name?.trim()
+            ?: request.jobName?.trim()
+            ?: "직무"
+        val techMetaSkillNames = if (selectedQuestionSet != null) {
+            selectedSetQuestions.mapNotNull { question ->
+                question.skillName?.trim()?.takeIf { it.isNotBlank() } ?: question.category.name.trim().takeIf { it.isNotBlank() }
+            }.distinctBy { it.lowercase() }
+        } else {
+            techContexts.map { it.skillName }
+        }
+        val primaryCategoryId = if (selectedQuestionSet != null && techMetaSkillNames.size == 1) {
+            selectedSetQuestions.firstOrNull()?.category?.id
+        } else if (techContexts.size == 1) {
+            techContexts.first().category.id
+        } else {
+            null
+        }
         val queue = buildList {
+            if (request.includeSelfIntroduction) {
+                add(InterviewPracticeService.QuestionRef(InterviewQuestionKind.INTRO, 0))
+            }
             addAll(generatedQuestions.map { InterviewPracticeService.QuestionRef(InterviewQuestionKind.DOCUMENT, it.id) })
             addAll(selectedTech.map { InterviewPracticeService.QuestionRef(InterviewQuestionKind.TECH, it.id) })
-        }.shuffled()
+        }.let { refs ->
+            val intro = refs.firstOrNull()?.takeIf { it.kind == InterviewQuestionKind.INTRO }
+            val remaining = if (intro != null) refs.drop(1).shuffled() else refs.shuffled()
+            if (intro != null) listOf(intro) + remaining else remaining
+        }
         if (queue.isEmpty()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "면접 질문 생성에 실패했습니다.")
         }
@@ -366,11 +405,14 @@ class DocumentInterviewService(
                         "cursor" to 1,
                         "meta" to mapOf(
                         "questionCount" to queue.size,
+                        "requestedQuestionCount" to requestedCount,
+                        "includeSelfIntroduction" to request.includeSelfIntroduction,
                         "difficulty" to request.difficulty?.name,
                         "difficultyRating" to difficultyToRating(request.difficulty),
-                        "categoryId" to if (techContexts.size == 1) primaryContext.category.id else null,
-                        "categoryName" to techContexts.joinToString(", ") { it.skillName },
-                        "jobName" to primaryContext.jobName,
+                        "categoryId" to primaryCategoryId,
+                        "categoryName" to techMetaSkillNames.joinToString(", "),
+                        "jobName" to techMetaJobName,
+                        "questionSetId" to selectedQuestionSet?.id,
                         "selectedDocuments" to files.map { file ->
                             mapOf(
                                 "fileId" to file.id,
@@ -1045,6 +1087,17 @@ class DocumentInterviewService(
                     ragContextJson = question.evidenceJson
                 )
             }
+
+            InterviewQuestionKind.INTRO -> {
+                InterviewTurn(
+                    session = session,
+                    turnNo = 1,
+                    sourceTag = TurnSourceTag.INTRO,
+                    questionTextSnapshot = "자기소개 부탁드리겠습니다.",
+                    categorySnapshot = "자기소개",
+                    tagsJson = "[]"
+                )
+            }
         }
         return interviewTurnRepository.save(turn)
     }
@@ -1055,7 +1108,11 @@ class DocumentInterviewService(
             turnNo = turn.turnNo,
             questionId = turn.question?.id,
             documentQuestionId = turn.documentQuestion?.id,
-            questionKind = if (turn.question != null) InterviewQuestionKind.TECH else InterviewQuestionKind.DOCUMENT,
+            questionKind = when {
+                turn.sourceTag == TurnSourceTag.INTRO -> InterviewQuestionKind.INTRO
+                turn.question != null -> InterviewQuestionKind.TECH
+                else -> InterviewQuestionKind.DOCUMENT
+            },
             categoryId = turn.category?.id,
             questionText = turn.questionTextSnapshot,
             sourceTag = turn.sourceTag,
@@ -1175,6 +1232,18 @@ class DocumentInterviewService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "문서 기반 면접에는 이력서/자기소개서/포트폴리오만 사용할 수 있습니다.")
         }
         return file
+    }
+
+    private fun loadOwnedUserQuestionSet(userId: Long, setId: Long): QaQuestionSet {
+        val set = questionSetRepository.findByIdAndDeletedAtIsNull(setId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "질문 세트를 찾을 수 없습니다.")
+        if (set.ownerUser?.id != userId || set.ownerType != QuestionSetOwnerType.USER) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "내 질문 세트만 실전 모의면접에 사용할 수 있습니다.")
+        }
+        if (set.status != QuestionSetStatus.ACTIVE) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "비활성 질문 세트는 사용할 수 없습니다.")
+        }
+        return set
     }
 
     private fun toIngestionResponse(job: DocumentIngestionJob): DocumentIngestionResponse {

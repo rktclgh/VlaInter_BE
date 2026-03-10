@@ -274,6 +274,9 @@ class InterviewPracticeService(
     fun bookmarkTurn(principal: AuthPrincipal, turnId: Long, request: BookmarkTurnRequest): SavedQuestionResponse {
         val turn = interviewTurnRepository.findByIdAndSession_User_Id(turnId, principal.userId)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "북마크할 질문을 찾을 수 없습니다.")
+        if (turn.question == null && turn.documentQuestion == null) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 수 없는 문항입니다.")
+        }
 
         if (savedQuestionRepository.existsByUser_IdAndSourceTurn_Id(principal.userId, turn.id)) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "이미 저장된 질문입니다.")
@@ -623,6 +626,10 @@ class InterviewPracticeService(
                     tagsJson = "[]",
                     ragContextJson = question.evidenceJson
                 )
+            }
+
+            InterviewQuestionKind.INTRO -> {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "자기소개 문항은 실전 모의면접에서만 사용할 수 있습니다.")
             }
         }
 
