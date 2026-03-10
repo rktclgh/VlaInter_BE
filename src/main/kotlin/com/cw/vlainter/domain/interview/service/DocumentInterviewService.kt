@@ -48,6 +48,7 @@ import com.cw.vlainter.domain.user.service.UserGeminiApiKeyService
 import com.cw.vlainter.domain.userFile.entity.FileType
 import com.cw.vlainter.domain.userFile.entity.UserFile
 import com.cw.vlainter.domain.userFile.repository.UserFileRepository
+import com.cw.vlainter.global.config.properties.AiProvider
 import com.cw.vlainter.global.config.properties.OcrProperties
 import com.cw.vlainter.global.config.properties.S3Properties
 import com.cw.vlainter.global.security.AuthPrincipal
@@ -591,10 +592,9 @@ class DocumentInterviewService(
             results += persisted
         }
 
-        if (results.isEmpty() && lastGeminiTransient != null) {
-            throw lastGeminiTransient.let { transientError ->
-                toGeminiOverloadException(transientError ?: error("Gemini transient error is missing"))
-            }
+        val transientError = lastGeminiTransient
+        if (results.isEmpty() && transientError != null) {
+            throw toGeminiOverloadException(transientError)
         }
         if (results.isEmpty()) {
             val reason = skippedReasons.firstOrNull()?.let { "($it)" } ?: ""
@@ -948,9 +948,13 @@ class DocumentInterviewService(
 
     private fun toGeminiOverloadException(ex: GeminiTransientException): ResponseStatusException {
         val status = if (ex.statusCode == 429) HttpStatus.TOO_MANY_REQUESTS else HttpStatus.SERVICE_UNAVAILABLE
+        val providerLabel = when (ex.provider) {
+            AiProvider.BEDROCK -> "Bedrock"
+            AiProvider.GEMINI -> "Gemini"
+        }
         return ResponseStatusException(
             status,
-            "Gemini API 과부하로 요청을 처리할 수 없습니다. 1분 후 다시 시도해 주세요.",
+            "$providerLabel API 과부하로 요청을 처리할 수 없습니다. 1분 후 다시 시도해 주세요.",
             ex
         )
     }

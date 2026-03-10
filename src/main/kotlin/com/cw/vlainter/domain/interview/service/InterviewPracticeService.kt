@@ -43,6 +43,7 @@ import com.cw.vlainter.domain.interview.repository.SavedQuestionRepository
 import com.cw.vlainter.domain.interview.repository.UserQuestionAttemptRepository
 import com.cw.vlainter.domain.user.service.UserGeminiApiKeyService
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.global.config.properties.AiProvider
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -570,9 +571,13 @@ class InterviewPracticeService(
 
     private fun toGeminiOverloadException(ex: GeminiTransientException): ResponseStatusException {
         val status = if (ex.statusCode == 429) HttpStatus.TOO_MANY_REQUESTS else HttpStatus.SERVICE_UNAVAILABLE
+        val providerLabel = when (ex.provider) {
+            AiProvider.BEDROCK -> "Bedrock"
+            AiProvider.GEMINI -> "Gemini"
+        }
         return ResponseStatusException(
             status,
-            "Gemini API 과부하로 요청을 처리할 수 없습니다. 1분 후 다시 시도해 주세요.",
+            "$providerLabel API 과부하로 요청을 처리할 수 없습니다. 1분 후 다시 시도해 주세요.",
             ex
         )
     }

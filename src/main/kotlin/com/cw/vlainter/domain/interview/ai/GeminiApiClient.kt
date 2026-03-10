@@ -46,7 +46,6 @@ class GeminiApiClient(
     override fun generateJson(prompt: String, temperature: Double?): LlmGenerationResult {
         val apiKey = resolveApiKey()
         require(apiKey.isNotBlank()) { "Gemini API key is missing." }
-        waitForChatRateLimitSlot()
 
         val models = buildList {
             add(geminiProperties.chatModel.trim())
@@ -61,6 +60,7 @@ class GeminiApiClient(
         for (index in startIndex..models.lastIndex) {
             val model = models[index]
             try {
+                waitForChatRateLimitSlot()
                 aiRoutingContextHolder.promoteGeminiModelIndex(index)
                 logger.info(
                     "Gemini 채팅 모델 호출 시도 model={} index={} promptLength={} temperature={}",

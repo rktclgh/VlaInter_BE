@@ -82,7 +82,12 @@ class BedrockLlmProviderClient(
             .orEmpty()
 
         if (text.isBlank()) {
-            logger.warn("Bedrock 응답 텍스트가 비어 있습니다. body={}", body.take(500))
+            logger.warn(
+                "Bedrock 응답 텍스트가 비어 있습니다. modelId={} bodyLength={} requestId={}",
+                modelId,
+                body.length,
+                node.path("requestId").asText(null)
+            )
             error("Bedrock 응답 텍스트가 비어 있습니다.")
         }
 
