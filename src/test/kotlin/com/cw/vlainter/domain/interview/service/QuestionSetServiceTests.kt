@@ -71,6 +71,7 @@ class QuestionSetServiceTests {
         val category = createCategory()
         val resolvedContext = InterviewCategoryContextResolver.ResolvedCategoryContext(
             category = category,
+            branchName = "상경",
             jobName = "회계사",
             skillName = "재무회계"
         )
@@ -79,7 +80,6 @@ class QuestionSetServiceTests {
         given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
         given(
             categoryContextResolver.resolve(
-                actor = actor,
                 categoryId = null,
                 jobName = "회계사",
                 skillName = "재무회계",
@@ -126,19 +126,19 @@ class QuestionSetServiceTests {
         assertThat(result.skillName).isEqualTo("재무회계")
         assertThat(result.bestPractice).isNull()
         assertThat(result.categoryName).isEqualTo("재무회계")
-        assertThat(set.jobName).isEqualTo("회계사")
+        assertThat(set.jobName).isEqualTo("상경")
         assertThat(set.skillName).isNull()
     }
 
     @Test
-    fun `createMySet는 직무만 세트 메타로 저장하고 기술 목록은 비워둔다`() {
+    fun `createMySet는 계열만 세트 메타로 저장하고 기술 목록은 비워둔다`() {
         val actor = createUser()
         val savedSet = QaQuestionSet(
             id = 100L,
             ownerUser = actor,
             ownerType = QuestionSetOwnerType.USER,
             title = "백엔드 질문 세트",
-            jobName = "백엔드개발자",
+            jobName = "개발",
             skillName = null,
             visibility = QuestionSetVisibility.PRIVATE
         )
@@ -150,14 +150,15 @@ class QuestionSetServiceTests {
             AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
             CreateQuestionSetRequest(
                 title = "백엔드 질문 세트",
-                jobName = "백엔드개발자",
+                branchName = "개발",
                 skillName = "Spring",
                 description = null,
                 visibility = QuestionSetVisibility.PRIVATE
             )
         )
 
-        assertThat(result.jobName).isEqualTo("백엔드개발자")
+        assertThat(result.branchName).isEqualTo("개발")
+        assertThat(result.jobName).isEqualTo("개발")
         assertThat(result.skillName).isNull()
         assertThat(result.skillNames).isEmpty()
     }
@@ -170,12 +171,13 @@ class QuestionSetServiceTests {
             ownerUser = actor,
             ownerType = QuestionSetOwnerType.USER,
             title = "백엔드 질문 세트",
-            jobName = "백엔드개발자",
+            jobName = "개발",
             skillName = null,
             visibility = QuestionSetVisibility.PRIVATE
         )
         val jpaContext = InterviewCategoryContextResolver.ResolvedCategoryContext(
-            category = createCategory(jobName = "백엔드개발자", skillName = "JPA", categoryId = 13L),
+            category = createCategory(branchName = "개발", jobName = "백엔드개발자", skillName = "JPA", categoryId = 13L),
+            branchName = "개발",
             jobName = "백엔드개발자",
             skillName = "JPA"
         )
@@ -184,7 +186,6 @@ class QuestionSetServiceTests {
         given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
         given(
             categoryContextResolver.resolve(
-                actor = actor,
                 categoryId = null,
                 jobName = "백엔드개발자",
                 skillName = "JPA",
@@ -226,8 +227,126 @@ class QuestionSetServiceTests {
         )
 
         assertThat(result.skillName).isEqualTo("JPA")
-        assertThat(set.jobName).isEqualTo("백엔드개발자")
+        assertThat(set.jobName).isEqualTo("개발")
         assertThat(set.skillName).isNull()
+    }
+
+    @Test
+    fun `같은 계열의 공통 직무 질문은 세트에 추가할 수 있다`() {
+        val actor = createUser(id = 7L)
+        val set = QaQuestionSet(
+            id = 100L,
+            ownerUser = actor,
+            ownerType = QuestionSetOwnerType.USER,
+            title = "개발 질문 세트",
+            jobName = "개발",
+            skillName = null,
+            visibility = QuestionSetVisibility.PRIVATE
+        )
+        val commonContext = InterviewCategoryContextResolver.ResolvedCategoryContext(
+            category = createCategory(branchName = "개발", jobName = "공통", skillName = "CS", categoryId = 14L),
+            branchName = "개발",
+            jobName = "공통",
+            skillName = "CS"
+        )
+
+        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
+        given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
+        given(
+            categoryContextResolver.resolve(
+                categoryId = null,
+                jobName = "공통",
+                skillName = "CS",
+                createIfMissing = true
+            )
+        ).willReturn(commonContext)
+        given(questionRepository.findByFingerprintAndDeletedAtIsNull(anyString())).willReturn(null)
+        given(questionRepository.save(any(QaQuestion::class.java))).willAnswer { invocation ->
+            val candidate = invocation.getArgument<QaQuestion>(0)
+            QaQuestion(
+                id = 204L,
+                fingerprint = candidate.fingerprint,
+                questionText = candidate.questionText,
+                canonicalAnswer = candidate.canonicalAnswer,
+                category = candidate.category,
+                jobName = candidate.jobName,
+                skillName = candidate.skillName,
+                difficulty = candidate.difficulty,
+                sourceTag = candidate.sourceTag,
+                tagsJson = candidate.tagsJson
+            )
+        }
+        given(questionSetItemRepository.existsBySet_IdAndQuestion_Id(100L, 204L)).willReturn(false)
+        given(questionSetItemRepository.findMaxOrderNo(100L)).willReturn(0)
+        given(questionSetItemRepository.save(any(QaQuestionSetItem::class.java))).willAnswer { it.getArgument(0) }
+
+        val result = createService().addQuestionToSet(
+            AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
+            100L,
+            AddQuestionToSetRequest(
+                questionText = "운영체제에서 프로세스와 스레드 차이를 설명해 주세요.",
+                canonicalAnswer = "자원 공유와 스케줄링 관점으로 설명합니다.",
+                categoryId = null,
+                jobName = "공통",
+                skillName = "CS",
+                difficulty = QuestionDifficulty.MEDIUM,
+                tags = listOf("CS")
+            )
+        )
+
+        assertThat(result.jobName).isEqualTo("공통")
+        assertThat(result.skillName).isEqualTo("CS")
+        assertThat(set.jobName).isEqualTo("개발")
+    }
+
+    @Test
+    fun `다른 계열의 질문은 세트에 추가할 수 없다`() {
+        val actor = createUser(id = 7L)
+        val set = QaQuestionSet(
+            id = 100L,
+            ownerUser = actor,
+            ownerType = QuestionSetOwnerType.USER,
+            title = "개발 질문 세트",
+            jobName = "개발",
+            skillName = null,
+            visibility = QuestionSetVisibility.PRIVATE
+        )
+        val financeContext = InterviewCategoryContextResolver.ResolvedCategoryContext(
+            category = createCategory(branchName = "상경", jobName = "재무회계", skillName = "재무회계", categoryId = 15L),
+            branchName = "상경",
+            jobName = "재무회계",
+            skillName = "재무회계"
+        )
+
+        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
+        given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
+        given(
+            categoryContextResolver.resolve(
+                categoryId = null,
+                jobName = "재무회계",
+                skillName = "재무회계",
+                createIfMissing = true
+            )
+        ).willReturn(financeContext)
+
+        val exception = assertThrows(ResponseStatusException::class.java) {
+            createService().addQuestionToSet(
+                AuthPrincipal(userId = 7L, email = "tester@vlainter.com", sessionId = "S", role = UserRole.USER),
+                100L,
+                AddQuestionToSetRequest(
+                    questionText = "재무제표 검증 절차를 설명해 주세요.",
+                    canonicalAnswer = "실증 절차와 통제 테스트를 구분해 답합니다.",
+                    categoryId = null,
+                    jobName = "재무회계",
+                    skillName = "재무회계",
+                    difficulty = QuestionDifficulty.MEDIUM,
+                    tags = listOf("재무회계")
+                )
+            )
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
+        assertThat(exception.reason).contains("질문 세트 계열")
     }
 
     @Test
@@ -238,7 +357,7 @@ class QuestionSetServiceTests {
             ownerUser = actor,
             ownerType = QuestionSetOwnerType.USER,
             title = "백엔드 질문 세트",
-            jobName = "백엔드개발자",
+            jobName = "개발",
             skillName = null,
             visibility = QuestionSetVisibility.PRIVATE
         )
@@ -247,7 +366,7 @@ class QuestionSetServiceTests {
             fingerprint = "old",
             questionText = "Spring 트랜잭션을 설명해 주세요.",
             canonicalAnswer = "기존 답변",
-            category = createCategory(jobName = "백엔드개발자", skillName = "Spring"),
+            category = createCategory(branchName = "개발", jobName = "백엔드개발자", skillName = "Spring"),
             jobName = "백엔드개발자",
             skillName = "Spring",
             difficulty = QuestionDifficulty.MEDIUM,
@@ -256,7 +375,8 @@ class QuestionSetServiceTests {
         )
         val item = QaQuestionSetItem(id = 1L, set = set, question = oldQuestion, orderNo = 0)
         val resolvedContext = InterviewCategoryContextResolver.ResolvedCategoryContext(
-            category = createCategory(jobName = "백엔드개발자", skillName = "JPA", categoryId = 13L),
+            category = createCategory(branchName = "개발", jobName = "백엔드개발자", skillName = "JPA", categoryId = 13L),
+            branchName = "개발",
             jobName = "백엔드개발자",
             skillName = "JPA"
         )
@@ -266,7 +386,6 @@ class QuestionSetServiceTests {
         given(questionSetItemRepository.findBySet_IdAndQuestion_IdAndIsActiveTrue(100L, 200L)).willReturn(item)
         given(
             categoryContextResolver.resolve(
-                actor = actor,
                 categoryId = null,
                 jobName = "백엔드개발자",
                 skillName = "JPA",
@@ -320,7 +439,7 @@ class QuestionSetServiceTests {
             ownerUser = actor,
             ownerType = QuestionSetOwnerType.USER,
             title = "백엔드 질문 세트",
-            jobName = "백엔드개발자",
+            jobName = "개발",
             skillName = null,
             visibility = QuestionSetVisibility.PRIVATE
         )
@@ -332,7 +451,7 @@ class QuestionSetServiceTests {
                 fingerprint = "old",
                 questionText = "Spring 트랜잭션을 설명해 주세요.",
                 canonicalAnswer = "기존 답변",
-                category = createCategory(jobName = "백엔드개발자", skillName = "Spring"),
+                category = createCategory(branchName = "개발", jobName = "백엔드개발자", skillName = "Spring"),
                 jobName = "백엔드개발자",
                 skillName = "Spring",
                 difficulty = QuestionDifficulty.MEDIUM,
@@ -393,6 +512,7 @@ class QuestionSetServiceTests {
         val category = createCategory()
         val resolvedContext = InterviewCategoryContextResolver.ResolvedCategoryContext(
             category = category,
+            branchName = "상경",
             jobName = "회계사",
             skillName = "재무회계"
         )
@@ -413,7 +533,6 @@ class QuestionSetServiceTests {
         given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
         given(
             categoryContextResolver.resolve(
-                actor = actor,
                 categoryId = null,
                 jobName = "회계사",
                 skillName = "재무회계",
@@ -489,18 +608,31 @@ class QuestionSetServiceTests {
     )
 
     private fun createCategory(
+        branchName: String = "상경",
         jobName: String = "회계사",
         skillName: String = "재무회계",
         categoryId: Long = 12L
     ): QaCategory {
+        val branch = QaCategory(
+            id = 10L,
+            parent = null,
+            code = "BRANCH_DEFAULT",
+            name = branchName,
+            description = null,
+            depth = 0,
+            path = branchName,
+            sortOrder = 10,
+            isActive = true,
+            isLeaf = false
+        )
         val job = QaCategory(
             id = 11L,
-            parent = null,
+            parent = branch,
             code = "JOB_ACCOUNTANT",
             name = jobName,
             description = null,
             depth = 1,
-            path = "TECH/JOB_ACCOUNTANT",
+            path = "$branchName/JOB_ACCOUNTANT",
             sortOrder = 100,
             isActive = true,
             isLeaf = false
@@ -512,7 +644,7 @@ class QuestionSetServiceTests {
             name = skillName,
             description = null,
             depth = 2,
-            path = "TECH/JOB_ACCOUNTANT/SKILL_FINANCE",
+            path = "$branchName/JOB_ACCOUNTANT/SKILL_FINANCE",
             sortOrder = 100,
             isActive = true,
             isLeaf = true

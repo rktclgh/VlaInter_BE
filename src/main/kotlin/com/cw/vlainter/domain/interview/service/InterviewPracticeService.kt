@@ -87,7 +87,6 @@ class InterviewPracticeService(
         userGeminiApiKeyService.assertGeminiApiKeyConfigured(actor.id)
         var categoryContext = if (request.setId == null) {
             categoryContextResolver.resolve(
-                actor = actor,
                 categoryId = request.categoryId,
                 jobName = request.jobName,
                 skillName = request.skillName,
@@ -100,7 +99,6 @@ class InterviewPracticeService(
         if (candidates.isEmpty() && request.setId == null) {
             categoryContext = categoryContext
                 ?: categoryContextResolver.resolve(
-                    actor = actor,
                     categoryId = request.categoryId,
                     jobName = request.jobName,
                     skillName = request.skillName,
@@ -670,6 +668,13 @@ class InterviewPracticeService(
             bestPractice = null,
             feedback = evaluation?.feedback,
             answerText = saved.sourceTurn?.userAnswer,
+            branchName = saved.category?.parent?.parent?.name?.trim(),
+            jobName = saved.question?.jobName?.trim()
+                ?: saved.category?.parent?.name?.trim()
+                ?: saved.jobSnapshot,
+            skillName = saved.question?.skillName?.trim()
+                ?: saved.category?.name?.trim()
+                ?: saved.skillSnapshot,
             category = saved.categorySnapshot,
             difficulty = saved.difficulty,
             sourceTag = normalizeSavedSourceTag(saved),
@@ -693,18 +698,6 @@ class InterviewPracticeService(
             return TurnSourceTag.SYSTEM.name
         }
         return current
-    }
-
-    private fun runAfterCommit(callback: () -> Unit) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            callback()
-            return
-        }
-        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
-            override fun afterCommit() {
-                callback()
-            }
-        })
     }
 
     private fun fingerprintFor(questionText: String, category: String, difficulty: String): String {

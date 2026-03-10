@@ -12,6 +12,7 @@ import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.domain.userFile.entity.FileType
 import com.cw.vlainter.domain.userFile.repository.UserFileRepository
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.cw.vlainter.global.security.LoginSessionStore
@@ -317,7 +318,11 @@ class UserService(
             role = user.role,
             status = user.status,
             point = user.point,
-            hasGeminiApiKey = userGeminiApiKeyService.hasGeminiApiKey(user)
+            hasGeminiApiKey = userGeminiApiKeyService.hasGeminiApiKey(user),
+            hasProfileImage = userFileRepository.findTopByUser_IdAndFileTypeAndIsActiveTrueAndDeletedAtIsNullOrderByCreatedAtDesc(
+                user.id,
+                FileType.PROFILE_IMAGE
+            ) != null
         )
     }
 

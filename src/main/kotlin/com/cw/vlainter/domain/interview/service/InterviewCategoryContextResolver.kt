@@ -2,7 +2,6 @@ package com.cw.vlainter.domain.interview.service
 
 import com.cw.vlainter.domain.interview.entity.QaCategory
 import com.cw.vlainter.domain.interview.repository.QaCategoryRepository
-import com.cw.vlainter.domain.user.entity.User
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.web.server.ResponseStatusException
@@ -13,12 +12,12 @@ class InterviewCategoryContextResolver(
 ) {
     data class ResolvedCategoryContext(
         val category: QaCategory,
+        val branchName: String,
         val jobName: String,
         val skillName: String
     )
 
     fun resolve(
-        actor: User,
         categoryId: Long?,
         jobName: String?,
         skillName: String?,
@@ -33,9 +32,21 @@ class InterviewCategoryContextResolver(
             if (!category.isActive) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "비활성화된 카테고리입니다.")
             }
+            val jobCategory = when (category.depth) {
+                2 -> category.parent
+                1 -> category
+                else -> null
+            }
+            val branchCategory = when (category.depth) {
+                2 -> category.parent?.parent
+                1 -> category.parent
+                0 -> category
+                else -> null
+            }
             return ResolvedCategoryContext(
                 category = category,
-                jobName = normalizedJobName ?: category.parent?.name?.trim().orEmpty().ifBlank { "직무" },
+                branchName = branchCategory?.name?.trim().orEmpty().ifBlank { "계열" },
+                jobName = normalizedJobName ?: jobCategory?.name?.trim().orEmpty().ifBlank { "직무" },
                 skillName = normalizedSkillName ?: category.name.trim()
             )
         }
@@ -74,6 +85,7 @@ class InterviewCategoryContextResolver(
 
         return ResolvedCategoryContext(
             category = skillCategory,
+            branchName = skillCategory.parent?.parent?.name?.trim().orEmpty().ifBlank { "계열" },
             jobName = resolvedJobName,
             skillName = normalizedSkillName
         )

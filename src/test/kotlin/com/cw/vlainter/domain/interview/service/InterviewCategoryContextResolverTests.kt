@@ -4,9 +4,6 @@ package com.cw.vlainter.domain.interview.service
 
 import com.cw.vlainter.domain.interview.entity.QaCategory
 import com.cw.vlainter.domain.interview.repository.QaCategoryRepository
-import com.cw.vlainter.domain.user.entity.User
-import com.cw.vlainter.domain.user.entity.UserRole
-import com.cw.vlainter.domain.user.entity.UserStatus
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -27,7 +24,6 @@ class InterviewCategoryContextResolverTests {
 
     @Test
     fun `categoryId가 있으면 해당 카테고리를 기준으로 컨텍스트를 반환한다`() {
-        val actor = createUser()
         val jobCategory = createCategory(id = 11L, code = "JOB", name = "기존직무", depth = 1, path = "TECH/JOB")
         val skillCategory = createCategory(
             id = 22L,
@@ -40,7 +36,6 @@ class InterviewCategoryContextResolverTests {
         given(categoryRepository.findByIdAndDeletedAtIsNull(22L)).willReturn(skillCategory)
 
         val resolved = resolver().resolve(
-            actor = actor,
             categoryId = 22L,
             jobName = "회계사",
             skillName = "재무회계",
@@ -55,7 +50,6 @@ class InterviewCategoryContextResolverTests {
 
     @Test
     fun `평문 직무 기술이 기존 카테고리에 있으면 생성 없이 반환한다`() {
-        val actor = createUser()
         val techRoot = createCategory(id = 1L, code = "TECH", name = "기술", depth = 0, path = "TECH", isLeaf = false)
         val jobCategory = createCategory(id = 2L, parent = techRoot, code = "ACCOUNTANT", name = "회계사", depth = 1, path = "TECH/ACCOUNTANT", isLeaf = false)
         val skillCategory = createCategory(id = 3L, parent = jobCategory, code = "FINANCE", name = "재무회계", depth = 2, path = "TECH/ACCOUNTANT/FINANCE")
@@ -64,7 +58,6 @@ class InterviewCategoryContextResolverTests {
             .willReturn(listOf(techRoot, jobCategory, skillCategory))
 
         val resolved = resolver().resolve(
-            actor = actor,
             categoryId = null,
             jobName = "회계사",
             skillName = "재무회계",
@@ -79,7 +72,6 @@ class InterviewCategoryContextResolverTests {
 
     @Test
     fun `평문 직무 기술이 없고 createIfMissing이면 먼저 트리에서 생성하라고 안내한다`() {
-        val actor = createUser()
         val techRoot = createCategory(id = 1L, code = "TECH", name = "기술", depth = 0, path = "TECH", isLeaf = false)
         val jobCategory = createCategory(id = 20L, parent = techRoot, code = "ACCOUNTANT", name = "회계사", depth = 1, path = "TECH/ACCOUNTANT", isLeaf = false)
 
@@ -88,7 +80,6 @@ class InterviewCategoryContextResolverTests {
 
         val exception = assertThrows<ResponseStatusException> {
             resolver().resolve(
-                actor = actor,
                 categoryId = null,
                 jobName = "회계사",
                 skillName = "재무회계",
@@ -99,18 +90,6 @@ class InterviewCategoryContextResolverTests {
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
         assertThat(exception.reason).contains("기술 카테고리를 찾을 수 없습니다")
     }
-
-    private fun createUser(): User = User(
-        id = 1L,
-        email = "tester@vlainter.com",
-        password = "encoded-password",
-        name = "Tester",
-        status = UserStatus.ACTIVE,
-        role = UserRole.USER,
-        free = 0,
-        point = 0
-    )
-
     private fun createCategory(
         id: Long,
         parent: QaCategory? = null,

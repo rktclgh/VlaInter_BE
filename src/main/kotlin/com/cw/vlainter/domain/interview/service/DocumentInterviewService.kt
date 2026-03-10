@@ -319,7 +319,7 @@ class DocumentInterviewService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "선택한 질문 세트에 사용할 기술 질문이 없습니다.")
         }
 
-        val techContexts = if (selectedQuestionSet == null) resolveRequestedTechContexts(actor, request) else emptyList()
+        val techContexts = if (selectedQuestionSet == null) resolveRequestedTechContexts(request) else emptyList()
         techContexts.forEach { context ->
             jobSkillCatalogService.ensureCatalog(context.jobName, context.skillName)
         }
@@ -911,7 +911,6 @@ class DocumentInterviewService(
     }
 
     private fun resolveRequestedTechContexts(
-        actor: User,
         request: StartMockInterviewRequest
     ): List<InterviewCategoryContextResolver.ResolvedCategoryContext> {
         val skillNames = request.skillNames
@@ -932,13 +931,24 @@ class DocumentInterviewService(
                     throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술 카테고리만 선택할 수 있습니다: ${category.name}")
                 }
             }
+            val branchNames = categories.map { it.parent?.parent?.name?.trim().orEmpty() }.distinctBy { it.lowercase() }
+            if (branchNames.size > 1) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접 시작 시 선택한 기술 카테고리는 같은 계열에 속해야 합니다.")
+            }
+            val selectedJobName = request.jobName?.trim().orEmpty()
             val jobNames = categories.map { it.parent?.name?.trim().orEmpty() }.distinctBy { it.lowercase() }
-            if (jobNames.size > 1) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접 시작 시 선택한 기술 카테고리는 같은 직무에 속해야 합니다.")
+            val invalidJobName = jobNames.firstOrNull { jobName ->
+                jobName.isNotBlank() &&
+                    !jobName.equals(selectedJobName, ignoreCase = true) &&
+                    !jobName.equals("공통", ignoreCase = true)
+            }
+            if (invalidJobName != null) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접 시작 시 선택한 기술 카테고리는 선택 직무 또는 공통 직무에만 속해야 합니다.")
             }
             return categories.map { category ->
                 InterviewCategoryContextResolver.ResolvedCategoryContext(
                     category = category,
+                    branchName = category.parent?.parent?.name?.trim().orEmpty().ifBlank { "계열" },
                     jobName = category.parent?.name?.trim().orEmpty().ifBlank { request.jobName?.trim().orEmpty().ifBlank { "직무" } },
                     skillName = category.name.trim()
                 )
@@ -950,7 +960,6 @@ class DocumentInterviewService(
                 ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접 시작 시 직무 정보가 필요합니다.")
             return skillNames.map { skillName ->
                 categoryContextResolver.resolve(
-                    actor = actor,
                     categoryId = null,
                     jobName = resolvedJobName,
                     skillName = skillName,
@@ -960,7 +969,6 @@ class DocumentInterviewService(
         }
 
         val singleContext = categoryContextResolver.resolve(
-            actor = actor,
             categoryId = request.categoryId,
             jobName = request.jobName,
             skillName = request.skillName,
@@ -1092,7 +1100,7 @@ class DocumentInterviewService(
                 InterviewTurn(
                     session = session,
                     turnNo = 1,
-                    sourceTag = TurnSourceTag.INTRO,
+                    sourceTag = TurnSourceTag.DOC_RAG,
                     questionTextSnapshot = "자기소개 부탁드리겠습니다.",
                     categorySnapshot = "자기소개",
                     tagsJson = "[]"
@@ -1103,23 +1111,31 @@ class DocumentInterviewService(
     }
 
     private fun toInterviewQuestionResponse(turn: InterviewTurn): InterviewQuestionResponse {
+        val isIntroductionTurn = isIntroductionTurn(turn)
         return InterviewQuestionResponse(
             turnId = turn.id,
             turnNo = turn.turnNo,
             questionId = turn.question?.id,
             documentQuestionId = turn.documentQuestion?.id,
             questionKind = when {
-                turn.sourceTag == TurnSourceTag.INTRO -> InterviewQuestionKind.INTRO
+                isIntroductionTurn -> InterviewQuestionKind.INTRO
                 turn.question != null -> InterviewQuestionKind.TECH
                 else -> InterviewQuestionKind.DOCUMENT
             },
             categoryId = turn.category?.id,
             questionText = turn.questionTextSnapshot,
-            sourceTag = turn.sourceTag,
+            sourceTag = if (isIntroductionTurn) TurnSourceTag.INTRO else turn.sourceTag,
             category = turn.categorySnapshot,
             difficulty = turn.difficulty,
             tags = runCatching { objectMapper.readValue(turn.tagsJson, Array<String>::class.java).toList() }.getOrDefault(emptyList())
         )
+    }
+
+    private fun isIntroductionTurn(turn: InterviewTurn): Boolean {
+        return turn.question == null &&
+            turn.documentQuestion == null &&
+            turn.categorySnapshot == "자기소개" &&
+            turn.questionTextSnapshot == "자기소개 부탁드리겠습니다."
     }
 
     private fun extractPdfText(file: UserFile): ExtractedDocumentText {

@@ -27,8 +27,9 @@ class CategoryAdminService(
     private val interviewTurnRepository: InterviewTurnRepository,
     private val userRepository: UserRepository
 ) {
-    @Transactional(readOnly = true)
+    @Transactional
     fun getActiveCategoryTree(): List<CategoryResponse> {
+        ensureCommonJobsForBranches()
         return categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc()
             .map { toResponse(it) }
     }
@@ -45,6 +46,13 @@ class CategoryAdminService(
         val depth = (parent?.depth ?: -1) + 1
         if (depth !in 0..2) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카테고리는 계열(0) / 직무(1) / 기술(2) 깊이까지만 생성할 수 있습니다.")
+        }
+        val isBranchCommonJob = depth == 1 && normalizedName.equals("공통", ignoreCase = true)
+        if (!isBranchCommonJob && categoryRepository.existsByDepthAndNameIgnoreCaseAndDeletedAtIsNull(depth, normalizedName)) {
+            throw ResponseStatusException(
+                HttpStatus.CONFLICT,
+                "같은 depth에 동일한 이름의 카테고리가 이미 존재합니다. 중복 생성은 허용되지 않습니다: $normalizedName"
+            )
         }
 
         val normalizedCode = allocateUniqueCode(parent?.id, normalizeCode(request.code ?: normalizedName))
@@ -71,6 +79,9 @@ class CategoryAdminService(
 
         if (parent != null && parent.isLeaf) {
             parent.isLeaf = false
+        }
+        if (saved.depth == 0) {
+            ensureCommonJob(saved, actor)
         }
 
         return toResponse(saved)
@@ -213,6 +224,38 @@ class CategoryAdminService(
             categoryRepository.existsByParentIsNullAndNameIgnoreCaseAndDeletedAtIsNull(name)
         } else {
             categoryRepository.existsByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(parent.id, name)
+        }
+    }
+
+    private fun ensureCommonJobsForBranches() {
+        categoryRepository.findAllByDepthAndDeletedAtIsNullAndIsActiveTrueOrderBySortOrderAsc(0)
+            .forEach { branch ->
+                ensureCommonJob(branch, branch.updatedBy ?: branch.createdBy)
+            }
+    }
+
+    private fun ensureCommonJob(branch: QaCategory, actor: com.cw.vlainter.domain.user.entity.User?) {
+        if (categoryRepository.findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(branch.id, "공통") != null) {
+            return
+        }
+        val code = allocateUniqueCode(branch.id, normalizeCode("공통"))
+        categoryRepository.save(
+            QaCategory(
+                parent = branch,
+                code = code,
+                name = "공통",
+                description = "계열 공통 직무",
+                depth = 1,
+                path = "${branch.path}/$code",
+                sortOrder = -100,
+                isActive = true,
+                isLeaf = true,
+                createdBy = actor,
+                updatedBy = actor
+            )
+        )
+        if (branch.isLeaf) {
+            branch.isLeaf = false
         }
     }
 

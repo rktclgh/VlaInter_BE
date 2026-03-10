@@ -42,16 +42,19 @@ class QuestionSetService(
     @Transactional
     fun createMySet(principal: AuthPrincipal, request: CreateQuestionSetRequest): QuestionSetSummaryResponse {
         val actor = loadUser(principal.userId)
-        val normalizedJobName = request.jobName.trim()
+        val normalizedBranchName = (request.branchName ?: request.jobName).orEmpty().trim()
+        if (normalizedBranchName.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 세트에는 계열명이 필요합니다.")
+        }
         request.skillName?.trim()?.takeIf { it.isNotBlank() }?.let { normalizedSkillName ->
-            jobSkillCatalogService.ensureCatalog(normalizedJobName, normalizedSkillName)
+            jobSkillCatalogService.ensureCatalog(normalizedBranchName, normalizedSkillName)
         }
         val saved = questionSetRepository.save(
             QaQuestionSet(
                 ownerUser = actor,
                 ownerType = QuestionSetOwnerType.USER,
                 title = request.title.trim(),
-                jobName = normalizedJobName,
+                jobName = normalizedBranchName,
                 skillName = null,
                 description = request.description?.trim(),
                 visibility = request.visibility
@@ -62,7 +65,7 @@ class QuestionSetService(
 
     @Transactional
     fun getMyAndGlobalSets(principal: AuthPrincipal): List<QuestionSetSummaryResponse> {
-        return getMySets(principal) + getGlobalSets(principal)
+        return getMySets(principal) + getGlobalSets()
     }
 
     @Transactional
@@ -79,7 +82,7 @@ class QuestionSetService(
     }
 
     @Transactional
-    fun getGlobalSets(principal: AuthPrincipal): List<QuestionSetSummaryResponse> {
+    fun getGlobalSets(): List<QuestionSetSummaryResponse> {
         return questionSetRepository.findAllByVisibilityAndStatusAndDeletedAtIsNullOrderByCreatedAtDesc(
             visibility = QuestionSetVisibility.GLOBAL,
             status = QuestionSetStatus.ACTIVE
@@ -97,30 +100,28 @@ class QuestionSetService(
         setId: Long,
         request: AddQuestionToSetRequest
     ): QuestionSummaryResponse {
-        val actor = loadUser(principal.userId)
         val set = getAccessibleSet(principal, setId)
         if (set.status != QuestionSetStatus.ACTIVE) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "ARCHIVED 상태의 세트에는 질문을 추가할 수 없습니다.")
         }
 
         val context = categoryContextResolver.resolve(
-            actor = actor,
             categoryId = request.categoryId,
             jobName = request.jobName,
             skillName = request.skillName,
             createIfMissing = true
         ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 세트에는 직무와 기술 입력이 필요합니다.")
 
-        val existingJob = set.jobName?.trim().orEmpty()
-        if (existingJob.isNotBlank() && !existingJob.equals(context.jobName, ignoreCase = true)) {
+        val existingBranch = set.jobName?.trim().orEmpty()
+        if (existingBranch.isNotBlank() && !existingBranch.equals(context.branchName, ignoreCase = true)) {
             throw ResponseStatusException(
                 HttpStatus.BAD_REQUEST,
-                "질문 세트 직무(${existingJob})와 추가 질문 직무(${context.jobName})가 일치하지 않습니다."
+                "질문 세트 계열(${existingBranch})과 추가 질문 계열(${context.branchName})이 일치하지 않습니다."
             )
         }
 
         jobSkillCatalogService.ensureCatalog(context.jobName, context.skillName)
-        if (set.jobName.isNullOrBlank()) set.jobName = context.jobName
+        if (set.jobName.isNullOrBlank()) set.jobName = context.branchName
 
         val sourceTag = when (set.ownerType) {
             QuestionSetOwnerType.ADMIN -> QuestionSourceTag.SYSTEM
@@ -170,7 +171,6 @@ class QuestionSetService(
         questionId: Long,
         request: UpdateQuestionInSetRequest
     ): QuestionSummaryResponse {
-        val actor = loadUser(principal.userId)
         val set = getOwnedUserSet(principal, setId)
         if (set.status != QuestionSetStatus.ACTIVE) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "ARCHIVED 상태의 세트 문답은 수정할 수 없습니다.")
@@ -179,23 +179,22 @@ class QuestionSetService(
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "세트에 포함된 질문을 찾을 수 없습니다.")
 
         val context = categoryContextResolver.resolve(
-            actor = actor,
             categoryId = request.categoryId,
             jobName = request.jobName,
             skillName = request.skillName,
             createIfMissing = true
         ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 수정에는 직무와 기술 입력이 필요합니다.")
 
-        val existingJob = set.jobName?.trim().orEmpty()
-        if (existingJob.isNotBlank() && !existingJob.equals(context.jobName, ignoreCase = true)) {
+        val existingBranch = set.jobName?.trim().orEmpty()
+        if (existingBranch.isNotBlank() && !existingBranch.equals(context.branchName, ignoreCase = true)) {
             throw ResponseStatusException(
                 HttpStatus.BAD_REQUEST,
-                "질문 세트 직무(${existingJob})와 수정 질문 직무(${context.jobName})가 일치하지 않습니다."
+                "질문 세트 계열(${existingBranch})과 수정 질문 계열(${context.branchName})이 일치하지 않습니다."
             )
         }
 
         jobSkillCatalogService.ensureCatalog(context.jobName, context.skillName)
-        if (set.jobName.isNullOrBlank()) set.jobName = context.jobName
+        if (set.jobName.isNullOrBlank()) set.jobName = context.branchName
 
         val sourceTag = when (set.ownerType) {
             QuestionSetOwnerType.ADMIN -> QuestionSourceTag.SYSTEM
@@ -426,12 +425,16 @@ class QuestionSetService(
         val owner = set.ownerUser
         val certified = set.ownerType == QuestionSetOwnerType.ADMIN || set.isPromoted
         val aiGenerated = isAiGeneratedSet(set, questionCount)
+        val branchName = set.jobName
+        val jobNames = extractJobNames(set.id)
         val skillNames = extractSkillNames(set.id)
         return QuestionSetSummaryResponse(
             setId = set.id,
             title = set.title,
             description = set.description,
-            jobName = set.jobName,
+            branchName = branchName,
+            jobName = branchName,
+            jobNames = jobNames,
             skillName = skillNames.firstOrNull() ?: set.skillName,
             skillNames = skillNames,
             ownerName = owner?.name,
@@ -450,12 +453,16 @@ class QuestionSetService(
         val owner = set.ownerUser
         val certified = set.ownerType == QuestionSetOwnerType.ADMIN || set.isPromoted
         val aiGenerated = isAiGeneratedSet(set, questionCount)
+        val branchName = set.jobName
+        val jobNames = extractJobNames(set.id)
         val skillNames = extractSkillNames(set.id)
         return AdminQuestionSetSummaryResponse(
             setId = set.id,
             title = set.title,
             description = set.description,
-            jobName = set.jobName,
+            branchName = branchName,
+            jobName = branchName,
+            jobNames = jobNames,
             skillName = skillNames.firstOrNull() ?: set.skillName,
             skillNames = skillNames,
             ownerUserId = owner?.id,
@@ -478,7 +485,7 @@ class QuestionSetService(
         val systemQuestionCount = questionSetItemRepository
             .countBySet_IdAndIsActiveTrueAndQuestion_SourceTag(
                 set.id,
-                com.cw.vlainter.domain.interview.entity.QuestionSourceTag.SYSTEM
+                QuestionSourceTag.SYSTEM
             )
             .toInt()
         return systemQuestionCount == questionCount
@@ -533,6 +540,16 @@ class QuestionSetService(
                     ?.trim()
                     ?.takeIf { it.isNotBlank() }
                     ?: item.question.category.name.trim().takeIf { it.isNotBlank() }
+            }
+            .distinctBy { it.lowercase() }
+    }
+
+    private fun extractJobNames(setId: Long): List<String> {
+        return questionSetItemRepository.findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(setId)
+            .mapNotNull { item ->
+                item.question.jobName
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
             }
             .distinctBy { it.lowercase() }
     }

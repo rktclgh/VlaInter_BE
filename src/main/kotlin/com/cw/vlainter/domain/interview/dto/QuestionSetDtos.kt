@@ -13,9 +13,10 @@ data class CreateQuestionSetRequest(
     @field:NotBlank(message = "질문 세트 제목은 필수입니다.")
     @field:Size(max = 200, message = "질문 세트 제목은 200자 이하여야 합니다.")
     val title: String,
-    @field:NotBlank(message = "직무명은 필수입니다.")
-    @field:Size(max = 120, message = "직무명은 120자 이하여야 합니다.")
-    val jobName: String,
+    @field:Size(max = 120, message = "계열명은 120자 이하여야 합니다.")
+    val branchName: String? = null,
+    @field:Size(max = 120, message = "계열명은 120자 이하여야 합니다.")
+    val jobName: String? = null,
     @field:Size(max = 120, message = "기술명은 120자 이하여야 합니다.")
     val skillName: String? = null,
     @field:Size(max = 2000, message = "질문 세트 설명은 2000자 이하여야 합니다.")
@@ -51,7 +52,9 @@ data class QuestionSetSummaryResponse(
     val setId: Long,
     val title: String,
     val description: String?,
+    val branchName: String?,
     val jobName: String?,
+    val jobNames: List<String>,
     val skillName: String?,
     val skillNames: List<String>,
     val ownerName: String?,
@@ -69,7 +72,9 @@ data class AdminQuestionSetSummaryResponse(
     val setId: Long,
     val title: String,
     val description: String?,
+    val branchName: String?,
     val jobName: String?,
+    val jobNames: List<String>,
     val skillName: String?,
     val skillNames: List<String>,
     val ownerUserId: Long?,

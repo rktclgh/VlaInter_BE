@@ -50,10 +50,8 @@ class QuestionSetController(
     }
 
     @GetMapping("/global")
-    fun getGlobalSets(
-        @AuthenticationPrincipal principal: AuthPrincipal
-    ): ResponseEntity<List<QuestionSetSummaryResponse>> {
-        return ResponseEntity.ok(questionSetService.getGlobalSets(principal))
+    fun getGlobalSets(): ResponseEntity<List<QuestionSetSummaryResponse>> {
+        return ResponseEntity.ok(questionSetService.getGlobalSets())
     }
 
     @GetMapping("/{setId}/questions")
