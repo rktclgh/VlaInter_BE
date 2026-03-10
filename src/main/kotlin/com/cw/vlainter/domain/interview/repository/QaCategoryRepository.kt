@@ -7,6 +7,7 @@ interface QaCategoryRepository : JpaRepository<QaCategory, Long> {
     fun findByIdAndDeletedAtIsNull(id: Long): QaCategory?
 
     fun findByParentIsNullAndCodeAndDeletedAtIsNull(code: String): QaCategory?
+    fun findByParentIsNullAndCode(code: String): QaCategory?
 
     fun findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(parentId: Long, name: String): QaCategory?
 

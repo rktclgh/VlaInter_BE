@@ -91,20 +91,22 @@ class InterviewPracticeService(
                 categoryId = request.categoryId,
                 jobName = request.jobName,
                 skillName = request.skillName,
-                createIfMissing = true
+                createIfMissing = false
             )
         } else {
             null
         }
         var candidates = resolveCandidates(principal, request, categoryContext?.category?.id)
         if (candidates.isEmpty() && request.setId == null) {
-            categoryContext = categoryContextResolver.resolve(
-                actor = actor,
-                categoryId = request.categoryId,
-                jobName = request.jobName,
-                skillName = request.skillName,
-                createIfMissing = true
-            ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술질문 연습에는 기술 선택이 필요합니다.")
+            categoryContext = categoryContext
+                ?: categoryContextResolver.resolve(
+                    actor = actor,
+                    categoryId = request.categoryId,
+                    jobName = request.jobName,
+                    skillName = request.skillName,
+                    createIfMissing = false
+                )
+                ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술질문 연습에는 기술 선택이 필요합니다.")
             candidates = userGeminiApiKeyService.withUserApiKey(actor.id) {
                 generateCategoryQuestions(actor, request, categoryContext)
             }

@@ -1,0 +1,39 @@
+name: Jules AI Code Review (Korean)
+
+on:
+  pull_request:
+    types: [opened, synchronize] # PR이 생성되거나 새로운 커밋이 push될 때 실행
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # PR에 댓글을 달거나 수정안을 제시하기 위해 필요
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Trigger Jules Agent
+        # Jules 공식 액션 호출 (v1 또는 최신 버전 확인 필요)
+        uses: google-labs-code/jules-invoke@v1
+        with:
+          jules-api-key: ${{ secrets.JULES_API_KEY }}
+          # Jules에게 내리는 한국어 리뷰 지침 (프롬프트)
+          prompt: |
+            당신은 시니어 풀스택 개발자이자 보안 전문가입니다. 
+            이번 Pull Request의 변경 사항을 다음 4가지 관점에서 한국어로 상세히 리뷰해 주세요:
+
+            1. 보안 취약점: 하드코딩된 비밀번호, SQL 인젝션, XSS 등 보안 위험 요소 확인
+            2. 성능 개선: 불필요한 루프, 메모리 누수, 효율적이지 못한 로직 제안
+            3. 버그 수정: 논리적 오류나 예외 처리가 누락된 부분 지적
+            4. 오타 및 스타일: 코드 내 오타, 변수명 적절성, 가독성 개선안
+            5. 프롬프트 인젝션 공격 위험부분
+
+            리뷰 결과를 바탕으로 개선된 코드가 있다면 직접 수정안을 제안해 주세요.
+
+          # 자동화 모드 설정: 분석 후 자동으로 PR 수정안 제시
+          automation-mode: "AUTO_CREATE_PR"
+          # 검토 단계 없이 바로 실행하려면 false (안전성을 위해 초기엔 true 권장)
+          require-plan-approval: false

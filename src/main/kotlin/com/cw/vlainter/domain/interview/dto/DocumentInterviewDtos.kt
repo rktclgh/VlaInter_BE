@@ -5,6 +5,7 @@ import com.cw.vlainter.domain.interview.entity.QuestionDifficulty
 import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotEmpty
+import jakarta.validation.constraints.Size
 import java.time.OffsetDateTime
 
 data class DocumentIngestionResponse(
@@ -33,6 +34,10 @@ data class ReadyDocumentResponse(
 data class StartMockInterviewRequest(
     @field:NotEmpty(message = "documentFileIds는 1개 이상이어야 합니다.")
     val documentFileIds: List<Long>,
+    @field:Size(max = 3, message = "기술 카테고리는 최대 3개까지 선택할 수 있습니다.")
+    val categoryIds: List<Long> = emptyList(),
+    @field:Size(max = 3, message = "기술 카테고리는 최대 3개까지 선택할 수 있습니다.")
+    val skillNames: List<String> = emptyList(),
     val categoryId: Long? = null,
     val jobName: String? = null,
     val skillName: String? = null,

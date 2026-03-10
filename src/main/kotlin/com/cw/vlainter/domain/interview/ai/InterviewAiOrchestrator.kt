@@ -152,6 +152,34 @@ class InterviewAiOrchestrator(
         )
     }
 
+    fun generateTechQuestionsBatch(
+        jobName: String,
+        skillNames: List<String>,
+        difficulty: QuestionDifficulty?,
+        questionCountPerSkill: Int
+    ): List<GeneratedSkillTechQuestion> {
+        require(questionCountPerSkill > 0) { "questionCountPerSkill must be positive." }
+        val normalizedSkills = skillNames
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+        if (normalizedSkills.isEmpty()) return emptyList()
+
+        val prompt = buildBatchTechQuestionPrompt(
+            jobName = jobName.trim().ifBlank { "직무" },
+            skillNames = normalizedSkills,
+            difficulty = difficulty,
+            questionCountPerSkill = questionCountPerSkill
+        )
+        val generated = llmProviderRouter.generateJson(prompt, temperature = 0.55)
+        val parsed = parseGeneratedSkillTechQuestions(generated.text)
+        return validateGeneratedSkillTechQuestions(
+            generated = parsed,
+            jobName = jobName,
+            skillNames = normalizedSkills
+        )
+    }
+
     fun evaluateDocumentAnswer(
         questionText: String,
         referenceAnswer: String?,
@@ -376,6 +404,63 @@ class InterviewAiOrchestrator(
         """.trimIndent()
     }
 
+    private fun buildBatchTechQuestionPrompt(
+        jobName: String,
+        skillNames: List<String>,
+        difficulty: QuestionDifficulty?,
+        questionCountPerSkill: Int
+    ): String {
+        val difficultyGuide = when (difficulty ?: QuestionDifficulty.MEDIUM) {
+            QuestionDifficulty.EASY -> "기본 개념, 핵심 구성요소, 대표 사용 사례 중심으로 묻습니다."
+            QuestionDifficulty.MEDIUM -> "실무 적용 상황, 설계 이유, 트레이드오프 판단을 묻습니다."
+            QuestionDifficulty.HARD -> "복합적인 문제 해결, 대안 비교, 의사결정 근거를 깊게 묻습니다."
+        }
+        val skillList = skillNames.joinToString("\n") { "- $it" }
+        return """
+            당신은 기술면접 질문 출제관입니다.
+            아래 직무와 여러 기술 카테고리를 기준으로 실전형 기술면접 질문과 모범답안을 생성하세요.
+
+            [직무]
+            $jobName
+
+            [기술 목록]
+            $skillList
+
+            [난이도]
+            ${difficulty?.name ?: "MEDIUM"}
+
+            [난이도 기준]
+            $difficultyGuide
+
+            출력 JSON 스키마:
+            {
+              "skills": [
+                {
+                  "skillName": "입력에 포함된 기술명 그대로",
+                  "questions": [
+                    {
+                      "questionText": "기술면접 질문",
+                      "canonicalAnswer": "이 질문에 대한 이상적인 면접 모범답안(4~8문장)",
+                      "tags": ["tag1", "tag2"]
+                    }
+                  ]
+                }
+              ]
+            }
+
+            규칙:
+            - 각 기술마다 ${questionCountPerSkill}개씩 생성
+            - skillName은 반드시 입력 기술명 중 하나를 그대로 사용
+            - 질문은 반드시 해당 skillName 자체 또는 그 핵심 개념/구성요소를 중심으로 만들어야 함
+            - 다른 기술과 섞인 질문, 범용 운영/배포 일반론 질문은 금지
+            - 질문은 개념/문제해결/설계 관점을 섞되 같은 유형을 반복하지 말 것
+            - 자연스러운 한국어 면접 문장으로 작성할 것
+            - 너무 포괄적인 질문, 어느 기술에도 통할 법한 질문, 기술명이 빠진 질문은 금지
+            - 모범답안은 실제 면접에서 답하는 문장으로 4~8문장 작성하고 핵심 근거와 실무 포인트를 포함할 것
+            - 반드시 JSON만 출력
+        """.trimIndent()
+    }
+
     private fun parseGeneratedDocumentQuestions(raw: String, fileTypeLabel: String): List<GeneratedDocumentQuestion> {
         val node = objectMapper.readTree(raw)
         return node["questions"]
@@ -449,6 +534,31 @@ class InterviewAiOrchestrator(
             .orEmpty()
     }
 
+    private fun parseGeneratedSkillTechQuestions(raw: String): List<GeneratedSkillTechQuestion> {
+        val node = objectMapper.readTree(raw)
+        return node["skills"]
+            ?.takeIf { it.isArray }
+            ?.flatMap { skillNode ->
+                val skillName = skillNode.text("skillName").trim()
+                skillNode["questions"]
+                    ?.takeIf { it.isArray }
+                    ?.mapNotNull { item ->
+                        val questionText = item.text("questionText").ifBlank { return@mapNotNull null }
+                        GeneratedSkillTechQuestion(
+                            skillName = skillName,
+                            questionText = questionText,
+                            canonicalAnswer = item.text("canonicalAnswer").ifBlank { null },
+                            tags = item["tags"]
+                                ?.takeIf { it.isArray }
+                                ?.mapNotNull { tag -> tag.asText().trim().takeIf(String::isNotBlank) }
+                                ?: emptyList()
+                        )
+                    }
+                    .orEmpty()
+            }
+            .orEmpty()
+    }
+
     private fun validateGeneratedTechQuestions(
         generated: List<GeneratedTechQuestion>,
         labels: CategoryLabels
@@ -469,6 +579,46 @@ class InterviewAiOrchestrator(
                 ?: return@mapNotNull null
 
             item.copy(
+                questionText = normalizedQuestion,
+                canonicalAnswer = normalizedAnswer,
+                tags = normalizeTechTags(item.tags, labels)
+            )
+        }
+    }
+
+    private fun validateGeneratedSkillTechQuestions(
+        generated: List<GeneratedSkillTechQuestion>,
+        jobName: String,
+        skillNames: List<String>
+    ): List<GeneratedSkillTechQuestion> {
+        val labelsBySkill = skillNames.associateBy(
+            keySelector = { it.trim().lowercase() },
+            valueTransform = {
+                CategoryLabels(
+                    jobLabel = jobName.trim().ifBlank { "직무" },
+                    skillLabel = it
+                )
+            }
+        )
+        val seen = linkedSetOf<String>()
+        return generated.mapNotNull { item ->
+            val normalizedSkillName = item.skillName.trim().lowercase()
+            val labels = labelsBySkill[normalizedSkillName] ?: return@mapNotNull null
+            val normalizedQuestion = item.questionText.replace(Regex("\\s+"), " ").trim()
+            if (!isUsableTechQuestion(normalizedQuestion)) return@mapNotNull null
+            val fingerprint = "${normalizedSkillName}|${
+                normalizedQuestion.lowercase().replace(Regex("[^a-z0-9가-힣]+"), "")
+            }"
+            if (!seen.add(fingerprint)) return@mapNotNull null
+
+            val normalizedAnswer = item.canonicalAnswer
+                ?.replace(Regex("\\s+"), " ")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() && !isGuideLikeModelAnswer(it) }
+                ?: return@mapNotNull null
+
+            item.copy(
+                skillName = labels.skillLabel,
                 questionText = normalizedQuestion,
                 canonicalAnswer = normalizedAnswer,
                 tags = normalizeTechTags(item.tags, labels)
@@ -705,6 +855,13 @@ data class GeneratedDocumentQuestion(
 )
 
 data class GeneratedTechQuestion(
+    val questionText: String,
+    val canonicalAnswer: String? = null,
+    val tags: List<String> = emptyList()
+)
+
+data class GeneratedSkillTechQuestion(
+    val skillName: String,
     val questionText: String,
     val canonicalAnswer: String? = null,
     val tags: List<String> = emptyList()

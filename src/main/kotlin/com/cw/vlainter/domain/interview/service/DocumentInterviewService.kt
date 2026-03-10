@@ -310,26 +310,23 @@ class DocumentInterviewService(
             }
         }
 
-        val categoryContext = categoryContextResolver.resolve(
-            actor = actor,
-            categoryId = request.categoryId,
-            jobName = request.jobName,
-            skillName = request.skillName,
-            createIfMissing = true
-        ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접에는 기술 선택이 필요합니다.")
-        jobSkillCatalogService.ensureCatalog(categoryContext.jobName, categoryContext.skillName)
+        val techContexts = resolveRequestedTechContexts(actor, request)
+        techContexts.forEach { context ->
+            jobSkillCatalogService.ensureCatalog(context.jobName, context.skillName)
+        }
+        val primaryContext = techContexts.first()
 
         val requestedCount = request.questionCount.coerceAtLeast(5).coerceAtMost(20)
+        val desiredTechTarget = max(1, (requestedCount * 0.4).roundToInt())
         val (techCandidates, generatedQuestions) = userGeminiApiKeyService.withUserApiKey(actor.id) {
             val resolvedTechCandidates = resolveOrGenerateTechCandidates(
                 actor = actor,
-                categoryId = categoryContext.category.id,
+                contexts = techContexts,
                 difficulty = request.difficulty,
-                requestedCount = requestedCount,
-                context = categoryContext
+                requestedCount = desiredTechTarget
             )
             val techTarget = if (resolvedTechCandidates.isNotEmpty()) {
-                min(resolvedTechCandidates.size, max(1, (requestedCount * 0.4).roundToInt()))
+                min(resolvedTechCandidates.size, desiredTechTarget)
             } else {
                 0
             }
@@ -363,15 +360,15 @@ class DocumentInterviewService(
                         "queue" to queue,
                         "cursor" to 1,
                         "meta" to mapOf(
-                            "questionCount" to queue.size,
-                            "difficulty" to request.difficulty?.name,
-                            "difficultyRating" to difficultyToRating(request.difficulty),
-                            "categoryId" to categoryContext.category.id,
-                            "categoryName" to categoryContext.skillName,
-                            "jobName" to categoryContext.jobName,
-                            "selectedDocuments" to files.map { file ->
-                                mapOf(
-                                    "fileId" to file.id,
+                        "questionCount" to queue.size,
+                        "difficulty" to request.difficulty?.name,
+                        "difficultyRating" to difficultyToRating(request.difficulty),
+                        "categoryId" to if (techContexts.size == 1) primaryContext.category.id else null,
+                        "categoryName" to techContexts.joinToString(", ") { it.skillName },
+                        "jobName" to primaryContext.jobName,
+                        "selectedDocuments" to files.map { file ->
+                            mapOf(
+                                "fileId" to file.id,
                                     "fileType" to file.fileType.name,
                                     "label" to file.originalFileName,
                                     "ocrUsed" to isOcrDocument(actor.id, file.id)
@@ -753,70 +750,85 @@ class DocumentInterviewService(
 
     private fun resolveOrGenerateTechCandidates(
         actor: User,
-        categoryId: Long,
+        contexts: List<InterviewCategoryContextResolver.ResolvedCategoryContext>,
         difficulty: QuestionDifficulty?,
-        requestedCount: Int,
-        context: InterviewCategoryContextResolver.ResolvedCategoryContext? = null
+        requestedCount: Int
     ): List<QaQuestion> {
-        val existing = resolveTechCandidates(actor.id, categoryId, difficulty)
-        if (existing.isNotEmpty()) return existing
-        return generateTechQuestionsForCategory(actor, categoryId, difficulty, requestedCount, context)
+        val distinctContexts = contexts.distinctBy { it.category.id }
+        if (distinctContexts.isEmpty()) return emptyList()
+
+        val requestedPerSkill = requestedTechCandidatesPerSkill(requestedCount, distinctContexts.size)
+        val existing = distinctContexts
+            .flatMap { context ->
+                resolveTechCandidates(actor.id, context.category.id, difficulty)
+                    .shuffled()
+                    .take(requestedPerSkill)
+            }
+            .distinctBy { it.id }
+        if (existing.size >= requestedCount) {
+            return existing
+        }
+
+        val existingCounts = existing.groupingBy { it.category.id }.eachCount()
+        val contextsToGenerate = distinctContexts.filter { context ->
+            (existingCounts[context.category.id] ?: 0) < requestedPerSkill
+        }
+        if (contextsToGenerate.isEmpty()) {
+            return existing
+        }
+
+        val generated = generateTechQuestionsForCategories(
+            actor = actor,
+            contexts = contextsToGenerate,
+            difficulty = difficulty,
+            requestedPerSkill = requestedPerSkill
+        )
+        return (existing + generated).distinctBy { it.id }
     }
 
-    private fun generateTechQuestionsForCategory(
+    private fun generateTechQuestionsForCategories(
         actor: User,
-        categoryId: Long,
+        contexts: List<InterviewCategoryContextResolver.ResolvedCategoryContext>,
         difficulty: QuestionDifficulty?,
-        requestedCount: Int,
-        context: InterviewCategoryContextResolver.ResolvedCategoryContext? = null
+        requestedPerSkill: Int
     ): List<QaQuestion> {
-        val category = categoryRepository.findByIdAndDeletedAtIsNull(categoryId)
-            ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효하지 않은 categoryId 입니다: $categoryId")
-        val jobName = context?.jobName ?: category.parent?.name?.trim().orEmpty().ifBlank { "직무" }
-        val skillName = context?.skillName ?: category.name.trim().ifBlank { "기술" }
-        jobSkillCatalogService.ensureCatalog(jobName, skillName)
+        val distinctContexts = contexts.distinctBy { it.category.id }
+        if (distinctContexts.isEmpty()) return emptyList()
+        val jobName = distinctContexts.first().jobName
 
         val generated = try {
-            interviewAiOrchestrator.generateTechQuestions(
+            interviewAiOrchestrator.generateTechQuestionsBatch(
                 jobName = jobName,
-                skillName = skillName,
+                skillNames = distinctContexts.map { it.skillName },
                 difficulty = difficulty,
-                questionCount = requestedCount.coerceAtLeast(5)
+                questionCountPerSkill = requestedPerSkill
             )
         } catch (ex: IllegalStateException) {
             throw ResponseStatusException(HttpStatus.CONFLICT, ex.message ?: "기술 질문 생성에 실패했습니다.")
         } catch (ex: ResponseStatusException) {
             throw ex
         } catch (ex: Exception) {
-            logger.warn("tech question generation error categoryId={} reason={}", categoryId, ex.message)
+            logger.warn(
+                "tech question batch generation error skillCount={} skills={} reason={}",
+                distinctContexts.size,
+                distinctContexts.joinToString(",") { it.skillName },
+                ex.message
+            )
             throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "기술 질문 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
         }
         if (generated.isEmpty()) return emptyList()
 
-        val autoSetTitle = "$jobName / $skillName"
-        val autoSet = questionSetRepository.findFirstByOwnerUser_IdAndOwnerTypeAndVisibilityAndJobNameAndSkillNameAndDescriptionAndDeletedAtIsNullOrderByCreatedAtDesc(
-            userId = actor.id,
-            ownerType = QuestionSetOwnerType.USER,
-            visibility = QuestionSetVisibility.PRIVATE,
-            jobName = jobName,
-            skillName = skillName,
-            description = AI_GENERATED_SET_DESCRIPTION
-        )
-            ?: questionSetRepository.save(
-                QaQuestionSet(
-                    ownerUser = actor,
-                    ownerType = QuestionSetOwnerType.USER,
-                    title = autoSetTitle,
-                    jobName = jobName,
-                    skillName = skillName,
-                    description = AI_GENERATED_SET_DESCRIPTION,
-                    visibility = QuestionSetVisibility.PRIVATE,
-                    status = QuestionSetStatus.ACTIVE
-                )
-            )
-
+        val contextBySkillName = distinctContexts.associateBy { it.skillName.trim().lowercase() }
         val collected = mutableListOf<QaQuestion>()
         generated.forEach { item ->
+            val context = contextBySkillName[item.skillName.trim().lowercase()] ?: return@forEach
+            val category = context.category
+            val skillName = context.skillName
+            val autoSet = findOrCreateAutoGeneratedSet(
+                actor = actor,
+                jobName = context.jobName,
+                skillName = skillName
+            )
             val fingerprint = fingerprintFor(item.questionText, categoryKey(category), (difficulty ?: QuestionDifficulty.MEDIUM).name)
             val question = questionRepository.findByFingerprintAndDeletedAtIsNull(fingerprint)
                 ?: questionRepository.save(
@@ -825,7 +837,7 @@ class DocumentInterviewService(
                         questionText = item.questionText.trim(),
                         canonicalAnswer = item.canonicalAnswer?.trim(),
                         category = category,
-                        jobName = jobName,
+                        jobName = context.jobName,
                         skillName = skillName,
                         difficulty = difficulty ?: QuestionDifficulty.MEDIUM,
                         sourceTag = QuestionSourceTag.SYSTEM,
@@ -849,6 +861,98 @@ class DocumentInterviewService(
             collected += question
         }
         return collected
+    }
+
+    private fun resolveRequestedTechContexts(
+        actor: User,
+        request: StartMockInterviewRequest
+    ): List<InterviewCategoryContextResolver.ResolvedCategoryContext> {
+        val skillNames = request.skillNames
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+        val categoryIds = request.categoryIds.distinct()
+        if (categoryIds.isNotEmpty()) {
+            val categories = categoryIds.map { categoryId ->
+                categoryRepository.findByIdAndDeletedAtIsNull(categoryId)
+                    ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효하지 않은 categoryId 입니다: $categoryId")
+            }
+            categories.forEach { category ->
+                if (!category.isActive) {
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "비활성화된 카테고리입니다: ${category.name}")
+                }
+                if (category.depth != 2 || category.parent == null) {
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술 카테고리만 선택할 수 있습니다: ${category.name}")
+                }
+            }
+            val jobNames = categories.map { it.parent?.name?.trim().orEmpty() }.distinctBy { it.lowercase() }
+            if (jobNames.size > 1) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접 시작 시 선택한 기술 카테고리는 같은 직무에 속해야 합니다.")
+            }
+            return categories.map { category ->
+                InterviewCategoryContextResolver.ResolvedCategoryContext(
+                    category = category,
+                    jobName = category.parent?.name?.trim().orEmpty().ifBlank { request.jobName?.trim().orEmpty().ifBlank { "직무" } },
+                    skillName = category.name.trim()
+                )
+            }
+        }
+
+        if (skillNames.isNotEmpty()) {
+            val resolvedJobName = request.jobName?.trim()?.takeIf { it.isNotBlank() }
+                ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접 시작 시 직무 정보가 필요합니다.")
+            return skillNames.map { skillName ->
+                categoryContextResolver.resolve(
+                    actor = actor,
+                    categoryId = null,
+                    jobName = resolvedJobName,
+                    skillName = skillName,
+                    createIfMissing = false
+                ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효하지 않은 기술 이름입니다: $skillName")
+            }
+        }
+
+        val singleContext = categoryContextResolver.resolve(
+            actor = actor,
+            categoryId = request.categoryId,
+            jobName = request.jobName,
+            skillName = request.skillName,
+            createIfMissing = false
+        ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접에는 기술 선택이 필요합니다.")
+        return listOf(singleContext)
+    }
+
+    private fun requestedTechCandidatesPerSkill(requestedCount: Int, skillCount: Int): Int {
+        if (skillCount <= 0) return 0
+        val base = (requestedCount + skillCount - 1) / skillCount
+        return (base + 1).coerceIn(3, 5)
+    }
+
+    private fun findOrCreateAutoGeneratedSet(
+        actor: User,
+        jobName: String,
+        skillName: String
+    ): QaQuestionSet {
+        val autoSetTitle = "$jobName / $skillName"
+        return questionSetRepository.findFirstByOwnerUser_IdAndOwnerTypeAndVisibilityAndJobNameAndSkillNameAndDescriptionAndDeletedAtIsNullOrderByCreatedAtDesc(
+            userId = actor.id,
+            ownerType = QuestionSetOwnerType.USER,
+            visibility = QuestionSetVisibility.PRIVATE,
+            jobName = jobName,
+            skillName = skillName,
+            description = AI_GENERATED_SET_DESCRIPTION
+        ) ?: questionSetRepository.save(
+            QaQuestionSet(
+                ownerUser = actor,
+                ownerType = QuestionSetOwnerType.USER,
+                title = autoSetTitle,
+                jobName = jobName,
+                skillName = skillName,
+                description = AI_GENERATED_SET_DESCRIPTION,
+                visibility = QuestionSetVisibility.PRIVATE,
+                status = QuestionSetStatus.ACTIVE
+            )
+        )
     }
 
     private fun isAcceptableTechQuestion(question: QaQuestion): Boolean {

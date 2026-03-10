@@ -11,10 +11,6 @@ import org.springframework.web.server.ResponseStatusException
 class InterviewCategoryContextResolver(
     private val categoryRepository: QaCategoryRepository
 ) {
-    private companion object {
-        const val BUILD_CODE_MAX_ATTEMPTS = 1000
-    }
-
     data class ResolvedCategoryContext(
         val category: QaCategory,
         val jobName: String,
@@ -48,110 +44,38 @@ class InterviewCategoryContextResolver(
             return null
         }
 
-        val techRoot = categoryRepository.findByParentIsNullAndCodeAndDeletedAtIsNull("TECH")
-            ?: if (createIfMissing) {
-                categoryRepository.save(
-                    QaCategory(
-                        parent = null,
-                        code = "TECH",
-                        name = "기술",
-                        description = "자동 생성된 기술 카테고리 루트",
-                        depth = 0,
-                        path = "/TECH",
-                        sortOrder = 0,
-                        isActive = true,
-                        isLeaf = false,
-                        createdBy = actor,
-                        updatedBy = actor
-                    )
-                )
-            } else {
-                return null
+        val matches = categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc()
+            .asSequence()
+            .filter { it.depth == 2 }
+            .filter { it.name.trim().equals(normalizedSkillName, ignoreCase = true) }
+            .filter { category ->
+                normalizedJobName == null || category.parent?.name?.trim().equals(normalizedJobName, ignoreCase = true)
             }
-        if (!techRoot.isActive) {
+            .toList()
+
+        if (matches.isEmpty()) {
             if (!createIfMissing) return null
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술 카테고리 루트가 비활성화되어 있습니다.")
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "기술 카테고리를 찾을 수 없습니다. 계열-직무-기술 트리에서 먼저 생성하거나 선택해 주세요: $normalizedSkillName"
+            )
         }
 
-        val resolvedJobName = normalizedJobName ?: "직무"
-        val jobCategory = findOrCreateChild(
-            parent = techRoot,
-            name = resolvedJobName,
-            actor = actor,
-            createIfMissing = createIfMissing
-        ) ?: return null
+        if (matches.size > 1) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "동일한 기술명이 여러 트리에 존재합니다. 기술 카테고리를 직접 선택해 주세요: $normalizedSkillName"
+            )
+        }
 
-        val skillCategory = findOrCreateChild(
-            parent = jobCategory,
-            name = normalizedSkillName,
-            actor = actor,
-            createIfMissing = createIfMissing
-        ) ?: return null
+        val skillCategory = matches.first()
+        val resolvedJobName = skillCategory.parent?.name?.trim().orEmpty()
+            .ifBlank { normalizedJobName ?: "직무" }
 
         return ResolvedCategoryContext(
             category = skillCategory,
             jobName = resolvedJobName,
             skillName = normalizedSkillName
         )
-    }
-
-    private fun findOrCreateChild(
-        parent: QaCategory,
-        name: String,
-        actor: User,
-        createIfMissing: Boolean
-    ): QaCategory? {
-        val existing = categoryRepository.findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(parent.id, name)
-        if (existing != null) {
-            if (!existing.isActive) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "비활성화된 카테고리입니다: ${existing.name}")
-            }
-            return existing
-        }
-        if (!createIfMissing) return null
-
-        val code = buildUniqueCode(parent.id, name)
-        if (parent.isLeaf) {
-            parent.isLeaf = false
-            parent.updatedBy = actor
-            categoryRepository.save(parent)
-        }
-        return categoryRepository.save(
-            QaCategory(
-                parent = parent,
-                code = code,
-                name = name,
-                description = null,
-                depth = parent.depth + 1,
-                path = "${parent.path}/$code",
-                sortOrder = 100,
-                isActive = true,
-                isLeaf = true,
-                createdBy = actor,
-                updatedBy = actor
-            )
-        )
-    }
-
-    private fun buildUniqueCode(parentId: Long, source: String): String {
-        val normalized = source
-            .trim()
-            .replace(Regex("[^\\p{L}\\p{N}]+"), "_")
-            .replace(Regex("^_+|_+$"), "")
-            .uppercase()
-            .ifBlank { "CUSTOM" }
-
-        var candidate = normalized
-        var suffix = 2
-        var attempts = 0
-        while (categoryRepository.existsByParent_IdAndCodeAndDeletedAtIsNull(parentId, candidate)) {
-            attempts += 1
-            if (attempts > BUILD_CODE_MAX_ATTEMPTS) {
-                throw ResponseStatusException(HttpStatus.CONFLICT, "카테고리 코드 생성 충돌이 반복되어 중단했습니다.")
-            }
-            candidate = "${normalized}_$suffix"
-            suffix += 1
-        }
-        return candidate
     }
 }
