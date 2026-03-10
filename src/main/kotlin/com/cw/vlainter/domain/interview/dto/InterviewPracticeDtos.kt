@@ -42,7 +42,9 @@ data class StartTechInterviewResponse(
     val sessionId: Long,
     val status: String,
     val currentQuestion: InterviewQuestionResponse,
-    val hasNext: Boolean
+    val hasNext: Boolean,
+    val providerUsed: String? = null,
+    val fallbackDepth: Int = 0
 )
 
 data class SubmitInterviewAnswerRequest(
@@ -55,7 +57,8 @@ data class TurnEvaluationResponse(
     val score: BigDecimal,
     val feedback: String,
     val bestPractice: String,
-    val modelAnswer: String? = null
+    val modelAnswer: String? = null,
+    val providerUsed: String? = null
 )
 
 data class SubmitInterviewAnswerResponse(
