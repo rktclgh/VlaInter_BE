@@ -226,7 +226,7 @@ class CategoryAdminService(
 
     private fun hasDuplicateName(parent: QaCategory?, name: String, excludingId: Long? = null): Boolean {
         val duplicate = if (parent == null) {
-            categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc()
+            categoryRepository.findAllByDeletedAtIsNullOrderByDepthAscSortOrderAsc()
                 .firstOrNull { it.parent == null && it.name.equals(name, ignoreCase = true) }
         } else {
             categoryRepository.findAllByParent_IdAndDeletedAtIsNullOrderBySortOrderAsc(parent.id)
@@ -238,7 +238,7 @@ class CategoryAdminService(
     private fun validateUniqueName(depth: Int, normalizedName: String, excludingId: Long? = null) {
         val isBranchCommonJob = depth == 1 && normalizedName.equals("공통", ignoreCase = true)
         if (isBranchCommonJob) return
-        val duplicate = categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc()
+        val duplicate = categoryRepository.findAllByDeletedAtIsNullOrderByDepthAscSortOrderAsc()
             .firstOrNull {
                 it.depth == depth &&
                     it.name.equals(normalizedName, ignoreCase = true) &&

@@ -302,7 +302,7 @@ class InterviewPracticeService(
 
     @Transactional
     fun saveQuestion(principal: AuthPrincipal, questionId: Long, request: BookmarkTurnRequest): SavedQuestionResponse {
-        val actor = loadUser(principal.userId)
+        val actor = loadUserForUpdate(principal.userId)
         val question = questionRepository.findByIdAndDeletedAtIsNull(questionId)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "저장할 질문을 찾을 수 없습니다.")
         val accessible = questionSetItemRepository.existsAccessibleByQuestionIdAndUserId(question.id, principal.userId)
@@ -730,6 +730,9 @@ class InterviewPracticeService(
 
     private fun loadUser(userId: Long) = userRepository.findById(userId)
         .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "사용자 정보를 찾을 수 없습니다.") }
+
+    private fun loadUserForUpdate(userId: Long) = userRepository.findByIdForUpdate(userId)
+        ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "사용자 정보를 찾을 수 없습니다.")
 
     private fun toSessionConfigJson(
         questionRefs: List<QuestionRef>,

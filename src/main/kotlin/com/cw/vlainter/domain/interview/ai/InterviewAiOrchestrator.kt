@@ -168,7 +168,7 @@ class InterviewAiOrchestrator(
         val temperatures = listOf(0.45, 0.55, 0.65, 0.75, 0.85)
         var lastError: Exception? = null
 
-        temperatures.forEachIndexed { index, temperature ->
+        for ((index, temperature) in temperatures.withIndex()) {
             val prompt = buildBatchTechQuestionPrompt(
                 jobName = jobName.trim().ifBlank { "직무" },
                 skillNames = normalizedSkills,
@@ -197,7 +197,7 @@ class InterviewAiOrchestrator(
                 )
                 if (isRateLimitError(ex)) {
                     logger.warn("기술 질문 배치 생성 재시도 중단: rate limit/quota 감지")
-                    return@forEachIndexed
+                    break
                 }
             }
         }
@@ -699,7 +699,8 @@ class InterviewAiOrchestrator(
 
     private fun isUsableDocumentQuestion(questionText: String): Boolean {
         if (questionText.isBlank()) return false
-        if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED)\\b").containsMatchIn(questionText)) return false
+        if (questionText.length < 16) return false
+        if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED|DEVOPS|DATA|AI|ML|CLOUD|SECURITY)\\b").containsMatchIn(questionText)) return false
         val lowered = questionText.lowercase()
         val banned = listOf(
             "어떤 기술에도",
@@ -708,9 +709,22 @@ class InterviewAiOrchestrator(
             "상식적으로",
             "포괄적으로",
             "보편적으로",
-            "전반적으로"
+            "전반적으로",
+            "보통",
+            "대체로",
+            "대부분"
         )
         if (banned.any { lowered.contains(it) }) return false
+        val tokens = questionText
+            .split(Regex("[^0-9a-zA-Z가-힣]+"))
+            .filter { it.length >= 2 }
+        if (tokens.size < 4) return false
+        val domainHints = listOf(
+            "프로젝트", "서비스", "사용자", "구현", "설계", "개선", "경험", "선택", "이유",
+            "협업", "성능", "트러블슈팅", "문제", "해결", "운영", "개발", "아키텍처"
+        )
+        if (domainHints.none { lowered.contains(it) }) return false
+        if (!questionText.trim().endsWith("?")) return false
         return true
     }
 

@@ -91,6 +91,24 @@ class InterviewCategoryContextResolverTests {
         assertThat(exception.reason).contains("기술 카테고리를 찾을 수 없습니다")
     }
 
+    @Test
+    fun `평문 직무 기술이 없고 requireIfMissing이 false면 null을 반환한다`() {
+        val techRoot = createCategory(id = 1L, code = "TECH", name = "기술", depth = 0, path = "TECH", isLeaf = false)
+        val jobCategory = createCategory(id = 20L, parent = techRoot, code = "ACCOUNTANT", name = "회계사", depth = 1, path = "TECH/ACCOUNTANT", isLeaf = false)
+
+        given(categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc())
+            .willReturn(listOf(techRoot, jobCategory))
+
+        val resolved = resolver().resolve(
+            categoryId = null,
+            jobName = "회계사",
+            skillName = "재무회계",
+            requireIfMissing = false
+        )
+
+        assertThat(resolved).isNull()
+    }
+
     private fun createCategory(
         id: Long,
         parent: QaCategory? = null,

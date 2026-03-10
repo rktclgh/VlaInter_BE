@@ -1,7 +1,6 @@
 package com.cw.vlainter.domain.support.service
 
 import com.cw.vlainter.domain.support.dto.SupportReportResponse
-import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.AuthPrincipal
 import jakarta.mail.MessagingException
@@ -16,7 +15,6 @@ import org.springframework.web.multipart.MultipartFile
 import org.springframework.web.server.ResponseStatusException
 import java.nio.charset.StandardCharsets
 import java.time.OffsetDateTime
-import java.util.concurrent.CompletableFuture
 
 @Service
 class SupportReportService(
@@ -28,6 +26,7 @@ class SupportReportService(
     companion object {
         private const val MAX_ATTACHMENT_SIZE_BYTES = 5L * 1024L * 1024L
         private val ALLOWED_ATTACHMENT_TYPES = setOf("image/png", "image/jpeg", "image/webp")
+        private val ALLOWED_CATEGORIES = setOf("BUG_REPORT", "MESSAGE")
     }
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -44,7 +43,6 @@ class SupportReportService(
         val reporter = userRepository.findById(principal.userId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "사용자 정보를 찾을 수 없습니다.") }
         val recipients = userRepository.findReportRecipients()
-            .filter { it.role == UserRole.ADMIN && it.email.isNotBlank() }
             .map { it.email.trim() }
             .distinct()
 
@@ -53,6 +51,9 @@ class SupportReportService(
         }
 
         val normalizedCategory = category?.trim().orEmpty().ifBlank { "BUG_REPORT" }
+        if (normalizedCategory.length > 50 || normalizedCategory !in ALLOWED_CATEGORIES) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효하지 않은 문의 종류입니다.")
+        }
         val normalizedTitle = title?.trim().orEmpty()
         val normalizedMessage = message?.trim().orEmpty()
         if (normalizedTitle.isBlank()) {
@@ -69,25 +70,21 @@ class SupportReportService(
         }
 
         val attachment = validateAttachment(screenshot)
-        val sentCount = recipients
-            .map { recipient ->
-                CompletableFuture.supplyAsync {
-                    sendToRecipient(
-                        recipient = recipient,
-                        normalizedCategory = normalizedCategory,
-                        normalizedTitle = normalizedTitle,
-                        normalizedMessage = normalizedMessage,
-                        reporterId = reporter.id,
-                        reporterName = reporter.name,
-                        reporterEmail = reporter.email,
-                        currentPath = currentPath?.trim().orEmpty(),
-                        userAgent = userAgent?.trim().orEmpty(),
-                        screenshot = attachment.file,
-                        attachmentNotice = attachment.notice
-                    )
-                }
-            }
-            .sumOf { it.join() }
+        val sentCount = recipients.sumOf { recipient ->
+            sendToRecipient(
+                recipient = recipient,
+                normalizedCategory = normalizedCategory,
+                normalizedTitle = normalizedTitle,
+                normalizedMessage = normalizedMessage,
+                reporterId = reporter.id,
+                reporterName = reporter.name,
+                reporterEmail = reporter.email,
+                currentPath = currentPath?.trim().orEmpty(),
+                userAgent = userAgent?.trim().orEmpty(),
+                screenshot = attachment.file,
+                attachmentNotice = attachment.notice
+            )
+        }
 
         if (sentCount == 0) {
             throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "이메일 발송에 실패했습니다. 잠시 후 다시 시도해 주세요.")

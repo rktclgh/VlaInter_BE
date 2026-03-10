@@ -17,6 +17,7 @@ interface QaCategoryRepository : JpaRepository<QaCategory, Long> {
     fun findAllByParent_IdAndDeletedAtIsNullOrderBySortOrderAsc(parentId: Long): List<QaCategory>
 
     fun findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc(): List<QaCategory>
+    fun findAllByDeletedAtIsNullOrderByDepthAscSortOrderAsc(): List<QaCategory>
 
     fun existsByParent_IdAndCodeAndDeletedAtIsNull(parentId: Long, code: String): Boolean
 

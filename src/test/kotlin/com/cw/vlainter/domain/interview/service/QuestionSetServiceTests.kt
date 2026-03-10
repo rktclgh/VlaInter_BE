@@ -76,7 +76,6 @@ class QuestionSetServiceTests {
             skillName = "재무회계"
         )
 
-        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
         given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
         given(
             categoryContextResolver.resolve(
@@ -182,7 +181,6 @@ class QuestionSetServiceTests {
             skillName = "JPA"
         )
 
-        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
         given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
         given(
             categoryContextResolver.resolve(
@@ -250,7 +248,6 @@ class QuestionSetServiceTests {
             skillName = "CS"
         )
 
-        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
         given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
         given(
             categoryContextResolver.resolve(
@@ -318,7 +315,6 @@ class QuestionSetServiceTests {
             skillName = "재무회계"
         )
 
-        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
         given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
         given(
             categoryContextResolver.resolve(
@@ -381,7 +377,6 @@ class QuestionSetServiceTests {
             skillName = "JPA"
         )
 
-        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
         given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
         given(questionSetItemRepository.findBySet_IdAndQuestion_IdAndIsActiveTrue(100L, 200L)).willReturn(item)
         given(
@@ -476,7 +471,6 @@ class QuestionSetServiceTests {
 
     @Test
     fun `다른 사용자의 세트에는 질문을 추가할 수 없다`() {
-        val actor = createUser(id = 7L)
         val owner = createUser(id = 99L, email = "owner@vlainter.com")
         val set = QaQuestionSet(
             id = 100L,
@@ -485,7 +479,6 @@ class QuestionSetServiceTests {
             title = "소유자 전용 세트",
             visibility = QuestionSetVisibility.PRIVATE
         )
-        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
         given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
 
         val exception = assertThrows(ResponseStatusException::class.java) {
@@ -529,7 +522,6 @@ class QuestionSetServiceTests {
             tagsJson = "[]"
         )
 
-        given(userRepository.findById(7L)).willReturn(Optional.of(actor))
         given(questionSetRepository.findByIdAndDeletedAtIsNull(100L)).willReturn(set)
         given(
             categoryContextResolver.resolve(
@@ -555,7 +547,6 @@ class QuestionSetServiceTests {
 
     @Test
     fun `존재하지 않는 질문 세트 ID면 예외를 던진다`() {
-        given(userRepository.findById(7L)).willReturn(Optional.of(createUser(id = 7L)))
         given(questionSetRepository.findByIdAndDeletedAtIsNull(999L)).willReturn(null)
 
         val exception = assertThrows(ResponseStatusException::class.java) {
