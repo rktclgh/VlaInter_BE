@@ -16,7 +16,6 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -258,8 +257,20 @@ class InterviewEvaluationService(
             score = totalScore,
             feedback = feedback,
             bestPractice = if (turn.sourceTag == TurnSourceTag.USER) "" else resolved.guideText ?: bestPractice,
-            modelAnswer = resolved.modelAnswer
+            modelAnswer = resolved.modelAnswer,
+            providerUsed = resolveProviderName(model)
         )
+    }
+
+    private fun resolveProviderName(model: String?): String? {
+        val normalized = model?.trim()?.lowercase().orEmpty()
+        if (normalized.isBlank()) return null
+        return when {
+            normalized == "heuristic" -> "HEURISTIC"
+            normalized.contains("gemini") -> "GEMINI"
+            normalized.contains("nova") || normalized.contains("bedrock") -> "BEDROCK"
+            else -> null
+        }
     }
 
     private fun shouldStoreHistory(configJson: String?): Boolean {

@@ -1,5 +1,6 @@
 package com.cw.vlainter.global.exception
 
+import com.cw.vlainter.domain.interview.ai.AiProviderAuthorizationException
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.validation.ConstraintViolationException
 import org.springframework.http.HttpStatus
@@ -118,7 +119,7 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(MaxUploadSizeExceededException::class)
     fun handleMaxUploadSizeExceeded(
-        ex: MaxUploadSizeExceededException,
+        @Suppress("UNUSED_PARAMETER") ex: MaxUploadSizeExceededException,
         request: HttpServletRequest
     ): ResponseEntity<ApiErrorResponse> {
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(
@@ -129,6 +130,24 @@ class GlobalExceptionHandler {
                 path = request.requestURI
             )
         )
+    }
+
+    @ExceptionHandler(AiProviderAuthorizationException::class)
+    fun handleAiProviderAuthorizationException(
+        ex: AiProviderAuthorizationException,
+        request: HttpServletRequest
+    ): ResponseEntity<ApiErrorResponse> {
+        val status = HttpStatus.resolve(ex.statusCode) ?: HttpStatus.INTERNAL_SERVER_ERROR
+        return ResponseEntity
+            .status(status)
+            .body(
+                ApiErrorResponse(
+                    status = status.value(),
+                    code = "AI_PROVIDER_AUTHORIZATION_ERROR",
+                    message = "${ex.message} (provider=${ex.provider.name})",
+                    path = request.requestURI
+                )
+            )
     }
 
     @ExceptionHandler(Exception::class)
