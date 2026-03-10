@@ -5,13 +5,15 @@ import com.cw.vlainter.global.config.properties.GeminiProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.slf4j.LoggerFactory
 import org.springframework.boot.web.client.RestTemplateBuilder
-import org.springframework.http.client.SimpleClientHttpRequestFactory
 import org.springframework.http.HttpEntity
 import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
+import org.springframework.http.client.SimpleClientHttpRequestFactory
 import org.springframework.stereotype.Component
+import org.springframework.web.client.ResourceAccessException
 import org.springframework.web.client.RestClientResponseException
 import org.springframework.web.client.RestTemplate
 import java.util.ArrayDeque
@@ -22,9 +24,11 @@ class GeminiApiClient(
     restTemplateBuilder: RestTemplateBuilder,
     private val geminiProperties: GeminiProperties,
     private val objectMapper: ObjectMapper,
-    private val apiKeyContextHolder: GeminiApiKeyContextHolder
+    private val apiKeyContextHolder: GeminiApiKeyContextHolder,
+    private val aiRoutingContextHolder: AiRoutingContextHolder
 ) : LlmProviderClient, EmbeddingProviderClient {
     override val provider: AiProvider = AiProvider.GEMINI
+    private val logger = LoggerFactory.getLogger(javaClass)
     private val chatRateLock = Any()
     private val chatRequestTimes = ArrayDeque<Long>()
 
@@ -44,43 +48,44 @@ class GeminiApiClient(
         require(apiKey.isNotBlank()) { "Gemini API key is missing." }
         waitForChatRateLimitSlot()
 
-        val model = geminiProperties.chatModel.trim()
-        val url = "${geminiProperties.baseUrl.trim().trimEnd('/')}/v1beta/models/$model:generateContent"
-        val headers = geminiHeaders(apiKey)
+        val models = buildList {
+            add(geminiProperties.chatModel.trim())
+            addAll(geminiProperties.fallbackChatModels.map { it.trim() })
+        }
+            .filter { it.isNotBlank() }
+            .distinct()
 
-        val payload = GeminiGenerateContentRequest(
-            contents = listOf(
-                GeminiContent(parts = listOf(GeminiPart(text = prompt)))
-            ),
-            generationConfig = GeminiGenerationConfig(
-                temperature = temperature ?: geminiProperties.temperature,
-                responseMimeType = "application/json"
-            )
-        )
-
-        val response = post(url, HttpEntity(payload, headers), GeminiGenerateContentResponse::class.java)
-        val body = response.body ?: error("Gemini 응답이 비어 있습니다.")
-        val errorMessage = body.error?.get("message")?.asText()?.trim().orEmpty()
-        if (errorMessage.isNotBlank()) {
-            error("Gemini 오류: $errorMessage")
+        val startIndex = aiRoutingContextHolder.preferredGeminiModelIndex()
+            .coerceIn(0, (models.size - 1).coerceAtLeast(0))
+        var lastTransient: GeminiTransientException? = null
+        for (index in startIndex..models.lastIndex) {
+            val model = models[index]
+            try {
+                aiRoutingContextHolder.promoteGeminiModelIndex(index)
+                logger.info(
+                    "Gemini 채팅 모델 호출 시도 model={} index={} promptLength={} temperature={}",
+                    model,
+                    index,
+                    prompt.length,
+                    temperature ?: geminiProperties.temperature
+                )
+                return generateJsonWithModel(apiKey, model, prompt, temperature)
+            } catch (ex: GeminiTransientException) {
+                lastTransient = ex
+                if (index < models.lastIndex) {
+                    aiRoutingContextHolder.promoteGeminiModelIndex(index + 1)
+                    logger.warn(
+                        "Gemini 채팅 모델 fallback 시도 primary={} fallback={} status={} reason={}",
+                        model,
+                        models[index + 1],
+                        ex.statusCode,
+                        ex.message
+                    )
+                }
+            }
         }
 
-        val text = body.candidates
-            ?.firstOrNull()
-            ?.content
-            ?.parts
-            ?.firstOrNull()
-            ?.text
-            ?.trim()
-
-        if (text.isNullOrBlank()) {
-            error("Gemini 응답 텍스트가 비어 있습니다.")
-        }
-        return LlmGenerationResult(
-            model = model,
-            modelVersion = "v1beta",
-            text = text
-        )
+        throw lastTransient ?: error("Gemini 채팅 모델이 구성되지 않았습니다.")
     }
 
     override fun embedText(text: String): EmbeddingGenerationResult {
@@ -127,10 +132,86 @@ class GeminiApiClient(
                 val details = runCatching {
                     objectMapper.readTree(httpEx.responseBodyAsString).toString()
                 }.getOrElse { httpEx.responseBodyAsString }
-                error("Gemini 호출 실패: HTTP ${httpEx.statusCode.value()} $details")
+                val statusCode = httpEx.statusCode.value()
+                if (statusCode == 429 || statusCode == 503) {
+                    throw GeminiTransientException(
+                        statusCode = statusCode,
+                        message = "Gemini 호출 실패: HTTP $statusCode $details",
+                        cause = httpEx
+                    )
+                }
+                error("Gemini 호출 실패: HTTP $statusCode $details")
+            }
+            if (isTimeoutException(ex)) {
+                throw GeminiTransientException(
+                    statusCode = 503,
+                    message = "Gemini 호출 실패: ${ex.message}",
+                    cause = ex
+                )
             }
             error("Gemini 호출 실패: ${ex.message}")
         }
+    }
+
+    private fun generateJsonWithModel(
+        apiKey: String,
+        model: String,
+        prompt: String,
+        temperature: Double?
+    ): LlmGenerationResult {
+        val url = "${geminiProperties.baseUrl.trim().trimEnd('/')}/v1beta/models/$model:generateContent"
+        val headers = geminiHeaders(apiKey)
+
+        val payload = GeminiGenerateContentRequest(
+            contents = listOf(
+                GeminiContent(parts = listOf(GeminiPart(text = prompt)))
+            ),
+            generationConfig = GeminiGenerationConfig(
+                temperature = temperature ?: geminiProperties.temperature,
+                responseMimeType = "application/json"
+            )
+        )
+
+        val response = post(url, HttpEntity(payload, headers), GeminiGenerateContentResponse::class.java)
+        val body = response.body ?: error("Gemini 응답이 비어 있습니다.")
+        val errorMessage = body.error?.get("message")?.asText()?.trim().orEmpty()
+        if (errorMessage.isNotBlank()) {
+            error("Gemini 오류: $errorMessage")
+        }
+
+        val text = body.candidates
+            ?.firstOrNull()
+            ?.content
+            ?.parts
+            ?.firstOrNull()
+            ?.text
+            ?.trim()
+
+        if (text.isNullOrBlank()) {
+            error("Gemini 응답 텍스트가 비어 있습니다.")
+        }
+        return LlmGenerationResult(
+            model = model,
+            modelVersion = "v1beta",
+            text = text
+        ).also {
+            logger.info(
+                "Gemini 채팅 모델 호출 성공 model={} responseLength={}",
+                model,
+                text.length
+            )
+        }
+    }
+
+    private fun isTimeoutException(ex: Throwable): Boolean {
+        var current: Throwable? = ex
+        while (current != null) {
+            if (current is java.net.SocketTimeoutException) return true
+            if (current is ResourceAccessException && current.message?.contains("timed out", ignoreCase = true) == true) return true
+            if (current.message?.contains("timed out", ignoreCase = true) == true) return true
+            current = current.cause
+        }
+        return false
     }
 
     private fun waitForChatRateLimitSlot() {

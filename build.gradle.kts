@@ -30,6 +30,9 @@ dependencies {
 	implementation("software.amazon.awssdk:s3:2.33.0") {
 		exclude(group = "commons-logging", module = "commons-logging")
 	}
+	implementation("software.amazon.awssdk:bedrockruntime:2.33.0") {
+		exclude(group = "commons-logging", module = "commons-logging")
+	}
 	implementation("org.apache.pdfbox:pdfbox:2.0.32") {
 		exclude(group = "commons-logging", module = "commons-logging")
 	}

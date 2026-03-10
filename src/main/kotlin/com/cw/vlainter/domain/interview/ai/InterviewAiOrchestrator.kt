@@ -70,8 +70,8 @@ class InterviewAiOrchestrator(
                     temperature,
                     ex.message
                 )
-                if (isRateLimitError(ex)) {
-                    logger.warn("문서 질문 생성 재시도 중단: rate limit/quota 감지")
+                if (shouldStopRetry(ex)) {
+                    logger.warn("문서 질문 생성 재시도 중단: transient overload/rate limit 감지")
                     break
                 }
             }
@@ -80,6 +80,9 @@ class InterviewAiOrchestrator(
 
         if (collected.size >= questionCount) {
             return collected.values.take(questionCount).toList()
+        }
+        if (lastError is GeminiTransientException) {
+            throw lastError
         }
 
         val cause = lastError?.message?.takeIf { it.isNotBlank() }
@@ -134,8 +137,8 @@ class InterviewAiOrchestrator(
                     temperature,
                     ex.message
                 )
-                if (isRateLimitError(ex)) {
-                    logger.warn("기술 질문 생성 재시도 중단: rate limit/quota 감지")
+                if (shouldStopRetry(ex)) {
+                    logger.warn("기술 질문 생성 재시도 중단: transient overload/rate limit 감지")
                     break
                 }
             }
@@ -144,6 +147,9 @@ class InterviewAiOrchestrator(
 
         if (collected.size >= questionCount) {
             return collected.values.take(questionCount).toList()
+        }
+        if (lastError is GeminiTransientException) {
+            throw lastError
         }
 
         val cause = lastError?.message?.takeIf { it.isNotBlank() }
@@ -195,13 +201,16 @@ class InterviewAiOrchestrator(
                     temperature,
                     ex.message
                 )
-                if (isRateLimitError(ex)) {
-                    logger.warn("기술 질문 배치 생성 재시도 중단: rate limit/quota 감지")
+                if (shouldStopRetry(ex)) {
+                    logger.warn("기술 질문 배치 생성 재시도 중단: transient overload/rate limit 감지")
                     break
                 }
             }
         }
 
+        if (lastError is GeminiTransientException) {
+            throw lastError
+        }
         val cause = lastError?.message?.takeIf { it.isNotBlank() }
         throw IllegalStateException(
             "생성된 기술 질문/모범답안이 품질 기준을 충족하지 못했습니다. 잠시 후 다시 시도해 주세요.${cause?.let { " ($it)" } ?: ""}"
@@ -746,9 +755,16 @@ class InterviewAiOrchestrator(
     private fun isRateLimitError(ex: Exception): Boolean {
         val message = ex.message?.lowercase().orEmpty()
         return "http 429" in message ||
+            "http 503" in message ||
             "resource_exhausted" in message ||
             "quota exceeded" in message ||
             "rate limit" in message
+    }
+
+    private fun shouldStopRetry(ex: Exception): Boolean {
+        return ex is GeminiTransientException ||
+            ex is AiProviderAuthorizationException ||
+            isRateLimitError(ex)
     }
 
     private fun isUsableTechQuestion(questionText: String): Boolean {
