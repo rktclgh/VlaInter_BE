@@ -45,6 +45,7 @@ import com.cw.vlainter.global.security.AuthPrincipal
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -322,26 +323,31 @@ class InterviewPracticeService(
             return toSavedQuestionResponse(existing)
         }
 
-        val saved = savedQuestionRepository.save(
-            SavedQuestion(
-                user = actor,
-                question = question,
-                documentQuestion = null,
-                sourceTurn = null,
-                questionTextSnapshot = question.questionText,
-                categorySnapshot = question.category.name,
-                jobSnapshot = question.jobName ?: question.category.parent?.name?.trim(),
-                skillSnapshot = question.skillName ?: question.category.name.trim(),
-                category = question.category,
-                difficulty = question.difficulty.name,
-                sourceTag = when (question.sourceTag) {
-                    QuestionSourceTag.SYSTEM -> TurnSourceTag.SYSTEM.name
-                    QuestionSourceTag.USER -> TurnSourceTag.USER.name
-                },
-                tagsJson = question.tagsJson,
-                note = request.note?.trim()
+        val saved = try {
+            savedQuestionRepository.save(
+                SavedQuestion(
+                    user = actor,
+                    question = question,
+                    documentQuestion = null,
+                    sourceTurn = null,
+                    questionTextSnapshot = question.questionText,
+                    categorySnapshot = question.category.name,
+                    jobSnapshot = question.jobName ?: question.category.parent?.name?.trim(),
+                    skillSnapshot = question.skillName ?: question.category.name.trim(),
+                    category = question.category,
+                    difficulty = question.difficulty.name,
+                    sourceTag = when (question.sourceTag) {
+                        QuestionSourceTag.SYSTEM -> TurnSourceTag.SYSTEM.name
+                        QuestionSourceTag.USER -> TurnSourceTag.USER.name
+                    },
+                    tagsJson = question.tagsJson,
+                    note = request.note?.trim()
+                )
             )
-        )
+        } catch (_: DataIntegrityViolationException) {
+            savedQuestionRepository.findTopByUser_IdAndQuestion_IdOrderByCreatedAtDesc(principal.userId, question.id)
+                ?: throw ResponseStatusException(HttpStatus.CONFLICT, "이미 저장된 질문입니다.")
+        }
         return toSavedQuestionResponse(saved)
     }
 

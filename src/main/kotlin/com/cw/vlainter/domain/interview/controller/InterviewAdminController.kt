@@ -1,11 +1,12 @@
 package com.cw.vlainter.domain.interview.controller
 
+import com.cw.vlainter.domain.interview.dto.AdminQuestionSetSummaryResponse
 import com.cw.vlainter.domain.interview.dto.CategoryResponse
 import com.cw.vlainter.domain.interview.dto.CreateCategoryRequest
 import com.cw.vlainter.domain.interview.dto.MoveCategoryRequest
 import com.cw.vlainter.domain.interview.dto.QuestionSetSummaryResponse
-import com.cw.vlainter.domain.interview.dto.UpdateQuestionSetRequest
 import com.cw.vlainter.domain.interview.dto.UpdateCategoryRequest
+import com.cw.vlainter.domain.interview.dto.UpdateQuestionSetRequest
 import com.cw.vlainter.domain.interview.service.CategoryAdminService
 import com.cw.vlainter.domain.interview.service.QuestionSetService
 import com.cw.vlainter.global.security.AuthPrincipal
@@ -32,7 +33,7 @@ class InterviewAdminController(
     fun getAllSets(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @RequestParam(required = false) keyword: String?
-    ): ResponseEntity<List<QuestionSetSummaryResponse>> {
+    ): ResponseEntity<List<AdminQuestionSetSummaryResponse>> {
         return ResponseEntity.ok(questionSetService.getAllSetsForAdmin(principal, keyword))
     }
 
@@ -48,7 +49,7 @@ class InterviewAdminController(
     fun updateSet(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @PathVariable setId: Long,
-        @RequestBody request: UpdateQuestionSetRequest
+        @Valid @RequestBody request: UpdateQuestionSetRequest
     ): ResponseEntity<QuestionSetSummaryResponse> {
         return ResponseEntity.ok(questionSetService.updateSetByAdmin(principal, setId, request))
     }

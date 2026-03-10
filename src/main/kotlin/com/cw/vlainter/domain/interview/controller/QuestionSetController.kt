@@ -76,7 +76,7 @@ class QuestionSetController(
     fun updateMySet(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @PathVariable setId: Long,
-        @RequestBody request: UpdateQuestionSetRequest
+        @Valid @RequestBody request: UpdateQuestionSetRequest
     ): ResponseEntity<QuestionSetSummaryResponse> {
         return ResponseEntity.ok(questionSetService.updateMySet(principal, setId, request))
     }

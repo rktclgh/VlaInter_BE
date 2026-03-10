@@ -10,7 +10,7 @@ interface QaQuestionSetItemRepository : JpaRepository<QaQuestionSetItem, Long> {
     fun findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(setId: Long): List<QaQuestionSetItem>
     fun findAllBySet_IdOrderByOrderNoAsc(setId: Long): List<QaQuestionSetItem>
     fun countBySet_IdAndIsActiveTrue(setId: Long): Long
-    fun existsBySet_IdAndQuestion_SourceTag(setId: Long, sourceTag: QuestionSourceTag): Boolean
+    fun countBySet_IdAndIsActiveTrueAndQuestion_SourceTag(setId: Long, sourceTag: QuestionSourceTag): Long
 
     fun existsBySet_IdAndQuestion_Id(setId: Long, questionId: Long): Boolean
 
@@ -42,7 +42,24 @@ interface QaQuestionSetItemRepository : JpaRepository<QaQuestionSetItem, Long> {
         where i.question.id = :questionId
           and i.set.deletedAt is null
           and i.set.ownerType = com.cw.vlainter.domain.interview.entity.QuestionSetOwnerType.USER
-          and i.question.sourceTag = com.cw.vlainter.domain.interview.entity.QuestionSourceTag.SYSTEM
+          and (
+            select count(allItems)
+            from QaQuestionSetItem allItems
+            where allItems.set = i.set
+              and allItems.isActive = true
+          ) > 0
+          and (
+            select count(systemItems)
+            from QaQuestionSetItem systemItems
+            where systemItems.set = i.set
+              and systemItems.isActive = true
+              and systemItems.question.sourceTag = com.cw.vlainter.domain.interview.entity.QuestionSourceTag.SYSTEM
+          ) = (
+            select count(allItems)
+            from QaQuestionSetItem allItems
+            where allItems.set = i.set
+              and allItems.isActive = true
+          )
         """
     )
     fun existsInAiGeneratedSetByQuestionId(@Param("questionId") questionId: Long): Boolean

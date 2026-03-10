@@ -24,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException
+import org.slf4j.LoggerFactory
 
 @Service
 class UserService(
@@ -33,6 +34,7 @@ class UserService(
     private val loginSessionStore: LoginSessionStore,
     private val userGeminiApiKeyService: UserGeminiApiKeyService
 ) {
+    private val logger = LoggerFactory.getLogger(javaClass)
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
 
     @Transactional
@@ -141,8 +143,7 @@ class UserService(
         }
 
         if (request.status != null) {
-            member.status = request.status
-            changed = true
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "회원 상태 변경은 전용 비활성화/활성화 API를 사용해 주세요.")
         }
 
         if (request.role != null) {
@@ -173,7 +174,11 @@ class UserService(
         targetUser.status = UserStatus.BLOCKED
         userRepository.save(targetUser)
         runAfterCommit {
-            loginSessionStore.deleteAllByUserId(targetUser.id)
+            try {
+                loginSessionStore.deleteAllByUserId(targetUser.id)
+            } catch (ex: Exception) {
+                logger.error("차단 회원 세션 정리에 실패했습니다. userId={}", targetUser.id, ex)
+            }
         }
     }
 
@@ -206,7 +211,11 @@ class UserService(
         targetUser.name = "Deleted User ${targetUser.id}"
         userRepository.save(targetUser)
         runAfterCommit {
-            loginSessionStore.deleteAllByUserId(targetUser.id)
+            try {
+                loginSessionStore.deleteAllByUserId(targetUser.id)
+            } catch (ex: Exception) {
+                logger.error("소프트 삭제 회원 세션 정리에 실패했습니다. userId={}", targetUser.id, ex)
+            }
         }
     }
 

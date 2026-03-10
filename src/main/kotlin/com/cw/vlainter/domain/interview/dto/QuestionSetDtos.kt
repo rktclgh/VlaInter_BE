@@ -54,6 +54,23 @@ data class QuestionSetSummaryResponse(
     val description: String?,
     val jobName: String?,
     val skillName: String?,
+    val ownerName: String?,
+    val ownerType: QuestionSetOwnerType,
+    val visibility: QuestionSetVisibility,
+    val status: QuestionSetStatus,
+    val questionCount: Int,
+    val certified: Boolean,
+    val aiGenerated: Boolean,
+    val isPromoted: Boolean,
+    val createdAt: OffsetDateTime?
+)
+
+data class AdminQuestionSetSummaryResponse(
+    val setId: Long,
+    val title: String,
+    val description: String?,
+    val jobName: String?,
+    val skillName: String?,
     val ownerUserId: Long?,
     val ownerName: String?,
     val ownerType: QuestionSetOwnerType,

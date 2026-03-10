@@ -1,17 +1,18 @@
 package com.cw.vlainter.domain.interview.service
 
 import com.cw.vlainter.domain.interview.dto.AddQuestionToSetRequest
+import com.cw.vlainter.domain.interview.dto.AdminQuestionSetSummaryResponse
 import com.cw.vlainter.domain.interview.dto.CreateQuestionSetRequest
-import com.cw.vlainter.domain.interview.dto.UpdateQuestionSetRequest
 import com.cw.vlainter.domain.interview.dto.QuestionSetSummaryResponse
 import com.cw.vlainter.domain.interview.dto.QuestionSummaryResponse
+import com.cw.vlainter.domain.interview.dto.UpdateQuestionSetRequest
 import com.cw.vlainter.domain.interview.entity.QaQuestion
 import com.cw.vlainter.domain.interview.entity.QaQuestionSet
 import com.cw.vlainter.domain.interview.entity.QaQuestionSetItem
+import com.cw.vlainter.domain.interview.entity.QuestionSourceTag
 import com.cw.vlainter.domain.interview.entity.QuestionSetOwnerType
 import com.cw.vlainter.domain.interview.entity.QuestionSetStatus
 import com.cw.vlainter.domain.interview.entity.QuestionSetVisibility
-import com.cw.vlainter.domain.interview.entity.QuestionSourceTag
 import com.cw.vlainter.domain.interview.repository.QaQuestionRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetItemRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetRepository
@@ -73,15 +74,10 @@ class QuestionSetService(
 
     @Transactional
     fun getGlobalSets(principal: AuthPrincipal): List<QuestionSetSummaryResponse> {
-        val admin = principal.role == UserRole.ADMIN
         return questionSetRepository.findAllByVisibilityAndStatusAndDeletedAtIsNullOrderByCreatedAtDesc(
             visibility = QuestionSetVisibility.GLOBAL,
             status = QuestionSetStatus.ACTIVE
         )
-            .filter { set ->
-                // 관리자도 조회 가능하며, 일반 사용자는 비삭제된 공용 세트만 조회합니다.
-                admin || set.deletedAt == null
-            }
             .map { set ->
                 normalizeLegacyTitleIfNeeded(set)
                 val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
@@ -177,7 +173,7 @@ class QuestionSetService(
     }
 
     @Transactional
-    fun getAllSetsForAdmin(principal: AuthPrincipal, keyword: String? = null): List<QuestionSetSummaryResponse> {
+    fun getAllSetsForAdmin(principal: AuthPrincipal, keyword: String? = null): List<AdminQuestionSetSummaryResponse> {
         ensureAdmin(principal)
         val normalizedKeyword = keyword?.trim().orEmpty().lowercase()
         return questionSetRepository.findAllByDeletedAtIsNullOrderByCreatedAtDesc()
@@ -199,7 +195,7 @@ class QuestionSetService(
             .map { set ->
                 normalizeLegacyTitleIfNeeded(set)
                 val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
-                toSummary(set, count)
+                toAdminSummary(set, count)
             }
     }
 
@@ -210,7 +206,6 @@ class QuestionSetService(
         request: UpdateQuestionSetRequest
     ): QuestionSetSummaryResponse {
         ensureAdmin(principal)
-        val actor = loadUser(principal.userId)
         val set = questionSetRepository.findByIdAndDeletedAtIsNull(setId)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "질문 세트를 찾을 수 없습니다.")
 
@@ -224,8 +219,6 @@ class QuestionSetService(
         request.description?.let { set.description = it.trim().ifBlank { null } }
         request.visibility?.let { set.visibility = it }
         request.status?.let { set.status = it }
-        set.promotedBy = actor
-        set.promotedAt = OffsetDateTime.now()
 
         val saved = questionSetRepository.save(set)
         val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(saved.id).toInt()
@@ -337,9 +330,10 @@ class QuestionSetService(
         val now = OffsetDateTime.now()
         set.deletedAt = now
         set.status = QuestionSetStatus.ARCHIVED
-        questionSetItemRepository.findAllBySet_IdOrderByOrderNoAsc(set.id).forEach { item ->
+        val items = questionSetItemRepository.findAllBySet_IdOrderByOrderNoAsc(set.id).onEach { item ->
             item.isActive = false
         }
+        questionSetItemRepository.saveAll(items)
         questionSetRepository.save(set)
     }
 
@@ -354,10 +348,31 @@ class QuestionSetService(
 
     private fun toSummary(set: QaQuestionSet, questionCount: Int): QuestionSetSummaryResponse {
         val owner = set.ownerUser
-        val certified = set.ownerType == QuestionSetOwnerType.ADMIN || set.isPromoted || set.visibility == QuestionSetVisibility.GLOBAL
-        val aiGenerated = set.ownerType == QuestionSetOwnerType.USER &&
-            questionSetItemRepository.existsBySet_IdAndQuestion_SourceTag(set.id, QuestionSourceTag.SYSTEM)
+        val certified = set.ownerType == QuestionSetOwnerType.ADMIN || set.isPromoted
+        val aiGenerated = isAiGeneratedSet(set, questionCount)
         return QuestionSetSummaryResponse(
+            setId = set.id,
+            title = set.title,
+            description = set.description,
+            jobName = set.jobName,
+            skillName = set.skillName,
+            ownerName = owner?.name,
+            ownerType = set.ownerType,
+            visibility = set.visibility,
+            status = set.status,
+            questionCount = questionCount,
+            certified = certified,
+            aiGenerated = aiGenerated,
+            isPromoted = set.isPromoted,
+            createdAt = set.createdAt
+        )
+    }
+
+    private fun toAdminSummary(set: QaQuestionSet, questionCount: Int): AdminQuestionSetSummaryResponse {
+        val owner = set.ownerUser
+        val certified = set.ownerType == QuestionSetOwnerType.ADMIN || set.isPromoted
+        val aiGenerated = isAiGeneratedSet(set, questionCount)
+        return AdminQuestionSetSummaryResponse(
             setId = set.id,
             title = set.title,
             description = set.description,
@@ -374,6 +389,19 @@ class QuestionSetService(
             isPromoted = set.isPromoted,
             createdAt = set.createdAt
         )
+    }
+
+    private fun isAiGeneratedSet(set: QaQuestionSet, questionCount: Int): Boolean {
+        if (set.ownerType != QuestionSetOwnerType.USER || questionCount <= 0) {
+            return false
+        }
+        val systemQuestionCount = questionSetItemRepository
+            .countBySet_IdAndIsActiveTrueAndQuestion_SourceTag(
+                set.id,
+                com.cw.vlainter.domain.interview.entity.QuestionSourceTag.SYSTEM
+            )
+            .toInt()
+        return systemQuestionCount == questionCount
     }
 
     private fun normalizeLegacyTitleIfNeeded(set: QaQuestionSet) {

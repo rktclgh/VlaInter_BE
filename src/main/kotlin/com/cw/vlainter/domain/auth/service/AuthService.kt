@@ -47,10 +47,10 @@ class AuthService(
         val user = userRepository.findByEmail(request.email)
             .orElseThrow { unauthorizedException() }
 
-        validateUserForLogin(user)
         if (!passwordEncoder.matches(request.password, user.password)) {
             throw unauthorizedException()
         }
+        validateUserForLogin(user)
         val validatedRedirectUri = redirectUriValidator.validate(request.redirectUri)
 
         return issueLoginResult(user, validatedRedirectUri)
