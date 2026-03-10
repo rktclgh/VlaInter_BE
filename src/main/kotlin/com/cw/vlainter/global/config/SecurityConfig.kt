@@ -67,7 +67,7 @@ class SecurityConfig(
                     .requestMatchers("/api/**").authenticated()
                     .anyRequest().denyAll()
             }
-            .addFilterBefore(aiRoutingContextClearingFilter, JwtAuthenticationFilter::class.java)
+            .addFilterBefore(aiRoutingContextClearingFilter, UsernamePasswordAuthenticationFilter::class.java)
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
 
         return http.build()
