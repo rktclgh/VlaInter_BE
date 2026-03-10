@@ -83,7 +83,7 @@ class QuestionSetServiceTests {
                 categoryId = null,
                 jobName = "회계사",
                 skillName = "재무회계",
-                createIfMissing = true
+                requireIfMissing = true
             )
         ).willReturn(resolvedContext)
         given(questionRepository.findByFingerprintAndDeletedAtIsNull(anyString())).willReturn(null)
@@ -189,7 +189,7 @@ class QuestionSetServiceTests {
                 categoryId = null,
                 jobName = "백엔드개발자",
                 skillName = "JPA",
-                createIfMissing = true
+                requireIfMissing = true
             )
         ).willReturn(jpaContext)
         given(questionRepository.findByFingerprintAndDeletedAtIsNull(anyString())).willReturn(null)
@@ -257,7 +257,7 @@ class QuestionSetServiceTests {
                 categoryId = null,
                 jobName = "공통",
                 skillName = "CS",
-                createIfMissing = true
+                requireIfMissing = true
             )
         ).willReturn(commonContext)
         given(questionRepository.findByFingerprintAndDeletedAtIsNull(anyString())).willReturn(null)
@@ -325,7 +325,7 @@ class QuestionSetServiceTests {
                 categoryId = null,
                 jobName = "재무회계",
                 skillName = "재무회계",
-                createIfMissing = true
+                requireIfMissing = true
             )
         ).willReturn(financeContext)
 
@@ -389,7 +389,7 @@ class QuestionSetServiceTests {
                 categoryId = null,
                 jobName = "백엔드개발자",
                 skillName = "JPA",
-                createIfMissing = true
+                requireIfMissing = true
             )
         ).willReturn(resolvedContext)
         given(questionRepository.findByFingerprintAndDeletedAtIsNull(anyString())).willReturn(null)
@@ -536,7 +536,7 @@ class QuestionSetServiceTests {
                 categoryId = null,
                 jobName = "회계사",
                 skillName = "재무회계",
-                createIfMissing = true
+                requireIfMissing = true
             )
         ).willReturn(resolvedContext)
         given(questionRepository.findByFingerprintAndDeletedAtIsNull(anyString())).willReturn(existingQuestion)

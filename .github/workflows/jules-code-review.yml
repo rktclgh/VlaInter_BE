@@ -1,38 +1,156 @@
-name: Jules AI Code Review (Korean)
+name: PR Review Comment (Korean)
 
 on:
   pull_request:
-    branches: [ "main", "develop" ]
-    types: [opened, synchronize]
+    branches: ["main", "develop"]
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   review:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Trigger Jules Agent
-        uses: google-labs-code/jules-action@main
         with:
-          # 하이픈(-)이 아니라 언더바(_)를 사용해야 합니다
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
-          prompt: |
-            당신은 시니어 풀스택 개발자이자 보안 전문가입니다. 
-            이번 Pull Request의 변경 사항을 다음 5가지 관점에서 한국어로 상세히 리뷰해 주세요:
+          fetch-depth: 0
 
-            1. 보안 취약점: 하드코딩된 비밀번호, SQL 인젝션, XSS 등 보안 위험 요소 확인
-            2. 성능 개선: 불필요한 루프, 메모리 누수, 효율적이지 못한 로직 제안
-            3. 버그 수정: 논리적 오류나 예외 처리가 누락된 부분 지적
-            4. 오타 및 스타일: 코드 내 오타, 변수명 적절성, 가독성 개선안
-            5. 프롬프트 인젝션: AI 연동 코드인 경우 프롬프트 주입 공격 위험성 확인
+      - name: Build Review Summary
+        id: summary
+        shell: bash
+        run: |
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
 
-            리뷰 결과를 바탕으로 개선된 코드가 있다면 직접 수정안을 제안해 주세요.
+          {
+            echo "body<<'EOF'"
+            echo "## 자동 PR 리뷰"
+            echo
+            echo "### 메타"
+            echo "- 대상 브랜치: \`${{ github.event.pull_request.base.ref }}\`"
+            echo "- 소스 브랜치: \`${{ github.event.pull_request.head.ref }}\`"
+            echo "- 작성자: @${{ github.event.pull_request.user.login }}"
+            echo
+            echo "### 변경 파일"
+            diff_output="$(git diff --name-status "origin/${{ github.event.pull_request.base.ref }}"...HEAD)"
+            if [ -n "${diff_output}" ]; then
+              echo '```text'
+              printf '%s\n' "${diff_output}"
+              echo '```'
+            else
+              echo "- 변경 파일을 찾지 못했습니다."
+            fi
+            echo
+            echo "### 리뷰 체크리스트"
+            echo "1. 보안 취약점: 하드코딩된 비밀번호, SQL 인젝션, XSS 등 위험 요소가 없는지 확인하세요."
+            echo "2. 성능 개선: 불필요한 루프, 메모리 누수, 과도한 네트워크 호출이 없는지 확인하세요."
+            echo "3. 버그 수정: 예외 처리 누락, 상태 동기화 실패, 회귀 가능성이 없는지 확인하세요."
+            echo "4. 오타 및 스타일: 오타, 변수명, 가독성, 일관성 문제를 확인하세요."
+            echo "5. 프롬프트 인젝션: AI 연동 코드가 있다면 입력 검증과 프롬프트 주입 가능성을 확인하세요."
+            echo
+            echo "### 참고"
+            echo "- 이 리뷰는 PR 수준의 자동 코멘트입니다."
+            echo "- 필요하면 inline review comment를 추가로 남겨 주세요."
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
-          # 매개변수 명칭을 언더바(_) 형식으로 모두 수정했습니다
-          automation_mode: "AUTO_CREATE_PR"
-          require_plan_approval: false
+      - name: Create PR Review Comment
+        uses: actions/github-script@v7
+        env:
+          REVIEW_BODY: ${{ steps.summary.outputs.body }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
+            const commit_id = context.payload.pull_request.head.sha;
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number,
+              per_page: 100,
+            });
+
+            const patterns = [
+              {
+                regex: /\b(console\.log|debugger|printStackTrace\s*\(|System\.out\.println\s*\()/,
+                body: "디버그 출력 또는 중단점 코드가 포함되어 있습니다. 운영 코드에 남아 있는지 다시 확인해 주세요.",
+              },
+              {
+                regex: /\b(TODO|FIXME|HACK)\b/i,
+                body: "미완료 메모가 포함되어 있습니다. 이 PR에서 처리할 내용인지, 아니면 이슈로 분리할지 정리해 주세요.",
+              },
+              {
+                regex: /\b(api[_-]?key|secret|password|passwd|token)\b\s*[:=]\s*["'`](?!\$\{\{|\$[A-Z_]+|process\.env|import\.meta\.env|System\.getenv)[^"'`]{6,}["'`]/i,
+                body: "민감 정보로 보이는 문자열 리터럴이 추가되었습니다. 환경 변수나 secret 저장소를 사용하는지 다시 확인해 주세요.",
+              },
+              {
+                regex: /\b(allowedOrigins\s*\(\s*["'`]\*["'`]|Access-Control-Allow-Origin["'`]?\s*[:=]\s*["'`]\*["'`])/,
+                body: "와일드카드 origin 허용이 추가되었습니다. 꼭 필요한 범위인지, 더 좁게 제한할 수 없는지 검토해 주세요.",
+              },
+            ];
+
+            function collectInlineComments(patch, path) {
+              if (!patch) return [];
+              const comments = [];
+              const seen = new Set();
+              let rightLine = 0;
+
+              for (const rawLine of patch.split("\n")) {
+                const hunkMatch = rawLine.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+                if (hunkMatch) {
+                  rightLine = Number(hunkMatch[1]);
+                  continue;
+                }
+                if (!rightLine) continue;
+                if (rawLine.startsWith("+++")) continue;
+                if (rawLine.startsWith("+")) {
+                  const addedLine = rawLine.slice(1);
+                  for (const pattern of patterns) {
+                    if (!pattern.regex.test(addedLine)) continue;
+                    const key = `${path}:${rightLine}:${pattern.body}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    comments.push({
+                      path,
+                      line: rightLine,
+                      side: "RIGHT",
+                      body: pattern.body,
+                    });
+                    break;
+                  }
+                  rightLine += 1;
+                  continue;
+                }
+                if (rawLine.startsWith("-") && !rawLine.startsWith("---")) {
+                  continue;
+                }
+                rightLine += 1;
+              }
+
+              return comments;
+            }
+
+            const inlineComments = files
+              .flatMap((file) => collectInlineComments(file.patch, file.filename))
+              .slice(0, 20);
+
+            await github.rest.pulls.createReview({
+              owner,
+              repo,
+              pull_number,
+              commit_id,
+              event: "COMMENT",
+              body: inlineComments.length > 0
+                ? `${process.env.REVIEW_BODY}\n\n### Inline Review\n- 변경된 줄 중 기본 규칙에 걸린 항목에 대해 inline comment를 함께 남겼습니다.`
+                : `${process.env.REVIEW_BODY}\n\n### Inline Review\n- 기본 규칙 기준으로 바로 지적할 inline comment는 없었습니다.`,
+              comments: inlineComments,
+            });

@@ -15,7 +15,7 @@ data class CreateQuestionSetRequest(
     val title: String,
     @field:Size(max = 120, message = "계열명은 120자 이하여야 합니다.")
     val branchName: String? = null,
-    @field:Size(max = 120, message = "계열명은 120자 이하여야 합니다.")
+    @field:Size(max = 120, message = "직무명은 120자 이하여야 합니다.")
     val jobName: String? = null,
     @field:Size(max = 120, message = "기술명은 120자 이하여야 합니다.")
     val skillName: String? = null,

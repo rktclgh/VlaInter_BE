@@ -21,7 +21,7 @@ class InterviewCategoryContextResolver(
         categoryId: Long?,
         jobName: String?,
         skillName: String?,
-        createIfMissing: Boolean
+        requireIfMissing: Boolean
     ): ResolvedCategoryContext? {
         val normalizedJobName = jobName?.trim()?.takeIf { it.isNotBlank() }
         val normalizedSkillName = skillName?.trim()?.takeIf { it.isNotBlank() }
@@ -65,7 +65,7 @@ class InterviewCategoryContextResolver(
             .toList()
 
         if (matches.isEmpty()) {
-            if (!createIfMissing) return null
+            if (!requireIfMissing) return null
             throw ResponseStatusException(
                 HttpStatus.BAD_REQUEST,
                 "기술 카테고리를 찾을 수 없습니다. 계열-직무-기술 트리에서 먼저 생성하거나 선택해 주세요: $normalizedSkillName"

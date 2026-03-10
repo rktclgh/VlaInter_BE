@@ -39,7 +39,7 @@ class InterviewCategoryContextResolverTests {
             categoryId = 22L,
             jobName = "회계사",
             skillName = "재무회계",
-            createIfMissing = false
+            requireIfMissing = false
         )
 
         assertThat(resolved).isNotNull
@@ -61,7 +61,7 @@ class InterviewCategoryContextResolverTests {
             categoryId = null,
             jobName = "회계사",
             skillName = "재무회계",
-            createIfMissing = false
+            requireIfMissing = false
         )
 
         assertThat(resolved).isNotNull
@@ -71,7 +71,7 @@ class InterviewCategoryContextResolverTests {
     }
 
     @Test
-    fun `평문 직무 기술이 없고 createIfMissing이면 먼저 트리에서 생성하라고 안내한다`() {
+    fun `평문 직무 기술이 없고 requireIfMissing이면 먼저 트리에서 생성하라고 안내한다`() {
         val techRoot = createCategory(id = 1L, code = "TECH", name = "기술", depth = 0, path = "TECH", isLeaf = false)
         val jobCategory = createCategory(id = 20L, parent = techRoot, code = "ACCOUNTANT", name = "회계사", depth = 1, path = "TECH/ACCOUNTANT", isLeaf = false)
 
@@ -83,13 +83,14 @@ class InterviewCategoryContextResolverTests {
                 categoryId = null,
                 jobName = "회계사",
                 skillName = "재무회계",
-                createIfMissing = true
+                requireIfMissing = true
             )
         }
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
         assertThat(exception.reason).contains("기술 카테고리를 찾을 수 없습니다")
     }
+
     private fun createCategory(
         id: Long,
         parent: QaCategory? = null,

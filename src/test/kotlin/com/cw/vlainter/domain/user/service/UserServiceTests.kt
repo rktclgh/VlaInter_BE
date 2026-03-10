@@ -192,7 +192,7 @@ class UserServiceTests {
         val principal = createPrincipal(adminUser)
         val targetUser = createUser(id = 200L, email = "target@vlainter.com")
         val request = UpdateMemberByAdminRequest(
-            name = "Blocked User",
+            name = "Updated Name",
             role = UserRole.ADMIN
         )
 
@@ -202,7 +202,7 @@ class UserServiceTests {
 
         val response = userService().updateMemberByAdmin(principal, targetUser.id, request)
 
-        assertThat(response.name).isEqualTo("Blocked User")
+        assertThat(response.name).isEqualTo("Updated Name")
         assertThat(response.status).isEqualTo(UserStatus.ACTIVE)
         assertThat(response.role).isEqualTo(UserRole.ADMIN)
     }

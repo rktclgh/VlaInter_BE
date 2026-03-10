@@ -36,6 +36,11 @@ class InterviewEvaluationService(
     private val objectMapper: ObjectMapper,
     private val selfProvider: ObjectProvider<InterviewEvaluationService>
 ) {
+    companion object {
+        const val INTRO_CATEGORY = INTERVIEW_INTRO_CATEGORY
+        const val INTRO_QUESTION_TEXT = INTERVIEW_INTRO_QUESTION_TEXT
+    }
+
     private val logger = LoggerFactory.getLogger(javaClass)
     private val turnLocks = ConcurrentHashMap<Long, ReentrantLock>()
 
@@ -127,12 +132,6 @@ class InterviewEvaluationService(
         interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(sessionId)
             .filter { it.answeredAt != null && it.evaluationStatus != TurnEvaluationStatus.DONE }
             .forEach { selfProvider.getObject().evaluateTurnSync(it.id) }
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun markFailed(turnId: Long) {
-        val turn = interviewTurnRepository.findById(turnId).orElse(null) ?: return
-        turn.evaluationStatus = TurnEvaluationStatus.FAILED
     }
 
     private fun buildEvaluation(turn: InterviewTurn, answer: String): EvaluationResult {
@@ -246,8 +245,8 @@ class InterviewEvaluationService(
     private fun isIntroductionTurn(turn: InterviewTurn): Boolean {
         return turn.question == null &&
             turn.documentQuestion == null &&
-            turn.categorySnapshot == "자기소개" &&
-            turn.questionTextSnapshot == "자기소개 부탁드리겠습니다."
+            turn.categorySnapshot == INTRO_CATEGORY &&
+            turn.questionTextSnapshot == INTRO_QUESTION_TEXT
     }
 
     private fun InterviewTurnEvaluation.toResponse(): TurnEvaluationResponse {

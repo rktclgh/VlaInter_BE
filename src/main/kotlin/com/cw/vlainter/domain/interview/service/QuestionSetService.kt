@@ -65,13 +65,14 @@ class QuestionSetService(
 
     @Transactional
     fun getMyAndGlobalSets(principal: AuthPrincipal): List<QuestionSetSummaryResponse> {
-        return getMySets(principal) + getGlobalSets()
+        val mySets = getMySets(principal)
+        val mySetIds = mySets.mapTo(linkedSetOf()) { it.setId }
+        return mySets + getGlobalSets().filterNot { it.setId in mySetIds }
     }
 
     @Transactional
     fun getMySets(principal: AuthPrincipal): List<QuestionSetSummaryResponse> {
         return questionSetRepository.findVisibleUserSets(principal.userId).mapNotNull { set ->
-            normalizeLegacyTitleIfNeeded(set)
             val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
             if (isAiGeneratedSet(set, count)) {
                 null
@@ -88,7 +89,6 @@ class QuestionSetService(
             status = QuestionSetStatus.ACTIVE
         )
             .map { set ->
-                normalizeLegacyTitleIfNeeded(set)
                 val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
                 toSummary(set, count)
             }
@@ -109,7 +109,7 @@ class QuestionSetService(
             categoryId = request.categoryId,
             jobName = request.jobName,
             skillName = request.skillName,
-            createIfMissing = true
+            requireIfMissing = true
         ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 세트에는 직무와 기술 입력이 필요합니다.")
 
         val existingBranch = set.jobName?.trim().orEmpty()
@@ -182,7 +182,7 @@ class QuestionSetService(
             categoryId = request.categoryId,
             jobName = request.jobName,
             skillName = request.skillName,
-            createIfMissing = true
+            requireIfMissing = true
         ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 수정에는 직무와 기술 입력이 필요합니다.")
 
         val existingBranch = set.jobName?.trim().orEmpty()
@@ -268,7 +268,6 @@ class QuestionSetService(
                     .contains(normalizedKeyword)
             }
             .map { set ->
-                normalizeLegacyTitleIfNeeded(set)
                 val count = questionSetItemRepository.countBySet_IdAndIsActiveTrue(set.id).toInt()
                 toAdminSummary(set, count)
             }
@@ -430,7 +429,7 @@ class QuestionSetService(
         val skillNames = extractSkillNames(set.id)
         return QuestionSetSummaryResponse(
             setId = set.id,
-            title = set.title,
+            title = normalizeLegacyTitle(set.title),
             description = set.description,
             branchName = branchName,
             jobName = branchName,
@@ -458,7 +457,7 @@ class QuestionSetService(
         val skillNames = extractSkillNames(set.id)
         return AdminQuestionSetSummaryResponse(
             setId = set.id,
-            title = set.title,
+            title = normalizeLegacyTitle(set.title),
             description = set.description,
             branchName = branchName,
             jobName = branchName,
@@ -489,14 +488,6 @@ class QuestionSetService(
             )
             .toInt()
         return systemQuestionCount == questionCount
-    }
-
-    private fun normalizeLegacyTitleIfNeeded(set: QaQuestionSet) {
-        val normalized = normalizeLegacyTitle(set.title)
-        if (normalized != set.title) {
-            set.title = normalized
-            questionSetRepository.save(set)
-        }
     }
 
     private fun normalizeLegacyTitle(raw: String): String {

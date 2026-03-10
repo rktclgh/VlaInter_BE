@@ -53,7 +53,7 @@ class InterviewAiOrchestrator(
             try {
                 val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
                 val parsed = parseGeneratedDocumentQuestions(generated.text, fileTypeLabel)
-                val validated = validateGeneratedDocumentQuestions(parsed, fileTypeLabel)
+                val validated = validateGeneratedDocumentQuestions(parsed)
                 validated.forEach { item ->
                     val key = item.questionText.trim().lowercase()
                     if (key.isNotBlank() && !collected.containsKey(key)) {
@@ -165,18 +165,46 @@ class InterviewAiOrchestrator(
             .distinctBy { it.lowercase() }
         if (normalizedSkills.isEmpty()) return emptyList()
 
-        val prompt = buildBatchTechQuestionPrompt(
-            jobName = jobName.trim().ifBlank { "직무" },
-            skillNames = normalizedSkills,
-            difficulty = difficulty,
-            questionCountPerSkill = questionCountPerSkill
-        )
-        val generated = llmProviderRouter.generateJson(prompt, temperature = 0.55)
-        val parsed = parseGeneratedSkillTechQuestions(generated.text)
-        return validateGeneratedSkillTechQuestions(
-            generated = parsed,
-            jobName = jobName,
-            skillNames = normalizedSkills
+        val temperatures = listOf(0.45, 0.55, 0.65, 0.75, 0.85)
+        var lastError: Exception? = null
+
+        temperatures.forEachIndexed { index, temperature ->
+            val prompt = buildBatchTechQuestionPrompt(
+                jobName = jobName.trim().ifBlank { "직무" },
+                skillNames = normalizedSkills,
+                difficulty = difficulty,
+                questionCountPerSkill = questionCountPerSkill
+            )
+            try {
+                val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
+                val parsed = parseGeneratedSkillTechQuestions(generated.text)
+                val validated = validateGeneratedSkillTechQuestions(
+                    generated = parsed,
+                    jobName = jobName,
+                    skillNames = normalizedSkills
+                )
+                if (validated.isNotEmpty()) {
+                    return validated
+                }
+            } catch (ex: Exception) {
+                lastError = ex
+                logger.warn(
+                    "기술 질문 배치 생성 재시도 실패(provider={}, round={}, temp={}): {}",
+                    aiProperties.provider,
+                    index + 1,
+                    temperature,
+                    ex.message
+                )
+                if (isRateLimitError(ex)) {
+                    logger.warn("기술 질문 배치 생성 재시도 중단: rate limit/quota 감지")
+                    return@forEachIndexed
+                }
+            }
+        }
+
+        val cause = lastError?.message?.takeIf { it.isNotBlank() }
+        throw IllegalStateException(
+            "생성된 기술 질문/모범답안이 품질 기준을 충족하지 못했습니다. 잠시 후 다시 시도해 주세요.${cause?.let { " ($it)" } ?: ""}"
         )
     }
 
@@ -526,13 +554,12 @@ class InterviewAiOrchestrator(
     }
 
     private fun validateGeneratedDocumentQuestions(
-        generated: List<GeneratedDocumentQuestion>,
-        fileTypeLabel: String
+        generated: List<GeneratedDocumentQuestion>
     ): List<GeneratedDocumentQuestion> {
         val seen = linkedSetOf<String>()
         return generated.mapNotNull { item ->
             val normalizedQuestion = item.questionText.replace(Regex("\\s+"), " ").trim()
-            if (!isUsableDocumentQuestion(normalizedQuestion, fileTypeLabel)) return@mapNotNull null
+            if (!isUsableDocumentQuestion(normalizedQuestion)) return@mapNotNull null
 
             val fingerprint = normalizedQuestion
                 .lowercase()
@@ -670,7 +697,7 @@ class InterviewAiOrchestrator(
         }
     }
 
-    private fun isUsableDocumentQuestion(questionText: String, @Suppress("UNUSED_PARAMETER") fileTypeLabel: String): Boolean {
+    private fun isUsableDocumentQuestion(questionText: String): Boolean {
         if (questionText.isBlank()) return false
         if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED)\\b").containsMatchIn(questionText)) return false
         val lowered = questionText.lowercase()

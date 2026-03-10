@@ -37,11 +37,9 @@ data class StartMockInterviewRequest(
     val questionSetId: Long? = null,
     @field:Size(max = 3, message = "기술 카테고리는 최대 3개까지 선택할 수 있습니다.")
     val categoryIds: List<Long> = emptyList(),
-    @field:Size(max = 3, message = "기술 카테고리는 최대 3개까지 선택할 수 있습니다.")
+    @field:Size(max = 3, message = "기술 스킬 이름은 최대 3개까지 입력할 수 있습니다.")
     val skillNames: List<String> = emptyList(),
-    val categoryId: Long? = null,
     val jobName: String? = null,
-    val skillName: String? = null,
     val difficulty: QuestionDifficulty? = null,
     val includeSelfIntroduction: Boolean = false,
     @field:Min(value = 5, message = "questionCount는 5 이상이어야 합니다.")

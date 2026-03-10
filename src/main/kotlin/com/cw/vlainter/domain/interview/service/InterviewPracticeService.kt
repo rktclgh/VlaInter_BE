@@ -49,8 +49,6 @@ import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-import org.springframework.transaction.support.TransactionSynchronization
-import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException
 import java.security.MessageDigest
 import java.time.OffsetDateTime
@@ -90,7 +88,7 @@ class InterviewPracticeService(
                 categoryId = request.categoryId,
                 jobName = request.jobName,
                 skillName = request.skillName,
-                createIfMissing = false
+                requireIfMissing = false
             )
         } else {
             null
@@ -102,7 +100,7 @@ class InterviewPracticeService(
                     categoryId = request.categoryId,
                     jobName = request.jobName,
                     skillName = request.skillName,
-                    createIfMissing = false
+                    requireIfMissing = false
                 )
                 ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술질문 연습에는 기술 선택이 필요합니다.")
             candidates = userGeminiApiKeyService.withUserApiKey(actor.id) {

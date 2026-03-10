@@ -103,6 +103,8 @@ class DocumentInterviewService(
 ) {
     companion object {
         private const val AI_GENERATED_SET_DESCRIPTION = "모의면접 시작 시 자동 생성된 기술 문답"
+        private const val INTRO_CATEGORY = INTERVIEW_INTRO_CATEGORY
+        private const val INTRO_QUESTION_TEXT = INTERVIEW_INTRO_QUESTION_TEXT
     }
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -861,7 +863,11 @@ class DocumentInterviewService(
                 distinctContexts.joinToString(",") { it.skillName },
                 ex.message
             )
-            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "기술 질문 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+            throw ResponseStatusException(
+                HttpStatus.BAD_GATEWAY,
+                "기술 질문 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+                ex
+            )
         }
         if (generated.isEmpty()) return emptyList()
 
@@ -960,21 +966,14 @@ class DocumentInterviewService(
                 ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접 시작 시 직무 정보가 필요합니다.")
             return skillNames.map { skillName ->
                 categoryContextResolver.resolve(
-                    categoryId = null,
-                    jobName = resolvedJobName,
-                    skillName = skillName,
-                    createIfMissing = false
+                categoryId = null,
+                jobName = resolvedJobName,
+                skillName = skillName,
+                requireIfMissing = false
                 ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효하지 않은 기술 이름입니다: $skillName")
             }
         }
-
-        val singleContext = categoryContextResolver.resolve(
-            categoryId = request.categoryId,
-            jobName = request.jobName,
-            skillName = request.skillName,
-            createIfMissing = false
-        ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접에는 기술 선택이 필요합니다.")
-        return listOf(singleContext)
+        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의면접에는 기술 선택이 필요합니다.")
     }
 
     private fun requestedTechCandidatesPerSkill(requestedCount: Int, skillCount: Int): Int {
@@ -1101,8 +1100,8 @@ class DocumentInterviewService(
                     session = session,
                     turnNo = 1,
                     sourceTag = TurnSourceTag.DOC_RAG,
-                    questionTextSnapshot = "자기소개 부탁드리겠습니다.",
-                    categorySnapshot = "자기소개",
+                    questionTextSnapshot = INTRO_QUESTION_TEXT,
+                    categorySnapshot = INTRO_CATEGORY,
                     tagsJson = "[]"
                 )
             }
@@ -1134,8 +1133,8 @@ class DocumentInterviewService(
     private fun isIntroductionTurn(turn: InterviewTurn): Boolean {
         return turn.question == null &&
             turn.documentQuestion == null &&
-            turn.categorySnapshot == "자기소개" &&
-            turn.questionTextSnapshot == "자기소개 부탁드리겠습니다."
+            turn.categorySnapshot == INTRO_CATEGORY &&
+            turn.questionTextSnapshot == INTRO_QUESTION_TEXT
     }
 
     private fun extractPdfText(file: UserFile): ExtractedDocumentText {

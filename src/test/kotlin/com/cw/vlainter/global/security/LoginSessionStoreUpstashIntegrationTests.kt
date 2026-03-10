@@ -10,32 +10,11 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.data.redis.core.StringRedisTemplate
-import org.springframework.test.context.TestPropertySource
+import org.springframework.test.context.ActiveProfiles
 import java.util.UUID
 
+@ActiveProfiles("test")
 @SpringBootTest
-@TestPropertySource(
-    properties = [
-        "app.jwt.issuer=vlainter-test",
-        "app.jwt.access-token-exp-seconds=900",
-        "app.jwt.refresh-token-exp-seconds=120",
-        "app.jwt.access-secret=12345678901234567890123456789012",
-        "app.jwt.refresh-secret=abcdefghijklmnopqrstuvwxyz123456",
-        "app.cookie.domain=localhost",
-        "app.cookie.secure=false",
-        "app.cookie.same-site=Lax",
-        "app.cookie.access-token-name=vlainter_at",
-        "app.cookie.refresh-token-name=vlainter_rt",
-        "app.redirect.allowed-origins=http://localhost:5173",
-        "app.cors.allowed-origins=http://localhost:5173",
-        "app.security.api-key.encryption-secret=test-api-key-secret",
-        "spring.mail.host=localhost",
-        "app.portone.base-url=https://api.portone.io",
-        "app.portone.api-key=test-portone-api-key",
-        "app.portone.api-secret=test-portone-api-secret",
-        "app.portone.customer-code=test-customer-code"
-    ]
-)
 class LoginSessionStoreUpstashIntegrationTests {
 
     @Autowired

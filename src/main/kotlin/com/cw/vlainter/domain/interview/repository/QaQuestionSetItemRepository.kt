@@ -41,6 +41,7 @@ interface QaQuestionSetItemRepository : JpaRepository<QaQuestionSetItem, Long> {
         select count(i) > 0
         from QaQuestionSetItem i
         where i.question.id = :questionId
+          and i.isActive = true
           and i.set.deletedAt is null
           and i.set.ownerType = com.cw.vlainter.domain.interview.entity.QuestionSetOwnerType.USER
           and (

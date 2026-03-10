@@ -47,13 +47,7 @@ class CategoryAdminService(
         if (depth !in 0..2) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카테고리는 계열(0) / 직무(1) / 기술(2) 깊이까지만 생성할 수 있습니다.")
         }
-        val isBranchCommonJob = depth == 1 && normalizedName.equals("공통", ignoreCase = true)
-        if (!isBranchCommonJob && categoryRepository.existsByDepthAndNameIgnoreCaseAndDeletedAtIsNull(depth, normalizedName)) {
-            throw ResponseStatusException(
-                HttpStatus.CONFLICT,
-                "같은 depth에 동일한 이름의 카테고리가 이미 존재합니다. 중복 생성은 허용되지 않습니다: $normalizedName"
-            )
-        }
+        validateUniqueName(depth, normalizedName)
 
         val normalizedCode = allocateUniqueCode(parent?.id, normalizeCode(request.code ?: normalizedName))
         if (hasDuplicateName(parent, normalizedName)) {
@@ -93,7 +87,17 @@ class CategoryAdminService(
         val actor = loadUser(principal.userId)
         val category = findCategory(categoryId)
 
-        request.name?.let { category.name = it.trim() }
+        request.name?.let {
+            val normalizedName = it.trim()
+            if (normalizedName.isBlank()) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카테고리 이름은 필수입니다.")
+            }
+            validateUniqueName(category.depth, normalizedName, category.id)
+            if (hasDuplicateName(category.parent, normalizedName, category.id)) {
+                throw ResponseStatusException(HttpStatus.CONFLICT, "같은 위치에 동일한 이름의 카테고리가 이미 존재합니다.")
+            }
+            category.name = normalizedName
+        }
         request.description?.let { category.description = it.trim() }
         request.sortOrder?.let { category.sortOrder = it }
         request.isActive?.let { category.isActive = it }
@@ -145,7 +149,7 @@ class CategoryAdminService(
         category.path = (newParent?.path ?: "") + "/${category.code}"
         category.updatedBy = actor
 
-        categoryRepository.findAllByPathStartingWithAndDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc("$oldPath/")
+        categoryRepository.findAllByPathStartingWithAndDeletedAtIsNullOrderByDepthAscSortOrderAsc("$oldPath/")
             .forEach { child ->
             val suffix = child.path.removePrefix(oldPath)
             child.path = "${category.path}$suffix"
@@ -183,12 +187,13 @@ class CategoryAdminService(
         val category = findCategory(categoryId)
         val now = OffsetDateTime.now()
 
-        categoryRepository.findAllByPathStartingWithAndDeletedAtIsNullOrderByDepthDescSortOrderDesc(category.path)
-            .forEach { item ->
-                item.deletedAt = now
-                item.isActive = false
-                item.updatedBy = actor
-            }
+        val descendants =
+            categoryRepository.findAllByPathStartingWithAndDeletedAtIsNullOrderByDepthDescSortOrderDesc("${category.path}/")
+        (listOf(category) + descendants).forEach { item ->
+            item.deletedAt = now
+            item.isActive = false
+            item.updatedBy = actor
+        }
 
         val parent = category.parent
         if (parent != null && !categoryRepository.existsByParent_IdAndDeletedAtIsNull(parent.id)) {
@@ -219,11 +224,31 @@ class CategoryAdminService(
     private fun loadUser(userId: Long) = userRepository.findById(userId)
         .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "사용자 정보를 찾을 수 없습니다.") }
 
-    private fun hasDuplicateName(parent: QaCategory?, name: String): Boolean {
-        return if (parent == null) {
-            categoryRepository.existsByParentIsNullAndNameIgnoreCaseAndDeletedAtIsNull(name)
+    private fun hasDuplicateName(parent: QaCategory?, name: String, excludingId: Long? = null): Boolean {
+        val duplicate = if (parent == null) {
+            categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc()
+                .firstOrNull { it.parent == null && it.name.equals(name, ignoreCase = true) }
         } else {
-            categoryRepository.existsByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(parent.id, name)
+            categoryRepository.findAllByParent_IdAndDeletedAtIsNullOrderBySortOrderAsc(parent.id)
+                .firstOrNull { it.name.equals(name, ignoreCase = true) }
+        }
+        return duplicate != null && duplicate.id != excludingId
+    }
+
+    private fun validateUniqueName(depth: Int, normalizedName: String, excludingId: Long? = null) {
+        val isBranchCommonJob = depth == 1 && normalizedName.equals("공통", ignoreCase = true)
+        if (isBranchCommonJob) return
+        val duplicate = categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc()
+            .firstOrNull {
+                it.depth == depth &&
+                    it.name.equals(normalizedName, ignoreCase = true) &&
+                    it.id != excludingId
+            }
+        if (duplicate != null) {
+            throw ResponseStatusException(
+                HttpStatus.CONFLICT,
+                "같은 depth에 동일한 이름의 카테고리가 이미 존재합니다. 중복 생성은 허용되지 않습니다: $normalizedName"
+            )
         }
     }
 
@@ -238,22 +263,29 @@ class CategoryAdminService(
         if (categoryRepository.findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(branch.id, "공통") != null) {
             return
         }
-        val code = allocateUniqueCode(branch.id, normalizeCode("공통"))
-        categoryRepository.save(
-            QaCategory(
-                parent = branch,
-                code = code,
-                name = "공통",
-                description = "계열 공통 직무",
-                depth = 1,
-                path = "${branch.path}/$code",
-                sortOrder = -100,
-                isActive = true,
-                isLeaf = true,
-                createdBy = actor,
-                updatedBy = actor
+        try {
+            val code = allocateUniqueCode(branch.id, normalizeCode("공통"))
+            categoryRepository.save(
+                QaCategory(
+                    parent = branch,
+                    code = code,
+                    name = "공통",
+                    description = "계열 공통 직무",
+                    depth = 1,
+                    path = "${branch.path}/$code",
+                    sortOrder = -100,
+                    isActive = true,
+                    isLeaf = true,
+                    createdBy = actor,
+                    updatedBy = actor
+                )
             )
-        )
+        } catch (ex: org.springframework.dao.DataIntegrityViolationException) {
+            if (categoryRepository.findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(branch.id, "공통") != null) {
+                return
+            }
+            throw ex
+        }
         if (branch.isLeaf) {
             branch.isLeaf = false
         }
@@ -279,7 +311,7 @@ class CategoryAdminService(
         savedQuestionRepository.reassignCategory(source, target)
         interviewTurnRepository.reassignCategory(source, target)
 
-        val sourceChildren = categoryRepository.findAllByParent_IdAndDeletedAtIsNullAndIsActiveTrueOrderBySortOrderAsc(source.id)
+        val sourceChildren = categoryRepository.findAllByParent_IdAndDeletedAtIsNullOrderBySortOrderAsc(source.id)
         sourceChildren.forEach { child ->
             val matchedTargetChild = categoryRepository.findByParent_IdAndNameIgnoreCaseAndDeletedAtIsNull(target.id, child.name)
             if (matchedTargetChild != null && matchedTargetChild.id != child.id) {
@@ -310,7 +342,7 @@ class CategoryAdminService(
         newParent.isLeaf = false
         newParent.updatedBy = actor
 
-        categoryRepository.findAllByPathStartingWithAndDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc("$oldPath/")
+        categoryRepository.findAllByPathStartingWithAndDeletedAtIsNullOrderByDepthAscSortOrderAsc("$oldPath/")
             .forEach { child ->
                 val suffix = child.path.removePrefix(oldPath)
                 child.path = "${category.path}$suffix"
