@@ -10,5 +10,6 @@ data class UserProfileResponse(
     val role: UserRole,
     val status: UserStatus,
     val point: Long,
-    val hasGeminiApiKey: Boolean
+    val hasGeminiApiKey: Boolean,
+    val hasProfileImage: Boolean
 )

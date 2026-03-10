@@ -1,0 +1,29 @@
+app:
+  jwt:
+    issuer: vlainter-test
+    access-token-exp-seconds: 900
+    refresh-token-exp-seconds: 120
+    access-secret: 12345678901234567890123456789012
+    refresh-secret: abcdefghijklmnopqrstuvwxyz123456
+  cookie:
+    domain: localhost
+    secure: false
+    same-site: Lax
+    access-token-name: vlainter_at
+    refresh-token-name: vlainter_rt
+  security:
+    api-key:
+      encryption-secret: test-api-key-secret
+  portone:
+    base-url: https://api.portone.io
+    api-key: test-portone-api-key
+    api-secret: test-portone-api-secret
+    customer-code: test-customer-code
+  redirect:
+    allowed-origins: http://localhost:5173
+  cors:
+    allowed-origins: http://localhost:5173
+
+spring:
+  mail:
+    host: localhost

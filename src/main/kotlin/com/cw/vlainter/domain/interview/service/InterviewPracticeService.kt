@@ -45,11 +45,10 @@ import com.cw.vlainter.global.security.AuthPrincipal
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-import org.springframework.transaction.support.TransactionSynchronization
-import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException
 import java.security.MessageDigest
 import java.time.OffsetDateTime
@@ -76,30 +75,34 @@ class InterviewPracticeService(
     private val objectMapper: ObjectMapper,
     private val entityManager: EntityManager
 ) {
+    companion object {
+        private const val AI_GENERATED_SET_DESCRIPTION = "카테고리 기반 자동 생성 문답"
+    }
+
     @Transactional
     fun startTechInterview(principal: AuthPrincipal, request: StartTechInterviewRequest): StartTechInterviewResponse {
         val actor = loadUser(principal.userId)
         userGeminiApiKeyService.assertGeminiApiKeyConfigured(actor.id)
         var categoryContext = if (request.setId == null) {
             categoryContextResolver.resolve(
-                actor = actor,
                 categoryId = request.categoryId,
                 jobName = request.jobName,
                 skillName = request.skillName,
-                createIfMissing = true
+                requireIfMissing = false
             )
         } else {
             null
         }
         var candidates = resolveCandidates(principal, request, categoryContext?.category?.id)
         if (candidates.isEmpty() && request.setId == null) {
-            categoryContext = categoryContextResolver.resolve(
-                actor = actor,
-                categoryId = request.categoryId,
-                jobName = request.jobName,
-                skillName = request.skillName,
-                createIfMissing = true
-            ) ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술질문 연습에는 기술 선택이 필요합니다.")
+            categoryContext = categoryContext
+                ?: categoryContextResolver.resolve(
+                    categoryId = request.categoryId,
+                    jobName = request.jobName,
+                    skillName = request.skillName,
+                    requireIfMissing = false
+                )
+                ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술질문 연습에는 기술 선택이 필요합니다.")
             candidates = userGeminiApiKeyService.withUserApiKey(actor.id) {
                 generateCategoryQuestions(actor, request, categoryContext)
             }
@@ -187,8 +190,6 @@ class InterviewPracticeService(
         interviewTurnRepository.save(turn)
         entityManager.flush()
 
-        val evaluation = interviewEvaluationService.evaluateTurnSync(turn.id)
-
         val config = parseSessionConfig(session.configJson)
         val nextRef = if (config.cursor < config.queue.size) config.queue[config.cursor] else null
 
@@ -196,6 +197,9 @@ class InterviewPracticeService(
             session.configJson = toSessionConfigJson(config.queue, config.cursor + 1, config.meta)
             createTurnFromRef(session, turn.turnNo + 1, nextRef)
         } else {
+            session.status = InterviewStatus.FINISHING
+            entityManager.flush()
+            interviewEvaluationService.evaluateOutstandingTurnsSync(session.id)
             session.status = InterviewStatus.DONE
             session.finishedAt = OffsetDateTime.now()
             null
@@ -205,7 +209,6 @@ class InterviewPracticeService(
             sessionId = session.id,
             answeredTurnId = turn.id,
             submittedAnswer = submittedAnswer,
-            evaluation = evaluation,
             nextQuestion = nextTurn?.let { toInterviewQuestionResponse(it) },
             completed = nextTurn == null
         )
@@ -238,10 +241,6 @@ class InterviewPracticeService(
         if (nextRef != null) {
             session.configJson = toSessionConfigJson(config.queue, config.cursor + 1, config.meta)
             val nextTurn = createTurnFromRef(session, turn.turnNo + 1, nextRef)
-            entityManager.flush()
-            runAfterCommit {
-                interviewEvaluationService.evaluateTurnAsync(turn.id)
-            }
 
             return SubmitInterviewAnswerResponse(
                 sessionId = session.id,
@@ -254,7 +253,6 @@ class InterviewPracticeService(
 
         session.status = InterviewStatus.FINISHING
         entityManager.flush()
-        interviewEvaluationService.evaluateTurnSync(turn.id)
         interviewEvaluationService.evaluateOutstandingTurnsSync(session.id)
         session.status = InterviewStatus.DONE
         session.finishedAt = OffsetDateTime.now()
@@ -272,6 +270,9 @@ class InterviewPracticeService(
     fun bookmarkTurn(principal: AuthPrincipal, turnId: Long, request: BookmarkTurnRequest): SavedQuestionResponse {
         val turn = interviewTurnRepository.findByIdAndSession_User_Id(turnId, principal.userId)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "북마크할 질문을 찾을 수 없습니다.")
+        if (turn.question == null && turn.documentQuestion == null) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 수 없는 문항입니다.")
+        }
 
         if (savedQuestionRepository.existsByUser_IdAndSourceTurn_Id(principal.userId, turn.id)) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "이미 저장된 질문입니다.")
@@ -296,6 +297,53 @@ class InterviewPracticeService(
                 note = request.note?.trim()
             )
         )
+        return toSavedQuestionResponse(saved)
+    }
+
+    @Transactional
+    fun saveQuestion(principal: AuthPrincipal, questionId: Long, request: BookmarkTurnRequest): SavedQuestionResponse {
+        val actor = loadUserForUpdate(principal.userId)
+        val question = questionRepository.findByIdAndDeletedAtIsNull(questionId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "저장할 질문을 찾을 수 없습니다.")
+        val accessible = questionSetItemRepository.existsAccessibleByQuestionIdAndUserId(question.id, principal.userId)
+        if (!accessible) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "해당 질문에 접근할 수 없습니다.")
+        }
+
+        val existing = savedQuestionRepository.findTopByUser_IdAndQuestion_IdOrderByCreatedAtDesc(principal.userId, question.id)
+        if (existing != null) {
+            val nextNote = request.note?.trim()
+            if (!nextNote.isNullOrBlank()) {
+                existing.note = nextNote
+            }
+            return toSavedQuestionResponse(existing)
+        }
+
+        val saved = try {
+            savedQuestionRepository.save(
+                SavedQuestion(
+                    user = actor,
+                    question = question,
+                    documentQuestion = null,
+                    sourceTurn = null,
+                    questionTextSnapshot = question.questionText,
+                    categorySnapshot = question.category.name,
+                    jobSnapshot = question.jobName ?: question.category.parent?.name?.trim(),
+                    skillSnapshot = question.skillName ?: question.category.name.trim(),
+                    category = question.category,
+                    difficulty = question.difficulty.name,
+                    sourceTag = when (question.sourceTag) {
+                        QuestionSourceTag.SYSTEM -> TurnSourceTag.SYSTEM.name
+                        QuestionSourceTag.USER -> TurnSourceTag.USER.name
+                    },
+                    tagsJson = question.tagsJson,
+                    note = request.note?.trim()
+                )
+            )
+        } catch (_: DataIntegrityViolationException) {
+            savedQuestionRepository.findTopByUser_IdAndQuestion_IdOrderByCreatedAtDesc(principal.userId, question.id)
+                ?: throw ResponseStatusException(HttpStatus.CONFLICT, "이미 저장된 질문입니다.")
+        }
         return toSavedQuestionResponse(saved)
     }
 
@@ -440,8 +488,15 @@ class InterviewPracticeService(
         )
         if (generated.isEmpty()) return emptyList()
 
-        val setTitle = "AUTO:$jobName/$skillName"
-        val autoSet = questionSetRepository.findLatestByOwnerUserIdAndTitle(owner.id, setTitle)
+        val setTitle = "$jobName / $skillName"
+        val autoSet = questionSetRepository.findFirstByOwnerUser_IdAndOwnerTypeAndVisibilityAndJobNameAndSkillNameAndDescriptionAndDeletedAtIsNullOrderByCreatedAtDesc(
+            userId = owner.id,
+            ownerType = QuestionSetOwnerType.USER,
+            visibility = QuestionSetVisibility.PRIVATE,
+            jobName = jobName,
+            skillName = skillName,
+            description = AI_GENERATED_SET_DESCRIPTION
+        )
             ?: questionSetRepository.save(
                 QaQuestionSet(
                     ownerUser = owner,
@@ -449,7 +504,7 @@ class InterviewPracticeService(
                     title = setTitle,
                     jobName = jobName,
                     skillName = skillName,
-                    description = "카테고리 기반 자동 생성 문답",
+                    description = AI_GENERATED_SET_DESCRIPTION,
                     visibility = QuestionSetVisibility.PRIVATE,
                     status = QuestionSetStatus.ACTIVE
                 )
@@ -524,7 +579,7 @@ class InterviewPracticeService(
     }
 
     private fun toTurnSource(question: QaQuestion): TurnSourceTag {
-        if (questionSetItemRepository.existsInAutoSetByQuestionId(question.id)) {
+        if (questionSetItemRepository.existsInAiGeneratedSetByQuestionId(question.id)) {
             return TurnSourceTag.SYSTEM
         }
         return when (question.sourceTag) {
@@ -568,6 +623,10 @@ class InterviewPracticeService(
                     ragContextJson = question.evidenceJson
                 )
             }
+
+            InterviewQuestionKind.INTRO -> {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "자기소개 문항은 실전 모의면접에서만 사용할 수 있습니다.")
+            }
         }
 
         return interviewTurnRepository.save(turn)
@@ -607,6 +666,13 @@ class InterviewPracticeService(
             bestPractice = null,
             feedback = evaluation?.feedback,
             answerText = saved.sourceTurn?.userAnswer,
+            branchName = saved.category?.parent?.parent?.name?.trim(),
+            jobName = saved.question?.jobName?.trim()
+                ?: saved.category?.parent?.name?.trim()
+                ?: saved.jobSnapshot,
+            skillName = saved.question?.skillName?.trim()
+                ?: saved.category?.name?.trim()
+                ?: saved.skillSnapshot,
             category = saved.categorySnapshot,
             difficulty = saved.difficulty,
             sourceTag = normalizeSavedSourceTag(saved),
@@ -617,7 +683,7 @@ class InterviewPracticeService(
     }
 
     private fun normalizedTurnSourceTag(turn: InterviewTurn): TurnSourceTag {
-        if (turn.sourceTag == TurnSourceTag.USER && turn.question?.id?.let { questionSetItemRepository.existsInAutoSetByQuestionId(it) } == true) {
+        if (turn.sourceTag == TurnSourceTag.USER && turn.question?.id?.let { questionSetItemRepository.existsInAiGeneratedSetByQuestionId(it) } == true) {
             return TurnSourceTag.SYSTEM
         }
         return turn.sourceTag
@@ -626,22 +692,10 @@ class InterviewPracticeService(
     private fun normalizeSavedSourceTag(saved: SavedQuestion): String? {
         val current = saved.sourceTag ?: return null
         if (current != TurnSourceTag.USER.name) return current
-        if (saved.question?.id?.let { questionSetItemRepository.existsInAutoSetByQuestionId(it) } == true) {
+        if (saved.question?.id?.let { questionSetItemRepository.existsInAiGeneratedSetByQuestionId(it) } == true) {
             return TurnSourceTag.SYSTEM.name
         }
         return current
-    }
-
-    private fun runAfterCommit(callback: () -> Unit) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            callback()
-            return
-        }
-        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
-            override fun afterCommit() {
-                callback()
-            }
-        })
     }
 
     private fun fingerprintFor(questionText: String, category: String, difficulty: String): String {
@@ -676,6 +730,9 @@ class InterviewPracticeService(
 
     private fun loadUser(userId: Long) = userRepository.findById(userId)
         .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "사용자 정보를 찾을 수 없습니다.") }
+
+    private fun loadUserForUpdate(userId: Long) = userRepository.findByIdForUpdate(userId)
+        ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "사용자 정보를 찾을 수 없습니다.")
 
     private fun toSessionConfigJson(
         questionRefs: List<QuestionRef>,
