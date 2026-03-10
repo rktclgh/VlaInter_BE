@@ -335,10 +335,6 @@ class DocumentInterviewService(
             resolvedTechCandidates to resolvedDocumentQuestions
         }
 
-        if (generatedQuestions.isEmpty()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "문서 기반 질문 생성에 실패했습니다.")
-        }
-
         val techTarget = if (techCandidates.isNotEmpty()) {
             min(techCandidates.size, max(1, (requestedCount * 0.4).roundToInt()))
         } else {
@@ -349,10 +345,19 @@ class DocumentInterviewService(
             addAll(generatedQuestions.map { InterviewPracticeService.QuestionRef(InterviewQuestionKind.DOCUMENT, it.id) })
             addAll(selectedTech.map { InterviewPracticeService.QuestionRef(InterviewQuestionKind.TECH, it.id) })
         }.shuffled()
+        if (queue.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "면접 질문 생성에 실패했습니다.")
+        }
+
+        val interviewMode = when {
+            generatedQuestions.isNotEmpty() && selectedTech.isNotEmpty() -> InterviewMode.MIXED
+            generatedQuestions.isNotEmpty() -> InterviewMode.DOC
+            else -> InterviewMode.TECH
+        }
         val session = interviewSessionRepository.save(
             InterviewSession(
                 user = actor,
-                mode = if (selectedTech.isEmpty()) InterviewMode.DOC else InterviewMode.MIXED,
+                mode = interviewMode,
                 status = InterviewStatus.IN_PROGRESS,
                 revealPolicy = RevealPolicy.END_ONLY,
                 configJson = objectMapper.writeValueAsString(

@@ -194,8 +194,6 @@ class InterviewPracticeService(
         interviewTurnRepository.save(turn)
         entityManager.flush()
 
-        val evaluation = interviewEvaluationService.evaluateTurnSync(turn.id)
-
         val config = parseSessionConfig(session.configJson)
         val nextRef = if (config.cursor < config.queue.size) config.queue[config.cursor] else null
 
@@ -203,6 +201,9 @@ class InterviewPracticeService(
             session.configJson = toSessionConfigJson(config.queue, config.cursor + 1, config.meta)
             createTurnFromRef(session, turn.turnNo + 1, nextRef)
         } else {
+            session.status = InterviewStatus.FINISHING
+            entityManager.flush()
+            interviewEvaluationService.evaluateOutstandingTurnsSync(session.id)
             session.status = InterviewStatus.DONE
             session.finishedAt = OffsetDateTime.now()
             null
@@ -212,7 +213,6 @@ class InterviewPracticeService(
             sessionId = session.id,
             answeredTurnId = turn.id,
             submittedAnswer = submittedAnswer,
-            evaluation = evaluation,
             nextQuestion = nextTurn?.let { toInterviewQuestionResponse(it) },
             completed = nextTurn == null
         )
@@ -245,10 +245,6 @@ class InterviewPracticeService(
         if (nextRef != null) {
             session.configJson = toSessionConfigJson(config.queue, config.cursor + 1, config.meta)
             val nextTurn = createTurnFromRef(session, turn.turnNo + 1, nextRef)
-            entityManager.flush()
-            runAfterCommit {
-                interviewEvaluationService.evaluateTurnAsync(turn.id)
-            }
 
             return SubmitInterviewAnswerResponse(
                 sessionId = session.id,
@@ -261,7 +257,6 @@ class InterviewPracticeService(
 
         session.status = InterviewStatus.FINISHING
         entityManager.flush()
-        interviewEvaluationService.evaluateTurnSync(turn.id)
         interviewEvaluationService.evaluateOutstandingTurnsSync(session.id)
         session.status = InterviewStatus.DONE
         session.finishedAt = OffsetDateTime.now()

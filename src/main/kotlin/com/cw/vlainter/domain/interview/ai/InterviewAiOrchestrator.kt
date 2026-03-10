@@ -626,20 +626,21 @@ class InterviewAiOrchestrator(
         }
     }
 
-    private fun isUsableDocumentQuestion(questionText: String, fileTypeLabel: String): Boolean {
-        if (questionText.length < 18) return false
+    private fun isUsableDocumentQuestion(questionText: String, @Suppress("UNUSED_PARAMETER") fileTypeLabel: String): Boolean {
+        if (questionText.isBlank()) return false
         if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED)\\b").containsMatchIn(questionText)) return false
         val lowered = questionText.lowercase()
-        val banned = listOf("어떤 기술에도", "일반적으로", "상식적으로", "포괄적으로")
+        val banned = listOf(
+            "어떤 기술에도",
+            "일반적으로",
+            "일반적인",
+            "상식적으로",
+            "포괄적으로",
+            "보편적으로",
+            "전반적으로"
+        )
         if (banned.any { lowered.contains(it) }) return false
-
-        val contextKeywords = when (fileTypeLabel.trim().uppercase()) {
-            "RESUME", "이력서" -> listOf("경험", "프로젝트", "역할", "성과", "업무")
-            "PORTFOLIO", "포트폴리오" -> listOf("프로젝트", "구현", "아키텍처", "문제", "개선")
-            "INTRODUCE", "자기소개서" -> listOf("동기", "경험", "배운", "가치", "강점")
-            else -> listOf("경험", "프로젝트", "문서", "근거")
-        }
-        return contextKeywords.any { lowered.contains(it) }
+        return true
     }
 
     private fun isDocumentAnswerLinkedToQuestion(answer: String, questionText: String): Boolean {
