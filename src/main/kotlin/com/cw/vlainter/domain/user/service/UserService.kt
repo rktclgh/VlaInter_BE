@@ -12,6 +12,7 @@ import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.domain.userFile.entity.FileType
 import com.cw.vlainter.domain.userFile.repository.UserFileRepository
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.cw.vlainter.global.security.LoginSessionStore
@@ -24,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException
+import org.slf4j.LoggerFactory
 
 @Service
 class UserService(
@@ -33,6 +35,7 @@ class UserService(
     private val loginSessionStore: LoginSessionStore,
     private val userGeminiApiKeyService: UserGeminiApiKeyService
 ) {
+    private val logger = LoggerFactory.getLogger(javaClass)
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
 
     @Transactional
@@ -141,8 +144,7 @@ class UserService(
         }
 
         if (request.status != null) {
-            member.status = request.status
-            changed = true
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "회원 상태 변경은 전용 비활성화/활성화 API를 사용해 주세요.")
         }
 
         if (request.role != null) {
@@ -159,6 +161,45 @@ class UserService(
     }
 
     @Transactional
+    fun blockMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
+        val adminUser = authorizeAdmin(adminPrincipal)
+        if (adminUser.id == targetUserId) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 비활성화할 수 없습니다.")
+        }
+
+        val targetUser = findUserOrNotFound(targetUserId)
+        if (targetUser.status == UserStatus.DELETED) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "이미 삭제 처리된 회원입니다.")
+        }
+
+        targetUser.status = UserStatus.BLOCKED
+        userRepository.save(targetUser)
+        runAfterCommit {
+            try {
+                loginSessionStore.deleteAllByUserId(targetUser.id)
+            } catch (ex: Exception) {
+                logger.error("차단 회원 세션 정리에 실패했습니다. userId={}", targetUser.id, ex)
+            }
+        }
+    }
+
+    @Transactional
+    fun activateMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
+        val adminUser = authorizeAdmin(adminPrincipal)
+        if (adminUser.id == targetUserId) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 활성화 처리 대상이 아닙니다.")
+        }
+
+        val targetUser = findUserOrNotFound(targetUserId)
+        if (targetUser.status == UserStatus.DELETED) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "소프트 삭제된 회원은 활성화할 수 없습니다.")
+        }
+
+        targetUser.status = UserStatus.ACTIVE
+        userRepository.save(targetUser)
+    }
+
+    @Transactional
     fun softDeleteMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
         val adminUser = authorizeAdmin(adminPrincipal)
         if (adminUser.id == targetUserId) {
@@ -171,7 +212,11 @@ class UserService(
         targetUser.name = "Deleted User ${targetUser.id}"
         userRepository.save(targetUser)
         runAfterCommit {
-            loginSessionStore.deleteAllByUserId(targetUser.id)
+            try {
+                loginSessionStore.deleteAllByUserId(targetUser.id)
+            } catch (ex: Exception) {
+                logger.error("소프트 삭제 회원 세션 정리에 실패했습니다. userId={}", targetUser.id, ex)
+            }
         }
     }
 
@@ -270,9 +315,14 @@ class UserService(
             userId = user.id,
             email = user.email,
             name = user.name,
+            role = user.role,
             status = user.status,
             point = user.point,
-            hasGeminiApiKey = userGeminiApiKeyService.hasGeminiApiKey(user)
+            hasGeminiApiKey = userGeminiApiKeyService.hasGeminiApiKey(user),
+            hasProfileImage = userFileRepository.findTopByUser_IdAndFileTypeAndIsActiveTrueAndDeletedAtIsNullOrderByCreatedAtDesc(
+                user.id,
+                FileType.PROFILE_IMAGE
+            ) != null
         )
     }
 

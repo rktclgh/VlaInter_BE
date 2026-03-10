@@ -136,7 +136,7 @@ class AuthServiceTests {
         given(userRepository.findByEmail(blockedUser.email)).willReturn(Optional.of(blockedUser))
         given(passwordEncoder.matches(request.password, blockedUser.password)).willReturn(true)
 
-        assertUnauthorized { authService().login(request) }
+        assertForbidden { authService().login(request) }
         verifyNoInteractions(jwtTokenProvider, loginSessionStore, redirectUriValidator)
     }
 
@@ -206,7 +206,7 @@ class AuthServiceTests {
         given(loginSessionStore.validateRefreshToken("sid-1", blockedUser.id, refreshToken)).willReturn(true)
         given(userRepository.findById(blockedUser.id)).willReturn(Optional.of(blockedUser))
 
-        assertUnauthorized { authService().refresh(refreshToken) }
+        assertForbidden { authService().refresh(refreshToken) }
         then(loginSessionStore).should().validateRefreshToken("sid-1", blockedUser.id, refreshToken)
         then(loginSessionStore).shouldHaveNoMoreInteractions()
     }
@@ -262,6 +262,11 @@ class AuthServiceTests {
     private fun assertUnauthorized(block: () -> Unit) {
         val exception = assertThrows<ResponseStatusException> { block() }
         assertThat(exception.statusCode).isEqualTo(HttpStatus.UNAUTHORIZED)
+    }
+
+    private fun assertForbidden(block: () -> Unit) {
+        val exception = assertThrows<ResponseStatusException> { block() }
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.FORBIDDEN)
     }
 
     private fun createUser(

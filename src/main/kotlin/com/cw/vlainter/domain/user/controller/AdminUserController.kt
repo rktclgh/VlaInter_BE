@@ -61,8 +61,26 @@ class AdminUserController(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @PathVariable memberId: Long
     ): ResponseEntity<Map<String, String>> {
+        userService.blockMemberByAdmin(principal, memberId)
+        return ResponseEntity.ok(mapOf("message" to "회원 계정이 비활성화되어 로그인이 차단되었습니다."))
+    }
+
+    @PatchMapping("/{memberId}/activate")
+    fun activateMember(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable memberId: Long
+    ): ResponseEntity<Map<String, String>> {
+        userService.activateMemberByAdmin(principal, memberId)
+        return ResponseEntity.ok(mapOf("message" to "회원 계정이 활성화되었습니다."))
+    }
+
+    @PatchMapping("/{memberId}/soft-delete")
+    fun softDeleteMember(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable memberId: Long
+    ): ResponseEntity<Map<String, String>> {
         userService.softDeleteMemberByAdmin(principal, memberId)
-        return ResponseEntity.ok(mapOf("message" to "회원 계정이 비활성화 처리되었습니다."))
+        return ResponseEntity.ok(mapOf("message" to "회원 계정이 소프트 삭제 처리되었습니다."))
     }
 
     @DeleteMapping("/{memberId}/hard")

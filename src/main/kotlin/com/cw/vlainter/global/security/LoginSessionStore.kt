@@ -1,6 +1,7 @@
 package com.cw.vlainter.global.security
 
 import com.cw.vlainter.global.config.properties.JwtProperties
+import org.slf4j.LoggerFactory
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Component
 import java.nio.charset.StandardCharsets
@@ -23,6 +24,8 @@ class LoginSessionStore(
     private val redisTemplate: StringRedisTemplate,
     private val jwtProperties: JwtProperties
 ) {
+    private val logger = LoggerFactory.getLogger(javaClass)
+
     /**
      * 새 로그인 세션 생성.
      */
@@ -76,16 +79,20 @@ class LoginSessionStore(
     }
 
     fun deleteAllByUserId(userId: Long) {
-        val sessionKeys = redisTemplate.keys("auth:session:*")
-        if (sessionKeys.isEmpty()) return
+        try {
+            val sessionKeys = redisTemplate.keys("auth:session:*")
+            if (sessionKeys.isEmpty()) return
 
-        sessionKeys.forEach { sessionKey ->
-            val storedUserId = redisTemplate.opsForHash<String, String>()
-                .get(sessionKey, "userId")
-                ?.toLongOrNull()
-            if (storedUserId == userId) {
-                redisTemplate.delete(sessionKey)
+            sessionKeys.forEach { sessionKey ->
+                val storedUserId = redisTemplate.opsForHash<String, String>()
+                    .get(sessionKey, "userId")
+                    ?.toLongOrNull()
+                if (storedUserId == userId) {
+                    redisTemplate.delete(sessionKey)
+                }
             }
+        } catch (ex: Exception) {
+            logger.error("회원 전체 세션 삭제에 실패했습니다. userId={}", userId, ex)
         }
     }
 

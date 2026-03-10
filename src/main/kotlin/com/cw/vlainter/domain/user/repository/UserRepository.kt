@@ -1,8 +1,12 @@
 package com.cw.vlainter.domain.user.repository
 
 import com.cw.vlainter.domain.user.entity.User
+import com.cw.vlainter.domain.user.entity.UserRole
+import com.cw.vlainter.domain.user.entity.UserStatus
+import jakarta.persistence.LockModeType
 import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Lock
 import org.springframework.data.jpa.repository.Query
 import org.springframework.data.repository.query.Param
 import java.util.Optional
@@ -15,6 +19,10 @@ interface UserRepository : JpaRepository<User, Long> {
      * 이메일(로그인 ID) 기준 사용자 조회.
      */
     fun findByEmail(email: String): Optional<User>
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select u from User u where u.id = :userId")
+    fun findByIdForUpdate(@Param("userId") userId: Long): User?
 
     /**
      * 결제 확정 등으로 포인트를 적립한다. delta는 0보다 커야 한다.
@@ -29,4 +37,19 @@ interface UserRepository : JpaRepository<User, Long> {
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("update User u set u.point = u.point + :delta where u.id = :userId and (u.point + :delta) >= 0")
     fun addPointIfNotNegative(@Param("userId") userId: Long, @Param("delta") delta: Long): Int
+
+    @Query(
+        """
+        select u
+        from User u
+        where u.role = :role
+          and u.status <> :excludedStatus
+          and trim(u.email) <> ''
+        order by u.id asc
+        """
+    )
+    fun findReportRecipients(
+        @Param("role") role: UserRole = UserRole.ADMIN,
+        @Param("excludedStatus") excludedStatus: UserStatus = UserStatus.DELETED
+    ): List<User>
 }

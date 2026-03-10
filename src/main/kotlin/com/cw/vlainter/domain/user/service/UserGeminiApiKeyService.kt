@@ -5,6 +5,7 @@ import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.AuthPrincipal
+import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -16,6 +17,8 @@ class UserGeminiApiKeyService(
     private val apiKeyEncryptor: ApiKeyEncryptor,
     private val apiKeyContextHolder: GeminiApiKeyContextHolder
 ) {
+    private val logger = LoggerFactory.getLogger(javaClass)
+
     @Transactional
     fun updateMyGeminiApiKey(principal: AuthPrincipal, rawApiKey: String): User {
         val user = loadActiveUser(principal.userId)
@@ -53,7 +56,15 @@ class UserGeminiApiKeyService(
                 "Gemini API 키가 등록되지 않았습니다. 마이페이지에서 API 키를 입력해 주세요."
             )
         }
-        return apiKeyEncryptor.decrypt(encrypted)
+        return try {
+            apiKeyEncryptor.decrypt(encrypted)
+        } catch (ex: IllegalArgumentException) {
+            logger.warn("Gemini API 키 복호화 실패 userId={} reason={}", userId, ex.message)
+            throw ResponseStatusException(
+                HttpStatus.PRECONDITION_REQUIRED,
+                "저장된 Gemini API 키를 확인할 수 없습니다. 마이페이지에서 API 키를 다시 입력해 주세요."
+            )
+        }
     }
 
     private fun loadActiveUser(userId: Long): User {

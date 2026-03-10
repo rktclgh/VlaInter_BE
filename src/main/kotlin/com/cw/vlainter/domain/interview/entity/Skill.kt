@@ -2,6 +2,7 @@
 
 package com.cw.vlainter.domain.interview.entity
 
+import com.cw.vlainter.domain.user.entity.User
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.FetchType
@@ -40,6 +41,14 @@ class Skill(
 
     @Column(name = "slug", length = 140)
     var slug: String? = null,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "created_by")
+    var createdBy: User? = null,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "updated_by")
+    var updatedBy: User? = null,
 
     @Column(name = "created_at", nullable = false)
     var createdAt: OffsetDateTime? = null,

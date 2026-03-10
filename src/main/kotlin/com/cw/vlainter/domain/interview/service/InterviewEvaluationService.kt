@@ -15,7 +15,6 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.dao.DataIntegrityViolationException
-import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -37,17 +36,13 @@ class InterviewEvaluationService(
     private val objectMapper: ObjectMapper,
     private val selfProvider: ObjectProvider<InterviewEvaluationService>
 ) {
+    companion object {
+        const val INTRO_CATEGORY = INTERVIEW_INTRO_CATEGORY
+        const val INTRO_QUESTION_TEXT = INTERVIEW_INTRO_QUESTION_TEXT
+    }
+
     private val logger = LoggerFactory.getLogger(javaClass)
     private val turnLocks = ConcurrentHashMap<Long, ReentrantLock>()
-
-    @Async
-    fun evaluateTurnAsync(turnId: Long) {
-        runCatching { selfProvider.getObject().evaluateTurnSync(turnId) }
-            .onFailure { ex ->
-                logger.warn("async turn evaluation failed turnId={} reason={}", turnId, ex.message)
-                selfProvider.getObject().markFailed(turnId)
-            }
-    }
 
     @Transactional
     fun evaluateTurnSync(turnId: Long): TurnEvaluationResponse? {
@@ -139,12 +134,6 @@ class InterviewEvaluationService(
             .forEach { selfProvider.getObject().evaluateTurnSync(it.id) }
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun markFailed(turnId: Long) {
-        val turn = interviewTurnRepository.findById(turnId).orElse(null) ?: return
-        turn.evaluationStatus = TurnEvaluationStatus.FAILED
-    }
-
     private fun buildEvaluation(turn: InterviewTurn, answer: String): EvaluationResult {
         val userGeneratedQuestion = turn.sourceTag == TurnSourceTag.USER
         val resolvedAnswer = resolveAnswerContent(
@@ -168,7 +157,9 @@ class InterviewEvaluationService(
 
         val question = turn.question
         val documentQuestion = turn.documentQuestion
-        val aiEvaluation = if (question != null) {
+        val aiEvaluation = if (isIntroductionTurn(turn)) {
+            interviewAiOrchestrator.evaluateIntroductionAnswer(answer)
+        } else if (question != null) {
             interviewAiOrchestrator.evaluateTechAnswer(question, answer)
         } else if (documentQuestion != null) {
             interviewAiOrchestrator.evaluateDocumentAnswer(
@@ -249,6 +240,13 @@ class InterviewEvaluationService(
         if (raw.isNullOrBlank()) return emptyList()
         return runCatching { objectMapper.readValue(raw, Array<String>::class.java).toList() }
             .getOrDefault(emptyList())
+    }
+
+    private fun isIntroductionTurn(turn: InterviewTurn): Boolean {
+        return turn.question == null &&
+            turn.documentQuestion == null &&
+            turn.categorySnapshot == INTRO_CATEGORY &&
+            turn.questionTextSnapshot == INTRO_QUESTION_TEXT
     }
 
     private fun InterviewTurnEvaluation.toResponse(): TurnEvaluationResponse {
