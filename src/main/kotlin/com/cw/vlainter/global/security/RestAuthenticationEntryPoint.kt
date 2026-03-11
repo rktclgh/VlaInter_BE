@@ -22,7 +22,7 @@ class RestAuthenticationEntryPoint(
         val requestPath = resolveRequestPath(request)
         val isApiPath = requestPath == "/api" || requestPath.startsWith("/api/")
         if (!isApiPath) {
-            response.sendRedirect("${request.contextPath}/errors/403")
+            redirectToForbiddenPage(request, response)
             return
         }
 
@@ -46,5 +46,13 @@ class RestAuthenticationEntryPoint(
         } else {
             requestUri
         }
+    }
+
+    private fun redirectToForbiddenPage(
+        request: HttpServletRequest,
+        response: HttpServletResponse
+    ) {
+        response.status = HttpStatus.SEE_OTHER.value()
+        response.setHeader("Location", "${request.contextPath}/errors/403")
     }
 }

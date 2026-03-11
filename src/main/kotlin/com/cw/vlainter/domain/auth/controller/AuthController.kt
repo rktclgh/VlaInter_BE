@@ -120,6 +120,7 @@ class AuthController(
         )
 
         try {
+            invalidateExistingSession(servletRequest, response)
             val result = authService.login(request)
             addAuthCookies(response, result.accessToken, result.refreshToken)
             logger.info("Auth login success userId={} email={} ip={}", result.userId, result.email, clientIp)
@@ -161,6 +162,7 @@ class AuthController(
         )
 
         try {
+            invalidateExistingSession(servletRequest, response)
             val result = kakaoAuthService.loginOrSignupWithKakao(
                 code = request.code,
                 redirectUri = request.redirectUri,
@@ -225,8 +227,9 @@ class AuthController(
         request: HttpServletRequest,
         response: HttpServletResponse
     ): ResponseEntity<Map<String, String>> {
+        val accessToken = authCookieManager.extractAccessToken(request)
         val refreshToken = authCookieManager.extractRefreshToken(request)
-        authService.logout(refreshToken)
+        authService.logoutByTokens(accessToken, refreshToken)
 
         response.addHeader(HttpHeaders.SET_COOKIE, authCookieManager.clearAccessTokenCookie().toString())
         response.addHeader(HttpHeaders.SET_COOKIE, authCookieManager.clearRefreshTokenCookie().toString())
@@ -242,5 +245,15 @@ class AuthController(
     private fun addAuthCookies(response: HttpServletResponse, accessToken: String, refreshToken: String) {
         response.addHeader(HttpHeaders.SET_COOKIE, authCookieManager.createAccessTokenCookie(accessToken).toString())
         response.addHeader(HttpHeaders.SET_COOKIE, authCookieManager.createRefreshTokenCookie(refreshToken).toString())
+    }
+
+    private fun invalidateExistingSession(request: HttpServletRequest, response: HttpServletResponse) {
+        val existingAccessToken = authCookieManager.extractAccessToken(request)
+        val existingRefreshToken = authCookieManager.extractRefreshToken(request)
+        if (!existingAccessToken.isNullOrBlank() || !existingRefreshToken.isNullOrBlank()) {
+            authService.logoutByTokens(existingAccessToken, existingRefreshToken)
+        }
+        response.addHeader(HttpHeaders.SET_COOKIE, authCookieManager.clearAccessTokenCookie().toString())
+        response.addHeader(HttpHeaders.SET_COOKIE, authCookieManager.clearRefreshTokenCookie().toString())
     }
 }
