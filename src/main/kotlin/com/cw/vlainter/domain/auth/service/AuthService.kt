@@ -175,8 +175,7 @@ class AuthService(
         val sessionId = jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)
         val validSession = loginSessionStore.validateRefreshToken(sessionId, userId, refreshToken)
         if (!validSession) {
-            loginSessionStore.delete(sessionId)
-            throw unauthorizedException()
+            throw refreshUnauthorizedException()
         }
 
         val user = userRepository.findById(userId).orElseThrow { unauthorizedException() }
@@ -245,6 +244,10 @@ class AuthService(
      */
     private fun unauthorizedException(): ResponseStatusException {
         return ResponseStatusException(HttpStatus.UNAUTHORIZED, "이메일 또는 비밀번호가 올바르지 않습니다.")
+    }
+
+    private fun refreshUnauthorizedException(): ResponseStatusException {
+        return ResponseStatusException(HttpStatus.UNAUTHORIZED, "인증이 만료되었습니다. 다시 로그인해 주세요.")
     }
 
     private fun resolveSocialName(nameHint: String?, email: String): String {
