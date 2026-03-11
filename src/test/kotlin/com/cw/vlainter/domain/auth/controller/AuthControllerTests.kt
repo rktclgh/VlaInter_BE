@@ -17,6 +17,7 @@ import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.BDDMockito.given
 import org.mockito.BDDMockito.then
 import org.mockito.Mock
+import org.mockito.Mockito.timeout
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.junit.jupiter.MockitoExtension
 import org.springframework.http.HttpHeaders
@@ -105,6 +106,14 @@ class AuthControllerTests {
         then(authService).should().login(request)
         then(authCookieManager).should().createAccessTokenCookie("access-token")
         then(authCookieManager).should().createRefreshTokenCookie("refresh-token")
+        then(authAccessAuditService).should(timeout(1000)).recordLogin(
+            loginResult.sessionId,
+            loginResult.userId,
+            loginResult.email,
+            loginResult.authProvider,
+            "127.0.0.1",
+            null
+        )
     }
 
     @Test
@@ -133,6 +142,6 @@ class AuthControllerTests {
             .andExpect(status().isUnauthorized)
 
         then(authService).should().login(request)
-        verifyNoInteractions(authCookieManager)
+        verifyNoInteractions(authCookieManager, authAccessAuditService)
     }
 }

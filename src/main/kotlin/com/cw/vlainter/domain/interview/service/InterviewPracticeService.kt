@@ -953,7 +953,8 @@ class InterviewPracticeService(
                 ?: turns.firstOrNull()?.categorySnapshot,
             jobName = meta?.get("jobName")?.asText()?.takeIf { it.isNotBlank() },
             selectedDocuments = parsed.selectedDocuments,
-            questionSetId = meta?.get("questionSetId")?.takeIf { it.canConvertToLong() }?.asLong(),
+            questionSetId = meta?.get("questionSetId")?.takeIf { it.canConvertToLong() }?.asLong()
+                ?: session.questionSet?.id,
             includeSelfIntroduction = meta?.get("includeSelfIntroduction")?.asBoolean() == true,
             providerUsed = meta?.get("providerUsed")?.asText()?.takeIf { it.isNotBlank() },
             fallbackDepth = meta?.get("fallbackDepth")?.asInt() ?: 0

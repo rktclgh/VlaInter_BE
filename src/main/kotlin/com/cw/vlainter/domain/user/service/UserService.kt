@@ -28,10 +28,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-import org.springframework.transaction.support.TransactionSynchronization
-import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException
-import org.slf4j.LoggerFactory
 
 @Service
 class UserService(
@@ -42,7 +39,6 @@ class UserService(
     private val userGeminiApiKeyService: UserGeminiApiKeyService,
     private val authAccessAuditService: AuthAccessAuditService
 ) {
-    private val logger = LoggerFactory.getLogger(javaClass)
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
 
     @Transactional
@@ -103,9 +99,7 @@ class UserService(
 
         markUserSoftDeleted(user)
         userRepository.save(user)
-        runAfterCommit {
-            loginSessionStore.deleteAllByUserId(user.id)
-        }
+        loginSessionStore.deleteAllByUserId(user.id)
     }
 
     @Transactional(readOnly = true)
@@ -129,19 +123,40 @@ class UserService(
     @Transactional
     fun getMemberByAdmin(
         adminPrincipal: AuthPrincipal,
-        memberId: Long,
-        refreshAccess: Boolean = false
+        memberId: Long
     ): AdminMemberDetailResponse {
         authorizeAdmin(adminPrincipal)
         val member = findUserOrNotFound(memberId)
-        return toAdminMemberDetailResponse(member, refreshAccess)
+        return toAdminMemberDetailResponse(member, false)
     }
 
     @Transactional
     fun getGlobalAccessSummaryByAdmin(
         adminPrincipal: AuthPrincipal,
+        windowDays: Int
+    ): AdminMemberAccessGlobalSummaryResponse {
+        return buildGlobalAccessSummaryByAdmin(adminPrincipal, windowDays, false)
+    }
+
+    @Transactional
+    fun refreshGlobalAccessSummaryByAdmin(
+        adminPrincipal: AuthPrincipal,
+        windowDays: Int
+    ): AdminMemberAccessGlobalSummaryResponse {
+        return buildGlobalAccessSummaryByAdmin(adminPrincipal, windowDays, true)
+    }
+
+    @Transactional
+    fun refreshMemberAccessByAdmin(adminPrincipal: AuthPrincipal, memberId: Long): AdminMemberDetailResponse {
+        authorizeAdmin(adminPrincipal)
+        val member = findUserOrNotFound(memberId)
+        return toAdminMemberDetailResponse(member, true)
+    }
+
+    private fun buildGlobalAccessSummaryByAdmin(
+        adminPrincipal: AuthPrincipal,
         windowDays: Int,
-        refresh: Boolean = false
+        refresh: Boolean
     ): AdminMemberAccessGlobalSummaryResponse {
         authorizeAdmin(adminPrincipal)
         val normalizedWindowDays = when (windowDays) {
@@ -223,13 +238,7 @@ class UserService(
 
         targetUser.status = UserStatus.BLOCKED
         userRepository.save(targetUser)
-        runAfterCommit {
-            try {
-                loginSessionStore.deleteAllByUserId(targetUser.id)
-            } catch (ex: Exception) {
-                logger.error("차단 회원 세션 정리에 실패했습니다. userId={}", targetUser.id, ex)
-            }
-        }
+        loginSessionStore.deleteAllByUserId(targetUser.id)
     }
 
     @Transactional
@@ -258,13 +267,7 @@ class UserService(
         val targetUser = findUserOrNotFound(targetUserId)
         markUserSoftDeleted(targetUser)
         userRepository.save(targetUser)
-        runAfterCommit {
-            try {
-                loginSessionStore.deleteAllByUserId(targetUser.id)
-            } catch (ex: Exception) {
-                logger.error("소프트 삭제 회원 세션 정리에 실패했습니다. userId={}", targetUser.id, ex)
-            }
-        }
+        loginSessionStore.deleteAllByUserId(targetUser.id)
     }
 
     @Transactional
@@ -307,13 +310,7 @@ class UserService(
         val targetUser = findUserOrNotFound(targetUserId)
         userFileRepository.deleteAllByUser_Id(targetUser.id)
         userRepository.delete(targetUser)
-        runAfterCommit {
-            try {
-                loginSessionStore.deleteAllByUserId(targetUser.id)
-            } catch (ex: Exception) {
-                logger.error("하드 삭제 회원 세션 정리에 실패했습니다. userId={}", targetUser.id, ex)
-            }
-        }
+        loginSessionStore.deleteAllByUserId(targetUser.id)
     }
 
     @Transactional(readOnly = true)
@@ -362,18 +359,6 @@ class UserService(
         if (size !in 1..100) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "size는 1 이상 100 이하여야 합니다.")
         }
-    }
-
-    private fun runAfterCommit(action: () -> Unit) {
-        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
-            action()
-            return
-        }
-        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
-            override fun afterCommit() {
-                action()
-            }
-        })
     }
 
     private fun findUserOrNotFound(userId: Long): User {

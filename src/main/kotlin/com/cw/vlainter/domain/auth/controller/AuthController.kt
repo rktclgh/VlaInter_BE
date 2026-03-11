@@ -7,6 +7,7 @@ import com.cw.vlainter.domain.auth.dto.SignupRequest
 import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
 import com.cw.vlainter.domain.auth.service.AuthService
 import com.cw.vlainter.domain.auth.service.KakaoAuthService
+import com.cw.vlainter.domain.auth.service.LoginResult
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.cw.vlainter.global.security.AuthCookieManager
 import jakarta.servlet.http.HttpServletRequest
@@ -23,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
 import java.util.LinkedHashMap
+import java.util.concurrent.CompletableFuture
 
 /**
  * 인증 관련 HTTP API를 제공한다.
@@ -125,14 +127,7 @@ class AuthController(
             val result = authService.login(request)
             invalidateExistingSession(servletRequest, response)
             addAuthCookies(response, result.accessToken, result.refreshToken)
-            authAccessAuditService.recordLogin(
-                sessionId = result.sessionId,
-                userId = result.userId,
-                email = result.email,
-                authProvider = result.authProvider,
-                ipAddress = clientIp,
-                userAgent = servletRequest.getHeader("User-Agent")
-            )
+            recordLoginAuditAsync(result, clientIp, servletRequest.getHeader("User-Agent"))
             logger.info("Auth login success userId={} email={} ip={}", result.userId, result.email, clientIp)
 
             return ResponseEntity.ok(
@@ -179,14 +174,7 @@ class AuthController(
             )
             invalidateExistingSession(servletRequest, response)
             addAuthCookies(response, result.accessToken, result.refreshToken)
-            authAccessAuditService.recordLogin(
-                sessionId = result.sessionId,
-                userId = result.userId,
-                email = result.email,
-                authProvider = result.authProvider,
-                ipAddress = clientIp,
-                userAgent = servletRequest.getHeader("User-Agent")
-            )
+            recordLoginAuditAsync(result, clientIp, servletRequest.getHeader("User-Agent"))
             logger.info("Auth kakao login success userId={} email={} ip={}", result.userId, result.email, clientIp)
 
             return ResponseEntity.ok(
@@ -215,6 +203,23 @@ class AuthController(
             return forwarded.split(",").first().trim()
         }
         return request.remoteAddr ?: "unknown"
+    }
+
+    private fun recordLoginAuditAsync(result: LoginResult, clientIp: String, userAgent: String?) {
+        CompletableFuture.runAsync {
+            try {
+                authAccessAuditService.recordLogin(
+                    sessionId = result.sessionId,
+                    userId = result.userId,
+                    email = result.email,
+                    authProvider = result.authProvider,
+                    ipAddress = clientIp,
+                    userAgent = userAgent
+                )
+            } catch (ex: Exception) {
+                logger.warn("로그인 접속 감사 로그 기록에 실패했습니다. userId={} sidPrefix={}", result.userId, result.sessionId.take(8), ex)
+            }
+        }
     }
 
     /**

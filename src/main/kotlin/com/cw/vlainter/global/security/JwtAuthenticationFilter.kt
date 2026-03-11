@@ -5,6 +5,7 @@ import com.cw.vlainter.domain.user.entity.UserRole
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
+import org.slf4j.LoggerFactory
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
 import org.springframework.security.core.authority.SimpleGrantedAuthority
 import org.springframework.security.core.context.SecurityContextHolder
@@ -26,6 +27,8 @@ class JwtAuthenticationFilter(
     private val loginSessionStore: LoginSessionStore,
     private val authAccessAuditService: AuthAccessAuditService
 ) : OncePerRequestFilter() {
+    private val auditLogger = LoggerFactory.getLogger(JwtAuthenticationFilter::class.java)
+
     /**
      * 인증이 필요한 요청에 대해 SecurityContext를 채운다.
      */
@@ -63,8 +66,21 @@ class JwtAuthenticationFilter(
         try {
             filterChain.doFilter(request, response)
         } finally {
-            if (request.requestURI.startsWith("/api/") && !request.requestURI.startsWith("/api/auth/")) {
-                authAccessAuditService.touchActivity(principal.sessionId, request.method)
+            if (
+                principal.sessionId.isNotBlank() &&
+                request.requestURI.startsWith("/api/") &&
+                !request.requestURI.startsWith("/api/auth/")
+            ) {
+                try {
+                    authAccessAuditService.touchActivity(principal.sessionId, request.method)
+                } catch (_: Exception) {
+                    auditLogger.warn(
+                        "접속 감사 로그 갱신에 실패했습니다. sidPrefix={} method={} path={}",
+                        principal.sessionId.take(8),
+                        request.method,
+                        request.requestURI
+                    )
+                }
             }
         }
     }

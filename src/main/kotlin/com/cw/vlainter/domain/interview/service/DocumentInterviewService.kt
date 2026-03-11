@@ -700,7 +700,8 @@ class DocumentInterviewService(
             categoryName = meta?.get("categoryName")?.asText()?.takeIf { it.isNotBlank() },
             jobName = meta?.get("jobName")?.asText()?.takeIf { it.isNotBlank() },
             selectedDocuments = selectedDocuments,
-            questionSetId = meta?.get("questionSetId")?.takeIf { it.canConvertToLong() }?.asLong(),
+            questionSetId = meta?.get("questionSetId")?.takeIf { it.canConvertToLong() }?.asLong()
+                ?: latestSession.questionSet?.id,
             includeSelfIntroduction = meta?.get("includeSelfIntroduction")?.asBoolean() == true,
             providerUsed = meta?.get("providerUsed")?.asText()?.takeIf { it.isNotBlank() },
             fallbackDepth = meta?.get("fallbackDepth")?.asInt() ?: 0
@@ -711,8 +712,8 @@ class DocumentInterviewService(
     fun dismissMockSession(principal: AuthPrincipal, sessionId: Long) {
         val session = interviewSessionRepository.findByIdAndUser_Id(sessionId, principal.userId)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "면접 세션을 찾을 수 없습니다.")
-        if (session.mode == InterviewMode.QUESTION_SET_PRACTICE) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 세트 연습 세션은 이 경로에서 종료할 수 없습니다.")
+        if (session.mode != InterviewMode.DOC && session.mode != InterviewMode.MIXED) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "실전 모의면접 세션만 이 경로에서 종료할 수 있습니다.")
         }
         if (session.status != InterviewStatus.IN_PROGRESS) return
         session.status = InterviewStatus.DONE

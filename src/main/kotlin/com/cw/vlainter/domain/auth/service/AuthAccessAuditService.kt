@@ -127,8 +127,10 @@ class AuthAccessAuditService(
 
     @Transactional
     fun touchActivity(sessionId: String, method: String) {
+        val now = OffsetDateTime.now()
+        sessionLogRepository.updateLastActivity(sessionId, now)
         if (method.uppercase() !in MUTATING_METHODS) return
-        sessionLogRepository.incrementAction(sessionId, OffsetDateTime.now())
+        sessionLogRepository.incrementAction(sessionId, now)
     }
 
     @Transactional
@@ -151,6 +153,7 @@ class AuthAccessAuditService(
 
     @Transactional
     fun getSummaryForUser(userId: Long, days: Int = 7, forceRefresh: Boolean = false): AuthAccessAuditSummary {
+        require(days >= 1) { "days must be greater than or equal to 1" }
         if (forceRefresh) {
             return recomputeSummaryForUser(userId, days)
         }
@@ -159,6 +162,7 @@ class AuthAccessAuditService(
     }
 
     fun recomputeSummaryForUser(userId: Long, days: Int = 7): AuthAccessAuditSummary {
+        require(days >= 1) { "days must be greater than or equal to 1" }
         return writeTransactionTemplate.execute<AuthAccessAuditSummary> {
             recomputeSummaryForUserInWriteTransaction(userId, days)
         } ?: throw IllegalStateException("사용자 접속 요약을 재계산하지 못했습니다.")
@@ -203,6 +207,7 @@ class AuthAccessAuditService(
 
     @Transactional
     fun getGlobalSummary(days: Int = 7, forceRefresh: Boolean = false): AuthAccessGlobalSummary {
+        require(days >= 1) { "days must be greater than or equal to 1" }
         if (forceRefresh) {
             return recomputeGlobalSummary(days)
         }
@@ -211,6 +216,7 @@ class AuthAccessAuditService(
     }
 
     fun recomputeGlobalSummary(days: Int = 7): AuthAccessGlobalSummary {
+        require(days >= 1) { "days must be greater than or equal to 1" }
         return writeTransactionTemplate.execute<AuthAccessGlobalSummary> {
             recomputeGlobalSummaryInWriteTransaction(days)
         } ?: throw IllegalStateException("전체 접속 요약을 재계산하지 못했습니다.")

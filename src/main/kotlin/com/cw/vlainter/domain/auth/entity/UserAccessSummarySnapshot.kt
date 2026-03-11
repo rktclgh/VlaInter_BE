@@ -19,8 +19,6 @@ import org.hibernate.annotations.OnDeleteAction
 import org.hibernate.type.SqlTypes
 import java.time.OffsetDateTime
 
-//noinspection JpaDataSourceORMInspection
-@Suppress("unused")
 @Entity
 @Table(
     name = "user_access_summary_snapshots",
@@ -76,10 +74,10 @@ class UserAccessSummarySnapshot(
     var calculatedAt: OffsetDateTime = OffsetDateTime.now(),
 
     @Column(name = "created_at", nullable = false)
-    var createdAt: OffsetDateTime? = null,
+    var createdAt: OffsetDateTime = OffsetDateTime.now(),
 
     @Column(name = "updated_at", nullable = false)
-    var updatedAt: OffsetDateTime? = null
+    var updatedAt: OffsetDateTime = OffsetDateTime.now()
 ) {
     @PrePersist
     fun prePersist() {

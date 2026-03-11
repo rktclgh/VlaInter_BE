@@ -204,16 +204,26 @@ class AuthService(
             ?.takeIf { jwtTokenProvider.isValidRefreshToken(it) }
             ?.let { jwtTokenProvider.extractSessionIdFromRefreshToken(it) }
         if (!refreshSessionId.isNullOrBlank()) {
-            authAccessAuditService.markLogout(refreshSessionId)
-            loginSessionStore.delete(refreshSessionId)
+            try {
+                authAccessAuditService.markLogout(refreshSessionId)
+            } catch (ex: Exception) {
+                logger.warn("로그아웃 감사 로그 기록에 실패했습니다. sidPrefix={}", refreshSessionId.take(8), ex)
+            } finally {
+                loginSessionStore.delete(refreshSessionId)
+            }
             return
         }
 
         val accessSessionId = accessToken
             ?.let { jwtTokenProvider.extractSessionIdFromAccessTokenAllowExpired(it) }
         if (!accessSessionId.isNullOrBlank()) {
-            authAccessAuditService.markLogout(accessSessionId)
-            loginSessionStore.delete(accessSessionId)
+            try {
+                authAccessAuditService.markLogout(accessSessionId)
+            } catch (ex: Exception) {
+                logger.warn("로그아웃 감사 로그 기록에 실패했습니다. sidPrefix={}", accessSessionId.take(8), ex)
+            } finally {
+                loginSessionStore.delete(accessSessionId)
+            }
         }
     }
 

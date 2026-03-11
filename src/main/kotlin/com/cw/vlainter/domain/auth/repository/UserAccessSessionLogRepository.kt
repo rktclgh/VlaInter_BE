@@ -23,8 +23,10 @@ interface UserAccessSessionLogRepository : JpaRepository<UserAccessSessionLog, L
         update UserAccessSessionLog l
         set l.logoutAt = :now,
             l.lastActivityAt = :now,
+            l.updatedAt = :now,
             l.active = false
         where l.sessionId = :sessionId
+          and l.active = true
         """
     )
     fun markLogout(@Param("sessionId") sessionId: String, @Param("now") now: OffsetDateTime): Int
@@ -34,12 +36,28 @@ interface UserAccessSessionLogRepository : JpaRepository<UserAccessSessionLog, L
         """
         update UserAccessSessionLog l
         set l.lastActivityAt = :now,
+            l.updatedAt = :now,
             l.actionCount = l.actionCount + 1
         where l.sessionId = :sessionId
           and l.active = true
         """
     )
     fun incrementAction(
+        @Param("sessionId") sessionId: String,
+        @Param("now") now: OffsetDateTime
+    ): Int
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query(
+        """
+        update UserAccessSessionLog l
+        set l.lastActivityAt = :now,
+            l.updatedAt = :now
+        where l.sessionId = :sessionId
+          and l.active = true
+        """
+    )
+    fun updateLastActivity(
         @Param("sessionId") sessionId: String,
         @Param("now") now: OffsetDateTime
     ): Int

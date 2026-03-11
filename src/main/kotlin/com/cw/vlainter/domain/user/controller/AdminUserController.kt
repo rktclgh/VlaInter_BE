@@ -10,6 +10,7 @@ import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PatchMapping
+import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.RequestBody
@@ -35,19 +36,33 @@ class AdminUserController(
     @GetMapping("/access-summary")
     fun getGlobalAccessSummary(
         @AuthenticationPrincipal principal: AuthPrincipal,
-        @RequestParam(defaultValue = "7") windowDays: Int,
-        @RequestParam(defaultValue = "false") refresh: Boolean
+        @RequestParam(defaultValue = "7") windowDays: Int
     ): ResponseEntity<AdminMemberAccessGlobalSummaryResponse> {
-        return ResponseEntity.ok(userService.getGlobalAccessSummaryByAdmin(principal, windowDays, refresh))
+        return ResponseEntity.ok(userService.getGlobalAccessSummaryByAdmin(principal, windowDays))
+    }
+
+    @PostMapping("/access-summary/refresh")
+    fun refreshGlobalAccessSummary(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @RequestParam(defaultValue = "7") windowDays: Int
+    ): ResponseEntity<AdminMemberAccessGlobalSummaryResponse> {
+        return ResponseEntity.ok(userService.refreshGlobalAccessSummaryByAdmin(principal, windowDays))
     }
 
     @GetMapping("/{memberId}")
     fun getMember(
         @AuthenticationPrincipal principal: AuthPrincipal,
-        @PathVariable memberId: Long,
-        @RequestParam(defaultValue = "false") refreshAccess: Boolean
+        @PathVariable memberId: Long
     ): ResponseEntity<AdminMemberDetailResponse> {
-        return ResponseEntity.ok(userService.getMemberByAdmin(principal, memberId, refreshAccess))
+        return ResponseEntity.ok(userService.getMemberByAdmin(principal, memberId))
+    }
+
+    @PostMapping("/{memberId}/refresh-access")
+    fun refreshMemberAccess(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable memberId: Long
+    ): ResponseEntity<AdminMemberDetailResponse> {
+        return ResponseEntity.ok(userService.refreshMemberAccessByAdmin(principal, memberId))
     }
 
     @PatchMapping("/{memberId}")
