@@ -103,7 +103,8 @@ class SecurityConfig(
 
         val PUBLIC_DOCS_PATHS = arrayOf(
             "/swagger-ui/**",
-            "/v3/api-docs/**"
+            "/v3/api-docs/**",
+            "/actuator/health"
         )
 
         // SPA 엔트리로 직접 접근 가능한 FE 페이지 화이트리스트
