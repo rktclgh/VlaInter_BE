@@ -114,10 +114,7 @@ class SecurityConfig(
             "/join",
             "/password/forgot",
             "/auth/kakao/callback",
-            "/content/interview",
-            "/content/files",
-            "/content/mypage",
-            "/content/point-charge",
+            "/content/**",
             "/errors/403",
             "/errors/404"
         )

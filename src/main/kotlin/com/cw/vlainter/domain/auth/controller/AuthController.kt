@@ -120,8 +120,8 @@ class AuthController(
         )
 
         try {
-            invalidateExistingSession(servletRequest, response)
             val result = authService.login(request)
+            invalidateExistingSession(servletRequest, response)
             addAuthCookies(response, result.accessToken, result.refreshToken)
             logger.info("Auth login success userId={} email={} ip={}", result.userId, result.email, clientIp)
 
@@ -162,12 +162,12 @@ class AuthController(
         )
 
         try {
-            invalidateExistingSession(servletRequest, response)
             val result = kakaoAuthService.loginOrSignupWithKakao(
                 code = request.code,
                 redirectUri = request.redirectUri,
                 clientIdFromClient = request.clientId
             )
+            invalidateExistingSession(servletRequest, response)
             addAuthCookies(response, result.accessToken, result.refreshToken)
             logger.info("Auth kakao login success userId={} email={} ip={}", result.userId, result.email, clientIp)
 
@@ -227,12 +227,7 @@ class AuthController(
         request: HttpServletRequest,
         response: HttpServletResponse
     ): ResponseEntity<Map<String, String>> {
-        val accessToken = authCookieManager.extractAccessToken(request)
-        val refreshToken = authCookieManager.extractRefreshToken(request)
-        authService.logoutByTokens(accessToken, refreshToken)
-
-        response.addHeader(HttpHeaders.SET_COOKIE, authCookieManager.clearAccessTokenCookie().toString())
-        response.addHeader(HttpHeaders.SET_COOKIE, authCookieManager.clearRefreshTokenCookie().toString())
+        invalidateExistingSession(request, response)
 
         val body = LinkedHashMap<String, String>()
         body["message"] = "로그아웃되었습니다."

@@ -286,6 +286,16 @@ class InterviewPracticeService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 수 없는 문항입니다.")
         }
 
+        val existingByQuestion = resolveExistingSavedQuestion(principal.userId, turn.question?.id, turn.documentQuestion?.id)
+        if (existingByQuestion != null) {
+            val nextNote = request.note?.trim()
+            if (!nextNote.isNullOrBlank()) {
+                existingByQuestion.note = nextNote
+            }
+            turn.isBookmarked = true
+            return toSavedQuestionResponse(existingByQuestion)
+        }
+
         if (savedQuestionRepository.existsByUser_IdAndSourceTurn_Id(principal.userId, turn.id)) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "이미 저장된 질문입니다.")
         }
@@ -362,6 +372,7 @@ class InterviewPracticeService(
     @Transactional(readOnly = true)
     fun getSavedQuestions(principal: AuthPrincipal): List<SavedQuestionResponse> {
         return savedQuestionRepository.findAllByUser_IdOrderByCreatedAtDesc(principal.userId)
+            .distinctBy { savedQuestionDedupKey(it) }
             .map { toSavedQuestionResponse(it) }
     }
 
@@ -732,6 +743,22 @@ class InterviewPracticeService(
             return TurnSourceTag.SYSTEM.name
         }
         return current
+    }
+
+    private fun resolveExistingSavedQuestion(userId: Long, questionId: Long?, documentQuestionId: Long?): SavedQuestion? {
+        if (questionId != null) {
+            return savedQuestionRepository.findTopByUser_IdAndQuestion_IdOrderByCreatedAtDesc(userId, questionId)
+        }
+        if (documentQuestionId != null) {
+            return savedQuestionRepository.findTopByUser_IdAndDocumentQuestion_IdOrderByCreatedAtDesc(userId, documentQuestionId)
+        }
+        return null
+    }
+
+    private fun savedQuestionDedupKey(saved: SavedQuestion): String {
+        saved.question?.id?.let { return "tech:$it" }
+        saved.documentQuestion?.id?.let { return "document:$it" }
+        return "saved:${saved.id}"
     }
 
     private fun fingerprintFor(questionText: String, category: String, difficulty: String): String {

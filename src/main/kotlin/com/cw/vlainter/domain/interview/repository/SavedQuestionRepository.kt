@@ -14,6 +14,7 @@ interface SavedQuestionRepository : JpaRepository<SavedQuestion, Long> {
 
     fun existsByUser_IdAndSourceTurn_Id(userId: Long, sourceTurnId: Long): Boolean
     fun findTopByUser_IdAndQuestion_IdOrderByCreatedAtDesc(userId: Long, questionId: Long): SavedQuestion?
+    fun findTopByUser_IdAndDocumentQuestion_IdOrderByCreatedAtDesc(userId: Long, documentQuestionId: Long): SavedQuestion?
 
     @Modifying(flushAutomatically = true)
     @Query("update SavedQuestion s set s.category = :target where s.category = :source")

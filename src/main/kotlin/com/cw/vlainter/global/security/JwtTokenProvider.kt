@@ -1,6 +1,7 @@
 package com.cw.vlainter.global.security
 
 import com.cw.vlainter.domain.user.entity.UserRole
+import io.jsonwebtoken.ExpiredJwtException
 import com.cw.vlainter.global.config.properties.JwtProperties
 import io.jsonwebtoken.Claims
 import io.jsonwebtoken.Jwts
@@ -95,6 +96,21 @@ class JwtTokenProvider(
             sessionId = claims.get("sid", String::class.java),
             role = parseRole(claims.get("role", String::class.java))
         )
+    }
+
+    /**
+     * 만료된 Access Token에서도 세션 ID를 추출한다.
+     *
+     * 로그아웃 시 Refresh Token이 유실된 경우에도
+     * Redis 세션을 즉시 정리할 수 있도록 사용한다.
+     */
+    fun extractSessionIdFromAccessTokenAllowExpired(token: String): String? {
+        val claims = try {
+            parseAccessClaims(token)
+        } catch (ex: ExpiredJwtException) {
+            ex.claims
+        }
+        return claims?.get("sid", String::class.java)
     }
 
     private fun parseRole(rawRole: String?): UserRole {

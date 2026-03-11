@@ -206,7 +206,7 @@ class AuthService(
         }
 
         val accessSessionId = accessToken
-            ?.let { runCatching { jwtTokenProvider.parseAccessToken(it).sessionId }.getOrNull() }
+            ?.let { jwtTokenProvider.extractSessionIdFromAccessTokenAllowExpired(it) }
         if (!accessSessionId.isNullOrBlank()) {
             loginSessionStore.delete(accessSessionId)
         }
