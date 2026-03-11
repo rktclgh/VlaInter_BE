@@ -5,6 +5,7 @@ import com.cw.vlainter.domain.interview.dto.DocumentIngestionResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionResultsResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryResponse
 import com.cw.vlainter.domain.interview.dto.ReadyDocumentResponse
+import com.cw.vlainter.domain.interview.dto.ResumeInterviewSessionResponse
 import com.cw.vlainter.domain.interview.dto.SavedQuestionResponse
 import com.cw.vlainter.domain.interview.dto.StartMockInterviewRequest
 import com.cw.vlainter.domain.interview.dto.StartTechInterviewResponse
@@ -74,6 +75,22 @@ class DocumentInterviewController(
         @AuthenticationPrincipal principal: AuthPrincipal
     ): ResponseEntity<List<InterviewSessionHistoryResponse>> {
         return ResponseEntity.ok(documentInterviewService.getMockSessionHistory(principal))
+    }
+
+    @GetMapping("/sessions/latest-incomplete")
+    fun getLatestIncompleteSession(
+        @AuthenticationPrincipal principal: AuthPrincipal
+    ): ResponseEntity<ResumeInterviewSessionResponse?> {
+        return ResponseEntity.ok(documentInterviewService.getLatestIncompleteMockSession(principal))
+    }
+
+    @PostMapping("/sessions/{sessionId}/dismiss")
+    fun dismissSession(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable sessionId: Long
+    ): ResponseEntity<Map<String, String>> {
+        documentInterviewService.dismissMockSession(principal, sessionId)
+        return ResponseEntity.ok(mapOf("message" to "진행 중인 모의면접 세션을 종료했습니다."))
     }
 
     @PostMapping("/turns/{turnId}/bookmark")

@@ -1,6 +1,11 @@
 package com.cw.vlainter.domain.user.service
 
 import com.cw.vlainter.domain.user.dto.AdminMemberDetailResponse
+import com.cw.vlainter.domain.user.dto.AdminMemberAccessDailyCountResponse
+import com.cw.vlainter.domain.user.dto.AdminMemberAccessGlobalDailyMetricResponse
+import com.cw.vlainter.domain.user.dto.AdminMemberAccessGlobalSummaryResponse
+import com.cw.vlainter.domain.user.dto.AdminMemberAccessLogResponse
+import com.cw.vlainter.domain.user.dto.AdminMemberAccessSummaryResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberListResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberSummaryResponse
 import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
@@ -12,6 +17,7 @@ import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
 import com.cw.vlainter.domain.userFile.entity.FileType
 import com.cw.vlainter.domain.userFile.repository.UserFileRepository
 import com.cw.vlainter.global.security.AuthPrincipal
@@ -22,10 +28,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-import org.springframework.transaction.support.TransactionSynchronization
-import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException
-import org.slf4j.LoggerFactory
 
 @Service
 class UserService(
@@ -33,9 +36,9 @@ class UserService(
     private val userFileRepository: UserFileRepository,
     private val passwordEncoder: PasswordEncoder,
     private val loginSessionStore: LoginSessionStore,
-    private val userGeminiApiKeyService: UserGeminiApiKeyService
+    private val userGeminiApiKeyService: UserGeminiApiKeyService,
+    private val authAccessAuditService: AuthAccessAuditService
 ) {
-    private val logger = LoggerFactory.getLogger(javaClass)
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
 
     @Transactional
@@ -94,19 +97,22 @@ class UserService(
             .orElseThrow { unauthorizedException() }
         ensureActiveUser(user.status)
 
-        user.status = UserStatus.DELETED
+        markUserSoftDeleted(user)
         userRepository.save(user)
-        runAfterCommit {
-            loginSessionStore.delete(principal.sessionId)
-        }
+        loginSessionStore.deleteAllByUserId(user.id)
     }
 
     @Transactional(readOnly = true)
-    fun getMembersByAdmin(adminPrincipal: AuthPrincipal, page: Int, size: Int): AdminMemberListResponse {
+    fun getMembersByAdmin(adminPrincipal: AuthPrincipal, page: Int, size: Int, keyword: String = ""): AdminMemberListResponse {
         authorizeAdmin(adminPrincipal)
         validatePageRequest(page, size)
         val pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"))
-        val memberPage = userRepository.findAll(pageable)
+        val normalizedKeyword = keyword.trim()
+        val memberPage = if (normalizedKeyword.isBlank()) {
+            userRepository.findAll(pageable)
+        } else {
+            userRepository.searchMembers(normalizedKeyword, pageable)
+        }
         val members = memberPage.content.map { toAdminMemberSummaryResponse(it) }
         return AdminMemberListResponse(
             totalCount = memberPage.totalElements.toInt(),
@@ -114,11 +120,69 @@ class UserService(
         )
     }
 
-    @Transactional(readOnly = true)
-    fun getMemberByAdmin(adminPrincipal: AuthPrincipal, memberId: Long): AdminMemberDetailResponse {
+    @Transactional
+    fun getMemberByAdmin(
+        adminPrincipal: AuthPrincipal,
+        memberId: Long
+    ): AdminMemberDetailResponse {
         authorizeAdmin(adminPrincipal)
         val member = findUserOrNotFound(memberId)
-        return toAdminMemberDetailResponse(member)
+        return toAdminMemberDetailResponse(member, false)
+    }
+
+    @Transactional
+    fun getGlobalAccessSummaryByAdmin(
+        adminPrincipal: AuthPrincipal,
+        windowDays: Int
+    ): AdminMemberAccessGlobalSummaryResponse {
+        return buildGlobalAccessSummaryByAdmin(adminPrincipal, windowDays, false)
+    }
+
+    @Transactional
+    fun refreshGlobalAccessSummaryByAdmin(
+        adminPrincipal: AuthPrincipal,
+        windowDays: Int
+    ): AdminMemberAccessGlobalSummaryResponse {
+        return buildGlobalAccessSummaryByAdmin(adminPrincipal, windowDays, true)
+    }
+
+    @Transactional
+    fun refreshMemberAccessByAdmin(adminPrincipal: AuthPrincipal, memberId: Long): AdminMemberDetailResponse {
+        authorizeAdmin(adminPrincipal)
+        val member = findUserOrNotFound(memberId)
+        return toAdminMemberDetailResponse(member, true)
+    }
+
+    private fun buildGlobalAccessSummaryByAdmin(
+        adminPrincipal: AuthPrincipal,
+        windowDays: Int,
+        refresh: Boolean
+    ): AdminMemberAccessGlobalSummaryResponse {
+        authorizeAdmin(adminPrincipal)
+        val normalizedWindowDays = when (windowDays) {
+            7, 30 -> windowDays
+            else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "windowDays는 7 또는 30만 지원합니다.")
+        }
+        val summary = authAccessAuditService.getGlobalSummary(normalizedWindowDays, refresh)
+        return AdminMemberAccessGlobalSummaryResponse(
+            windowDays = summary.windowDays,
+            totalMemberCount = summary.totalMemberCount,
+            totalLoginCount = summary.totalLoginCount,
+            totalActionCount = summary.totalActionCount,
+            averageLoginCount = summary.averageLoginCount,
+            averageActionCount = summary.averageActionCount,
+            averageSessionMinutes = summary.averageSessionMinutes,
+            averageActiveSessionCount = summary.averageActiveSessionCount,
+            calculatedAt = summary.calculatedAt,
+            dailyMetrics = summary.dailyMetrics.map {
+                AdminMemberAccessGlobalDailyMetricResponse(
+                    date = it.date,
+                    averageLoginCount = it.averageLoginCount,
+                    averageActionCount = it.averageActionCount,
+                    averageSessionMinutes = it.averageSessionMinutes
+                )
+            }
+        )
     }
 
     @Transactional
@@ -174,13 +238,7 @@ class UserService(
 
         targetUser.status = UserStatus.BLOCKED
         userRepository.save(targetUser)
-        runAfterCommit {
-            try {
-                loginSessionStore.deleteAllByUserId(targetUser.id)
-            } catch (ex: Exception) {
-                logger.error("차단 회원 세션 정리에 실패했습니다. userId={}", targetUser.id, ex)
-            }
-        }
+        loginSessionStore.deleteAllByUserId(targetUser.id)
     }
 
     @Transactional
@@ -207,17 +265,39 @@ class UserService(
         }
 
         val targetUser = findUserOrNotFound(targetUserId)
-        targetUser.status = UserStatus.DELETED
-        targetUser.email = "deletedUser${targetUser.id}@vlainter.online"
-        targetUser.name = "Deleted User ${targetUser.id}"
+        markUserSoftDeleted(targetUser)
         userRepository.save(targetUser)
-        runAfterCommit {
-            try {
-                loginSessionStore.deleteAllByUserId(targetUser.id)
-            } catch (ex: Exception) {
-                logger.error("소프트 삭제 회원 세션 정리에 실패했습니다. userId={}", targetUser.id, ex)
-            }
+        loginSessionStore.deleteAllByUserId(targetUser.id)
+    }
+
+    @Transactional
+    fun restoreSoftDeletedMemberByAdmin(adminPrincipal: AuthPrincipal, targetUserId: Long) {
+        val adminUser = authorizeAdmin(adminPrincipal)
+        if (adminUser.id == targetUserId) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "관리자 본인 계정은 복구 대상이 아닙니다.")
         }
+
+        val targetUser = findUserOrNotFound(targetUserId)
+        if (targetUser.status != UserStatus.DELETED) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "소프트 삭제된 회원만 복구할 수 있습니다.")
+        }
+
+        val originalEmail = targetUser.deletedOriginalEmail
+            ?: throw ResponseStatusException(HttpStatus.CONFLICT, "복구에 필요한 원본 이메일 정보가 없습니다.")
+        val originalName = targetUser.deletedOriginalName
+            ?: throw ResponseStatusException(HttpStatus.CONFLICT, "복구에 필요한 원본 이름 정보가 없습니다.")
+
+        if (userRepository.existsByEmailAndIdNot(originalEmail, targetUser.id)) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "원래 이메일을 현재 다른 계정이 사용 중이라 복구할 수 없습니다.")
+        }
+
+        targetUser.email = originalEmail
+        targetUser.name = originalName
+        targetUser.status = UserStatus.ACTIVE
+        targetUser.deletedOriginalEmail = null
+        targetUser.deletedOriginalName = null
+        targetUser.deletedAt = null
+        userRepository.save(targetUser)
     }
 
     @Transactional
@@ -230,6 +310,7 @@ class UserService(
         val targetUser = findUserOrNotFound(targetUserId)
         userFileRepository.deleteAllByUser_Id(targetUser.id)
         userRepository.delete(targetUser)
+        loginSessionStore.deleteAllByUserId(targetUser.id)
     }
 
     @Transactional(readOnly = true)
@@ -280,22 +361,30 @@ class UserService(
         }
     }
 
-    private fun runAfterCommit(action: () -> Unit) {
-        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
-            action()
-            return
-        }
-        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
-            override fun afterCommit() {
-                action()
-            }
-        })
-    }
-
     private fun findUserOrNotFound(userId: Long): User {
         return userRepository.findById(userId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "사용자를 찾을 수 없습니다.") }
     }
+
+    private fun markUserSoftDeleted(user: User) {
+        if (user.status == UserStatus.DELETED) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "이미 삭제 처리된 회원입니다.")
+        }
+        if (user.deletedOriginalEmail.isNullOrBlank()) {
+            user.deletedOriginalEmail = user.email
+        }
+        if (user.deletedOriginalName.isNullOrBlank()) {
+            user.deletedOriginalName = user.name
+        }
+        user.email = buildDeletedEmailAlias(user.id)
+        user.name = buildDeletedNameAlias(user.id)
+        user.status = UserStatus.DELETED
+        user.deletedAt = java.time.OffsetDateTime.now()
+    }
+
+    private fun buildDeletedEmailAlias(userId: Long): String = "deletedUser$userId@vlainter.online"
+
+    private fun buildDeletedNameAlias(userId: Long): String = "Deleted User $userId"
 
     private fun authorizeAdmin(principal: AuthPrincipal): User {
         val user = userRepository.findById(principal.userId)
@@ -337,7 +426,23 @@ class UserService(
         )
     }
 
-    private fun toAdminMemberDetailResponse(user: User): AdminMemberDetailResponse {
+    private fun toAdminMemberDetailResponse(user: User, refreshAccess: Boolean = false): AdminMemberDetailResponse {
+        val accessSummary = authAccessAuditService.getSummaryForUser(user.id, 7, refreshAccess)
+        val lastLogin = authAccessAuditService.getLastLoginForUser(user.id)
+        val recentAccessLogs = authAccessAuditService.getRecentEntriesForUser(user.id, 8).map { entry ->
+            AdminMemberAccessLogResponse(
+                sessionIdPrefix = entry.sessionId.take(8),
+                authProvider = entry.authProvider.name,
+                loginAt = entry.loginAt,
+                lastActivityAt = entry.lastActivityAt,
+                logoutAt = entry.logoutAt,
+                actionCount = entry.actionCount,
+                ipAddress = entry.ipAddress,
+                browser = toBrowserLabel(entry.userAgent),
+                deviceType = toDeviceLabel(entry.userAgent),
+                active = entry.active
+            )
+        }
         return AdminMemberDetailResponse(
             memberId = user.id,
             email = user.email,
@@ -347,7 +452,51 @@ class UserService(
             point = user.point,
             free = user.free,
             createdAt = user.createdAt,
-            updatedAt = user.updatedAt
+            updatedAt = user.updatedAt,
+            accessSummary = AdminMemberAccessSummaryResponse(
+                recentLoginCount = accessSummary.recentLoginCount,
+                activeSessionCount = accessSummary.activeSessionCount,
+                totalActionCount = accessSummary.totalActionCount,
+                averageActionCount = accessSummary.averageActionCount,
+                averageSessionMinutes = accessSummary.averageSessionMinutes,
+                lastLoginAt = lastLogin?.loginAt ?: accessSummary.lastLoginAt,
+                lastLoginIpAddress = lastLogin?.ipAddress,
+                completedInterviewCount = accessSummary.completedInterviewCount,
+                totalInterviewCount = accessSummary.totalInterviewCount,
+                interviewCompletionRate = accessSummary.interviewCompletionRate,
+                dailyLoginCounts = accessSummary.dailyLoginCounts.map {
+                    AdminMemberAccessDailyCountResponse(
+                        date = it.date,
+                        loginCount = it.loginCount
+                    )
+                },
+                calculatedAt = accessSummary.calculatedAt
+            ),
+            recentAccessLogs = recentAccessLogs
         )
+    }
+
+    private fun toBrowserLabel(userAgent: String?): String {
+        val ua = userAgent.orEmpty().lowercase()
+        return when {
+            "edg/" in ua -> "Edge"
+            "whale/" in ua -> "Whale"
+            "kakaotalk" in ua -> "KakaoTalk"
+            "chrome/" in ua && "safari/" in ua -> "Chrome"
+            "safari/" in ua && "chrome/" !in ua -> "Safari"
+            "firefox/" in ua -> "Firefox"
+            "android" in ua -> "Android WebView"
+            else -> "기타"
+        }
+    }
+
+    private fun toDeviceLabel(userAgent: String?): String {
+        val ua = userAgent.orEmpty().lowercase()
+        return when {
+            "ipad" in ua || "tablet" in ua -> "태블릿"
+            "iphone" in ua || ("android" in ua && "mobile" in ua) -> "모바일"
+            "macintosh" in ua || "windows" in ua || "linux" in ua -> "데스크톱"
+            else -> "기타"
+        }
     }
 }
