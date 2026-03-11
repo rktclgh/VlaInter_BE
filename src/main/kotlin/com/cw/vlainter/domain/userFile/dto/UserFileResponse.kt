@@ -5,7 +5,6 @@ import java.time.OffsetDateTime
 
 data class UserFileResponse(
     val fileId: Long,
-    val userId: Long,
     val fileType: FileType,
     val fileName: String,
     val fileUrl: String,

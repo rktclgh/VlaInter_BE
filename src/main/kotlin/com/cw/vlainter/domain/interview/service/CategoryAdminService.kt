@@ -1,9 +1,10 @@
 package com.cw.vlainter.domain.interview.service
 
-import com.cw.vlainter.domain.interview.dto.CategoryResponse
+import com.cw.vlainter.domain.interview.dto.AdminCategoryResponse
 import com.cw.vlainter.domain.interview.dto.CreateCategoryRequest
 import com.cw.vlainter.domain.interview.dto.MergeCategoryRequest
 import com.cw.vlainter.domain.interview.dto.MoveCategoryRequest
+import com.cw.vlainter.domain.interview.dto.PublicCategoryResponse
 import com.cw.vlainter.domain.interview.dto.UpdateCategoryRequest
 import com.cw.vlainter.domain.interview.entity.QaCategory
 import com.cw.vlainter.domain.interview.repository.InterviewTurnRepository
@@ -28,61 +29,33 @@ class CategoryAdminService(
     private val userRepository: UserRepository
 ) {
     @Transactional
-    fun getActiveCategoryTree(): List<CategoryResponse> {
+    fun getActiveCategoryTreeForUser(): List<PublicCategoryResponse> {
         ensureCommonJobsForBranches()
         return categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc()
-            .map { toResponse(it) }
+            .map { toPublicResponse(it) }
     }
 
     @Transactional
-    fun createCategory(principal: AuthPrincipal, request: CreateCategoryRequest): CategoryResponse {
-        val actor = loadUser(principal.userId)
-        val parent = request.parentId?.let { findActiveCategory(it) }
-        val normalizedName = request.name.trim()
-        if (normalizedName.isBlank()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카테고리 이름은 필수입니다.")
-        }
-
-        val depth = (parent?.depth ?: -1) + 1
-        if (depth !in 0..2) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카테고리는 계열(0) / 직무(1) / 기술(2) 깊이까지만 생성할 수 있습니다.")
-        }
-        validateUniqueName(depth, normalizedName)
-
-        val normalizedCode = allocateUniqueCode(parent?.id, normalizeCode(request.code ?: normalizedName))
-        if (hasDuplicateName(parent, normalizedName)) {
-            throw ResponseStatusException(HttpStatus.CONFLICT, "같은 위치에 동일한 이름의 카테고리가 이미 존재합니다.")
-        }
-
-        val path = (parent?.path ?: "") + "/$normalizedCode"
-        val saved = categoryRepository.save(
-            QaCategory(
-                parent = parent,
-                code = normalizedCode,
-                name = normalizedName,
-                description = request.description?.trim(),
-                depth = depth,
-                path = path,
-                sortOrder = request.sortOrder,
-                isActive = true,
-                isLeaf = true,
-                createdBy = actor,
-                updatedBy = actor
-            )
-        )
-
-        if (parent != null && parent.isLeaf) {
-            parent.isLeaf = false
-        }
-        if (saved.depth == 0) {
-            ensureCommonJob(saved, actor)
-        }
-
-        return toResponse(saved)
+    fun getActiveCategoryTreeForAdmin(): List<AdminCategoryResponse> {
+        ensureCommonJobsForBranches()
+        return categoryRepository.findAllByDeletedAtIsNullAndIsActiveTrueOrderByDepthAscSortOrderAsc()
+            .map { toAdminResponse(it) }
     }
 
     @Transactional
-    fun updateCategory(principal: AuthPrincipal, categoryId: Long, request: UpdateCategoryRequest): CategoryResponse {
+    fun createCategoryForUser(principal: AuthPrincipal, request: CreateCategoryRequest): PublicCategoryResponse {
+        val saved = createCategoryInternal(principal, request)
+        return toPublicResponse(saved)
+    }
+
+    @Transactional
+    fun createCategoryForAdmin(principal: AuthPrincipal, request: CreateCategoryRequest): AdminCategoryResponse {
+        val saved = createCategoryInternal(principal, request)
+        return toAdminResponse(saved)
+    }
+
+    @Transactional
+    fun updateCategory(principal: AuthPrincipal, categoryId: Long, request: UpdateCategoryRequest): AdminCategoryResponse {
         ensureAdmin(principal)
         val actor = loadUser(principal.userId)
         val category = findCategory(categoryId)
@@ -104,11 +77,11 @@ class CategoryAdminService(
         request.isLeaf?.let { category.isLeaf = it }
         category.updatedBy = actor
 
-        return toResponse(category)
+        return toAdminResponse(category)
     }
 
     @Transactional
-    fun moveCategory(principal: AuthPrincipal, categoryId: Long, request: MoveCategoryRequest): CategoryResponse {
+    fun moveCategory(principal: AuthPrincipal, categoryId: Long, request: MoveCategoryRequest): AdminCategoryResponse {
         ensureAdmin(principal)
         val actor = loadUser(principal.userId)
         val category = findCategory(categoryId)
@@ -151,17 +124,17 @@ class CategoryAdminService(
 
         categoryRepository.findAllByPathStartingWithAndDeletedAtIsNullOrderByDepthAscSortOrderAsc("$oldPath/")
             .forEach { child ->
-            val suffix = child.path.removePrefix(oldPath)
-            child.path = "${category.path}$suffix"
-            child.depth = child.path.split("/").count { it.isNotBlank() } - 1
-            child.updatedBy = actor
-        }
+                val suffix = child.path.removePrefix(oldPath)
+                child.path = "${category.path}$suffix"
+                child.depth = child.path.split("/").count { it.isNotBlank() } - 1
+                child.updatedBy = actor
+            }
 
-        return toResponse(category)
+        return toAdminResponse(category)
     }
 
     @Transactional
-    fun mergeCategory(principal: AuthPrincipal, categoryId: Long, request: MergeCategoryRequest): CategoryResponse {
+    fun mergeCategory(principal: AuthPrincipal, categoryId: Long, request: MergeCategoryRequest): AdminCategoryResponse {
         ensureAdmin(principal)
         val actor = loadUser(principal.userId)
         val source = findActiveCategory(categoryId)
@@ -177,7 +150,53 @@ class CategoryAdminService(
         mergeCategoryNodes(source, target, actor)
         refreshLeafState(source.parent, actor)
         refreshLeafState(target, actor)
-        return toResponse(target)
+        return toAdminResponse(target)
+    }
+
+    private fun createCategoryInternal(principal: AuthPrincipal, request: CreateCategoryRequest): QaCategory {
+        val actor = loadUser(principal.userId)
+        val parent = request.parentId?.let { findActiveCategory(it) }
+        val normalizedName = request.name.trim()
+        if (normalizedName.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카테고리 이름은 필수입니다.")
+        }
+
+        val depth = (parent?.depth ?: -1) + 1
+        if (depth !in 0..2) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "카테고리는 계열(0) / 직무(1) / 기술(2) 깊이까지만 생성할 수 있습니다.")
+        }
+        validateUniqueName(depth, normalizedName)
+
+        val normalizedCode = allocateUniqueCode(parent?.id, normalizeCode(request.code ?: normalizedName))
+        if (hasDuplicateName(parent, normalizedName)) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "같은 위치에 동일한 이름의 카테고리가 이미 존재합니다.")
+        }
+
+        val path = (parent?.path ?: "") + "/$normalizedCode"
+        val saved = categoryRepository.save(
+            QaCategory(
+                parent = parent,
+                code = normalizedCode,
+                name = normalizedName,
+                description = request.description?.trim(),
+                depth = depth,
+                path = path,
+                sortOrder = request.sortOrder,
+                isActive = true,
+                isLeaf = true,
+                createdBy = actor,
+                updatedBy = actor
+            )
+        )
+
+        if (parent != null && parent.isLeaf) {
+            parent.isLeaf = false
+        }
+        if (saved.depth == 0) {
+            ensureCommonJob(saved, actor)
+        }
+
+        return saved
     }
 
     @Transactional
@@ -375,8 +394,24 @@ class CategoryAdminService(
             .take(80)
     }
 
-    private fun toResponse(category: QaCategory): CategoryResponse {
-        return CategoryResponse(
+    private fun toPublicResponse(category: QaCategory): PublicCategoryResponse {
+        return PublicCategoryResponse(
+            categoryId = category.id,
+            parentId = category.parent?.id,
+            code = category.code,
+            name = category.name,
+            description = category.description,
+            depth = category.depth,
+            depthLabel = depthLabel(category.depth),
+            path = category.path,
+            sortOrder = category.sortOrder,
+            isActive = category.isActive,
+            isLeaf = category.isLeaf
+        )
+    }
+
+    private fun toAdminResponse(category: QaCategory): AdminCategoryResponse {
+        return AdminCategoryResponse(
             categoryId = category.id,
             parentId = category.parent?.id,
             code = category.code,

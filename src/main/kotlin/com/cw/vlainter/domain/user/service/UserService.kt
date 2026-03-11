@@ -401,7 +401,6 @@ class UserService(
 
     private fun toProfileResponse(user: User): UserProfileResponse {
         return UserProfileResponse(
-            userId = user.id,
             email = user.email,
             name = user.name,
             role = user.role,

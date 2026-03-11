@@ -362,7 +362,6 @@ class UserFileService(
         val extractionMethod = extractMetadataExtractionMethod(latestIngestionJob?.metadataJson)
         return UserFileResponse(
             fileId = file.id,
-            userId = file.user.id,
             fileType = file.fileType,
             fileName = displayFileName,
             fileUrl = file.fileUrl,
