@@ -1,18 +1,23 @@
 package com.cw.vlainter.domain.auth.controller
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
+import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
 import com.cw.vlainter.domain.auth.service.AuthService
+import com.cw.vlainter.domain.auth.service.AuthProviderType
 import com.cw.vlainter.domain.auth.service.KakaoAuthService
 import com.cw.vlainter.domain.auth.service.LoginResult
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.global.security.AuthCookieManager
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.BDDMockito.given
 import org.mockito.BDDMockito.then
 import org.mockito.Mock
+import org.mockito.Mockito.timeout
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.junit.jupiter.MockitoExtension
 import org.springframework.http.HttpHeaders
@@ -21,7 +26,6 @@ import org.springframework.http.MediaType
 import org.springframework.http.ResponseCookie
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.header
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
@@ -39,11 +43,14 @@ class AuthControllerTests {
     @Mock
     private lateinit var authCookieManager: AuthCookieManager
 
+    @Mock
+    private lateinit var authAccessAuditService: AuthAccessAuditService
+
     private lateinit var mockMvc: MockMvc
 
     @BeforeEach
     fun setUp() {
-        val controller = AuthController(authService, kakaoAuthService, authCookieManager)
+        val controller = AuthController(authService, kakaoAuthService, authCookieManager, authAccessAuditService)
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build()
     }
 
@@ -61,16 +68,22 @@ class AuthControllerTests {
             role = UserRole.ADMIN,
             accessToken = "access-token",
             refreshToken = "refresh-token",
-            redirectUri = request.redirectUri
+            redirectUri = request.redirectUri,
+            sessionId = "session-1",
+            authProvider = AuthProviderType.EMAIL
         )
         val accessCookie = ResponseCookie.from("vlainter_at", "access-token").httpOnly(true).path("/").build()
         val refreshCookie = ResponseCookie.from("vlainter_rt", "refresh-token").httpOnly(true).path("/").build()
+        val clearAccessCookie = ResponseCookie.from("vlainter_at", "").httpOnly(true).path("/").maxAge(0).build()
+        val clearRefreshCookie = ResponseCookie.from("vlainter_rt", "").httpOnly(true).path("/").maxAge(0).build()
 
         given(authService.login(request)).willReturn(loginResult)
         given(authCookieManager.createAccessTokenCookie("access-token")).willReturn(accessCookie)
         given(authCookieManager.createRefreshTokenCookie("refresh-token")).willReturn(refreshCookie)
+        given(authCookieManager.clearAccessTokenCookie()).willReturn(clearAccessCookie)
+        given(authCookieManager.clearRefreshTokenCookie()).willReturn(clearRefreshCookie)
 
-        mockMvc.perform(
+        val result = mockMvc.perform(
             post("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(jacksonObjectMapper().writeValueAsString(request))
@@ -81,11 +94,26 @@ class AuthControllerTests {
             .andExpect(jsonPath("$.name").value("Tester"))
             .andExpect(jsonPath("$.role").value("ADMIN"))
             .andExpect(jsonPath("$.redirectUri").value(request.redirectUri))
-            .andExpect(header().stringValues(HttpHeaders.SET_COOKIE, accessCookie.toString(), refreshCookie.toString()))
+            .andReturn()
+
+        val setCookies = result.response.getHeaders(HttpHeaders.SET_COOKIE)
+        assertEquals(4, setCookies.size)
+        assertTrue(setCookies.any { it.startsWith("vlainter_at=") && it.contains("Max-Age=0") })
+        assertTrue(setCookies.any { it.startsWith("vlainter_rt=") && it.contains("Max-Age=0") })
+        assertTrue(setCookies.any { it.startsWith("vlainter_at=access-token") })
+        assertTrue(setCookies.any { it.startsWith("vlainter_rt=refresh-token") })
 
         then(authService).should().login(request)
         then(authCookieManager).should().createAccessTokenCookie("access-token")
         then(authCookieManager).should().createRefreshTokenCookie("refresh-token")
+        then(authAccessAuditService).should(timeout(1000)).recordLogin(
+            loginResult.sessionId,
+            loginResult.userId,
+            loginResult.email,
+            loginResult.authProvider,
+            "127.0.0.1",
+            null
+        )
     }
 
     @Test
@@ -114,6 +142,6 @@ class AuthControllerTests {
             .andExpect(status().isUnauthorized)
 
         then(authService).should().login(request)
-        verifyNoInteractions(authCookieManager)
+        verifyNoInteractions(authCookieManager, authAccessAuditService)
     }
 }

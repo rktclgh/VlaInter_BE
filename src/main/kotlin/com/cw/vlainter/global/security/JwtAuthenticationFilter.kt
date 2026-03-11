@@ -1,9 +1,11 @@
 package com.cw.vlainter.global.security
 
+import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
 import com.cw.vlainter.domain.user.entity.UserRole
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
+import org.slf4j.LoggerFactory
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
 import org.springframework.security.core.authority.SimpleGrantedAuthority
 import org.springframework.security.core.context.SecurityContextHolder
@@ -22,8 +24,11 @@ import org.springframework.web.filter.OncePerRequestFilter
 class JwtAuthenticationFilter(
     private val authCookieManager: AuthCookieManager,
     private val jwtTokenProvider: JwtTokenProvider,
-    private val loginSessionStore: LoginSessionStore
+    private val loginSessionStore: LoginSessionStore,
+    private val authAccessAuditService: AuthAccessAuditService
 ) : OncePerRequestFilter() {
+    private val auditLogger = LoggerFactory.getLogger(JwtAuthenticationFilter::class.java)
+
     /**
      * 인증이 필요한 요청에 대해 SecurityContext를 채운다.
      */
@@ -58,7 +63,26 @@ class JwtAuthenticationFilter(
         val authority = SimpleGrantedAuthority("ROLE_${claims.role.name}")
         val authentication = UsernamePasswordAuthenticationToken(principal, null, listOf(authority))
         SecurityContextHolder.getContext().authentication = authentication
-        filterChain.doFilter(request, response)
+        try {
+            filterChain.doFilter(request, response)
+        } finally {
+            if (
+                principal.sessionId.isNotBlank() &&
+                request.requestURI.startsWith("/api/") &&
+                !request.requestURI.startsWith("/api/auth/")
+            ) {
+                try {
+                    authAccessAuditService.touchActivity(principal.sessionId, request.method)
+                } catch (_: Exception) {
+                    auditLogger.warn(
+                        "접속 감사 로그 갱신에 실패했습니다. sidPrefix={} method={} path={}",
+                        principal.sessionId.take(8),
+                        request.method,
+                        request.requestURI
+                    )
+                }
+            }
+        }
     }
 
     /**

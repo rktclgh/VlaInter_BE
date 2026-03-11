@@ -1,5 +1,6 @@
 package com.cw.vlainter.domain.user.service
 
+import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
 import com.cw.vlainter.domain.user.dto.UpdateMemberByAdminRequest
 import com.cw.vlainter.domain.user.dto.UpdateMyProfileRequest
 import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
@@ -47,6 +48,9 @@ class UserServiceTests {
     @Mock
     private lateinit var userGeminiApiKeyService: UserGeminiApiKeyService
 
+    @Mock
+    private lateinit var authAccessAuditService: AuthAccessAuditService
+
     @Test
     fun updateMyProfileUpdatesName() {
         val user = createUser()
@@ -93,8 +97,11 @@ class UserServiceTests {
         userService().softDeleteMyAccount(principal)
 
         assertThat(user.status).isEqualTo(UserStatus.DELETED)
+        assertThat(user.deletedOriginalEmail).isEqualTo("user@vlainter.com")
+        assertThat(user.deletedOriginalName).isEqualTo("User Name")
+        assertThat(user.email).isEqualTo("deletedUser${user.id}@vlainter.online")
         then(userRepository).should().save(user)
-        then(loginSessionStore).should().delete(principal.sessionId)
+        then(loginSessionStore).should().deleteAllByUserId(user.id)
     }
 
     @Test
@@ -199,6 +206,23 @@ class UserServiceTests {
         given(userRepository.findById(adminUser.id)).willReturn(Optional.of(adminUser))
         given(userRepository.findById(targetUser.id)).willReturn(Optional.of(targetUser))
         given(userRepository.save(targetUser)).willReturn(targetUser)
+        given(authAccessAuditService.getSummaryForUser(targetUser.id, 7, false)).willReturn(
+            com.cw.vlainter.domain.auth.service.AuthAccessAuditSummary(
+                recentLoginCount = 0,
+                activeSessionCount = 0,
+                totalActionCount = 0,
+                averageActionCount = 0.0,
+                averageSessionMinutes = 0,
+                lastLoginAt = null,
+                completedInterviewCount = 0,
+                totalInterviewCount = 0,
+                interviewCompletionRate = 0.0,
+                dailyLoginCounts = emptyList(),
+                calculatedAt = null
+            )
+        )
+        given(authAccessAuditService.getRecentEntriesForUser(targetUser.id, 8)).willReturn(emptyList())
+        given(authAccessAuditService.getLastLoginForUser(targetUser.id)).willReturn(null)
 
         val response = userService().updateMemberByAdmin(principal, targetUser.id, request)
 
@@ -289,6 +313,36 @@ class UserServiceTests {
 
         then(userFileRepository).should().deleteAllByUser_Id(targetUser.id)
         then(userRepository).should().delete(targetUser)
+        then(loginSessionStore).should().deleteAllByUserId(targetUser.id)
+    }
+
+    @Test
+    fun restoreSoftDeletedMemberByAdminRestoresOriginalProfile() {
+        val adminUser = createUser(id = 100L, email = "admin@vlainter.com", role = UserRole.ADMIN)
+        val principal = createPrincipal(adminUser)
+        val deletedUser = createUser(
+            id = 200L,
+            email = "deletedUser200@vlainter.online",
+            name = "Deleted User 200",
+            status = UserStatus.DELETED
+        ).apply {
+            deletedOriginalEmail = "target@vlainter.com"
+            deletedOriginalName = "Target"
+        }
+
+        given(userRepository.findById(adminUser.id)).willReturn(Optional.of(adminUser))
+        given(userRepository.findById(deletedUser.id)).willReturn(Optional.of(deletedUser))
+        given(userRepository.existsByEmailAndIdNot("target@vlainter.com", deletedUser.id)).willReturn(false)
+        given(userRepository.save(deletedUser)).willReturn(deletedUser)
+
+        userService().restoreSoftDeletedMemberByAdmin(principal, deletedUser.id)
+
+        assertThat(deletedUser.status).isEqualTo(UserStatus.ACTIVE)
+        assertThat(deletedUser.email).isEqualTo("target@vlainter.com")
+        assertThat(deletedUser.name).isEqualTo("Target")
+        assertThat(deletedUser.deletedOriginalEmail).isNull()
+        assertThat(deletedUser.deletedOriginalName).isNull()
+        then(userRepository).should().save(deletedUser)
     }
 
     @Test
@@ -313,7 +367,8 @@ class UserServiceTests {
             userFileRepository = userFileRepository,
             passwordEncoder = passwordEncoder,
             loginSessionStore = loginSessionStore,
-            userGeminiApiKeyService = userGeminiApiKeyService
+            userGeminiApiKeyService = userGeminiApiKeyService,
+            authAccessAuditService = authAccessAuditService
         )
     }
 
