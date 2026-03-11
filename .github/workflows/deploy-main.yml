@@ -114,11 +114,19 @@ jobs:
       - name: Add EC2 host to known_hosts
         run: ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
+      - name: Upload deploy assets
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh ${EC2_USER:-ubuntu}@${EC2_HOST} "mkdir -p /home/ubuntu/vlainter/deploy"
+          scp -r deploy/* ${EC2_USER:-ubuntu}@${EC2_HOST}:/home/ubuntu/vlainter/deploy/
+
       - name: Deploy to EC2
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
-          IMAGE_TAG: ${{ env.IMAGE_NAME }}:latest
+          IMAGE_TAG: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
@@ -135,30 +143,6 @@ jobs:
             exit 1
           fi
 
-          cat > docker-compose.yml <<YAML2
-          services:
-            app:
-              image: ${IMAGE_TAG}
-              container_name: vlainter-app
-              restart: always
-              env_file:
-                - .env
-              ports:
-                - "8080:8080"
-          YAML2
-
-          echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
-
-          if docker compose version >/dev/null 2>&1; then
-            DC="docker compose"
-          elif command -v docker-compose >/dev/null 2>&1; then
-            DC="docker-compose"
-          else
-            echo "Docker Compose not installed"
-            exit 1
-          fi
-
-          $DC pull
-          $DC up -d --remove-orphans
-          $DC ps
+          chmod +x deploy/scripts/deploy-bluegreen.sh
+          DEPLOY_DIR="$DEPLOY_DIR" IMAGE_TAG="$IMAGE_TAG" DOCKERHUB_USERNAME="$DOCKERHUB_USERNAME" DOCKERHUB_TOKEN="$DOCKERHUB_TOKEN" ./deploy/scripts/deploy-bluegreen.sh
           EOF
