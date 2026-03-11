@@ -6,9 +6,9 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./deploy/runtime:/etc/nginx/runtime
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./runtime:/etc/nginx/runtime
     networks:
       - vlainter-net
 
@@ -17,7 +17,7 @@ services:
     container_name: vlainter-app-blue
     restart: always
     env_file:
-      - .env
+      - ../.env
     environment:
       SERVER_PORT: 18080
     ports:
@@ -30,7 +30,7 @@ services:
     container_name: vlainter-app-green
     restart: always
     env_file:
-      - .env
+      - ../.env
     environment:
       SERVER_PORT: 18081
     ports:
