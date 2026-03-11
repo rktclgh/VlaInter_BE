@@ -174,7 +174,7 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `refresh deletes session when token does not match stored session`() {
+    fun `refresh does not delete session when token does not match stored session`() {
         val refreshToken = "refresh-token"
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(1L)
@@ -182,7 +182,8 @@ class AuthServiceTests {
         given(loginSessionStore.validateRefreshToken("sid-1", 1L, refreshToken)).willReturn(false)
 
         assertUnauthorized { authService().refresh(refreshToken) }
-        then(loginSessionStore).should().delete("sid-1")
+        then(loginSessionStore).should().validateRefreshToken("sid-1", 1L, refreshToken)
+        then(loginSessionStore).shouldHaveNoMoreInteractions()
     }
 
     @Test

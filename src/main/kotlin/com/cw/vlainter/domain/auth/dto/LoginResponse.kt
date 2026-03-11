@@ -9,7 +9,6 @@ import com.cw.vlainter.domain.user.entity.UserRole
  * 본문에는 화면 전환/표시 용도의 최소 사용자 정보만 포함한다.
  */
 data class LoginResponse(
-    val userId: Long,
     val email: String,
     val name: String,
     val role: UserRole,

@@ -89,7 +89,7 @@ class AuthControllerTests {
                 .content(jacksonObjectMapper().writeValueAsString(request))
         )
             .andExpect(status().isOk)
-            .andExpect(jsonPath("$.userId").value(1L))
+            .andExpect(jsonPath("$.userId").doesNotExist())
             .andExpect(jsonPath("$.email").value(request.email))
             .andExpect(jsonPath("$.name").value("Tester"))
             .andExpect(jsonPath("$.role").value("ADMIN"))

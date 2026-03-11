@@ -1,7 +1,7 @@
 package com.cw.vlainter.domain.interview.controller
 
 import com.cw.vlainter.domain.interview.dto.AdminQuestionSetSummaryResponse
-import com.cw.vlainter.domain.interview.dto.CategoryResponse
+import com.cw.vlainter.domain.interview.dto.AdminCategoryResponse
 import com.cw.vlainter.domain.interview.dto.CreateCategoryRequest
 import com.cw.vlainter.domain.interview.dto.MergeCategoryRequest
 import com.cw.vlainter.domain.interview.dto.MoveCategoryRequest
@@ -65,16 +65,16 @@ class InterviewAdminController(
     }
 
     @GetMapping("/categories")
-    fun getCategories(): ResponseEntity<List<CategoryResponse>> {
-        return ResponseEntity.ok(categoryAdminService.getActiveCategoryTree())
+    fun getCategories(): ResponseEntity<List<AdminCategoryResponse>> {
+        return ResponseEntity.ok(categoryAdminService.getActiveCategoryTreeForAdmin())
     }
 
     @PostMapping("/categories")
     fun createCategory(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @Valid @RequestBody request: CreateCategoryRequest
-    ): ResponseEntity<CategoryResponse> {
-        return ResponseEntity.ok(categoryAdminService.createCategory(principal, request))
+    ): ResponseEntity<AdminCategoryResponse> {
+        return ResponseEntity.ok(categoryAdminService.createCategoryForAdmin(principal, request))
     }
 
     @PatchMapping("/categories/{categoryId}")
@@ -82,7 +82,7 @@ class InterviewAdminController(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @PathVariable categoryId: Long,
         @RequestBody request: UpdateCategoryRequest
-    ): ResponseEntity<CategoryResponse> {
+    ): ResponseEntity<AdminCategoryResponse> {
         return ResponseEntity.ok(categoryAdminService.updateCategory(principal, categoryId, request))
     }
 
@@ -91,7 +91,7 @@ class InterviewAdminController(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @PathVariable categoryId: Long,
         @Valid @RequestBody request: MoveCategoryRequest
-    ): ResponseEntity<CategoryResponse> {
+    ): ResponseEntity<AdminCategoryResponse> {
         return ResponseEntity.ok(categoryAdminService.moveCategory(principal, categoryId, request))
     }
 
@@ -100,7 +100,7 @@ class InterviewAdminController(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @PathVariable categoryId: Long,
         @Valid @RequestBody request: MergeCategoryRequest
-    ): ResponseEntity<CategoryResponse> {
+    ): ResponseEntity<AdminCategoryResponse> {
         return ResponseEntity.ok(categoryAdminService.mergeCategory(principal, categoryId, request))
     }
 

@@ -63,10 +63,7 @@ class AuthController(
             logger.info("Auth signup success userId={} email={} ip={}", createdUser.id, createdUser.email, clientIp)
             return ResponseEntity.ok(
                 mapOf(
-                    "message" to "회원가입이 완료되었습니다.",
-                    "userId" to createdUser.id,
-                    "email" to createdUser.email,
-                    "name" to createdUser.name
+                    "message" to "회원가입이 완료되었습니다."
                 )
             )
         } catch (ex: ResponseStatusException) {
@@ -93,7 +90,6 @@ class AuthController(
     ): ResponseEntity<Map<String, Any>> {
         return ResponseEntity.ok(
             mapOf(
-                "userId" to principal.userId,
                 "email" to principal.email
             )
         )
@@ -132,7 +128,6 @@ class AuthController(
 
             return ResponseEntity.ok(
                 LoginResponse(
-                    userId = result.userId,
                     email = result.email,
                     name = result.name,
                     role = result.role,
@@ -179,7 +174,6 @@ class AuthController(
 
             return ResponseEntity.ok(
                 LoginResponse(
-                    userId = result.userId,
                     email = result.email,
                     name = result.name,
                     role = result.role,

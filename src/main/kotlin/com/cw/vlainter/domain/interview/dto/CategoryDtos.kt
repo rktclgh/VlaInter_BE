@@ -3,7 +3,6 @@ package com.cw.vlainter.domain.interview.dto
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
 import com.cw.vlainter.domain.user.entity.UserStatus
-
 data class CreateCategoryRequest(
     val parentId: Long? = null,
     @field:Size(max = 80, message = "카테고리 코드는 80자 이하여야 합니다.")
@@ -32,7 +31,21 @@ data class MergeCategoryRequest(
     val targetCategoryId: Long
 )
 
-data class CategoryResponse(
+data class PublicCategoryResponse(
+    val categoryId: Long,
+    val parentId: Long?,
+    val code: String,
+    val name: String,
+    val description: String?,
+    val depth: Int,
+    val depthLabel: String,
+    val path: String,
+    val sortOrder: Int,
+    val isActive: Boolean,
+    val isLeaf: Boolean
+)
+
+data class AdminCategoryResponse(
     val categoryId: Long,
     val parentId: Long?,
     val code: String,
