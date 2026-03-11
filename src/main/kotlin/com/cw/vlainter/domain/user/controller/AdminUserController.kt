@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.user.controller
 
 import com.cw.vlainter.domain.user.dto.AdminMemberDetailResponse
+import com.cw.vlainter.domain.user.dto.AdminMemberAccessGlobalSummaryResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberListResponse
 import com.cw.vlainter.domain.user.dto.UpdateMemberByAdminRequest
 import com.cw.vlainter.domain.user.service.UserService
@@ -25,17 +26,28 @@ class AdminUserController(
     fun getMembers(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @RequestParam(defaultValue = "0") page: Int,
-        @RequestParam(defaultValue = "20") size: Int
+        @RequestParam(defaultValue = "20") size: Int,
+        @RequestParam(defaultValue = "") keyword: String
     ): ResponseEntity<AdminMemberListResponse> {
-        return ResponseEntity.ok(userService.getMembersByAdmin(principal, page, size))
+        return ResponseEntity.ok(userService.getMembersByAdmin(principal, page, size, keyword))
+    }
+
+    @GetMapping("/access-summary")
+    fun getGlobalAccessSummary(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @RequestParam(defaultValue = "7") windowDays: Int,
+        @RequestParam(defaultValue = "false") refresh: Boolean
+    ): ResponseEntity<AdminMemberAccessGlobalSummaryResponse> {
+        return ResponseEntity.ok(userService.getGlobalAccessSummaryByAdmin(principal, windowDays, refresh))
     }
 
     @GetMapping("/{memberId}")
     fun getMember(
         @AuthenticationPrincipal principal: AuthPrincipal,
-        @PathVariable memberId: Long
+        @PathVariable memberId: Long,
+        @RequestParam(defaultValue = "false") refreshAccess: Boolean
     ): ResponseEntity<AdminMemberDetailResponse> {
-        return ResponseEntity.ok(userService.getMemberByAdmin(principal, memberId))
+        return ResponseEntity.ok(userService.getMemberByAdmin(principal, memberId, refreshAccess))
     }
 
     @PatchMapping("/{memberId}")
@@ -81,6 +93,15 @@ class AdminUserController(
     ): ResponseEntity<Map<String, String>> {
         userService.softDeleteMemberByAdmin(principal, memberId)
         return ResponseEntity.ok(mapOf("message" to "회원 계정이 소프트 삭제 처리되었습니다."))
+    }
+
+    @PatchMapping("/{memberId}/restore")
+    fun restoreMember(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable memberId: Long
+    ): ResponseEntity<Map<String, String>> {
+        userService.restoreSoftDeletedMemberByAdmin(principal, memberId)
+        return ResponseEntity.ok(mapOf("message" to "소프트 삭제된 회원 계정을 복구했습니다."))
     }
 
     @DeleteMapping("/{memberId}/hard")

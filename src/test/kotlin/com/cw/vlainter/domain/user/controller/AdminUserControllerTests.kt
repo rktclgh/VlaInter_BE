@@ -1,8 +1,10 @@
 package com.cw.vlainter.domain.user.controller
 
 import com.cw.vlainter.domain.user.dto.AdminMemberDetailResponse
+import com.cw.vlainter.domain.user.dto.AdminMemberAccessSummaryResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberListResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberSummaryResponse
+import com.cw.vlainter.domain.user.dto.AdminMemberAccessDailyCountResponse
 import com.cw.vlainter.domain.user.dto.UpdateMemberByAdminRequest
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
@@ -40,13 +42,13 @@ class AdminUserControllerTests {
                 )
             )
         )
-        given(userService.getMembersByAdmin(principal, 0, 20)).willReturn(responsePayload)
+        given(userService.getMembersByAdmin(principal, 0, 20, "")).willReturn(responsePayload)
 
-        val response = AdminUserController(userService).getMembers(principal, 0, 20)
+        val response = AdminUserController(userService).getMembers(principal, 0, 20, "")
 
         assertThat(response.statusCode.value()).isEqualTo(200)
         assertThat(response.body).isEqualTo(responsePayload)
-        then(userService).should().getMembersByAdmin(principal, 0, 20)
+        then(userService).should().getMembersByAdmin(principal, 0, 20, "")
     }
 
     @Test
@@ -61,15 +63,17 @@ class AdminUserControllerTests {
             point = 0L,
             free = 0,
             createdAt = OffsetDateTime.parse("2026-03-01T10:00:00+09:00"),
-            updatedAt = OffsetDateTime.parse("2026-03-04T10:00:00+09:00")
+            updatedAt = OffsetDateTime.parse("2026-03-04T10:00:00+09:00"),
+            accessSummary = emptyAccessSummary(),
+            recentAccessLogs = emptyList()
         )
-        given(userService.getMemberByAdmin(principal, 20L)).willReturn(payload)
+        given(userService.getMemberByAdmin(principal, 20L, false)).willReturn(payload)
 
-        val response = AdminUserController(userService).getMember(principal, 20L)
+        val response = AdminUserController(userService).getMember(principal, 20L, false)
 
         assertThat(response.statusCode.value()).isEqualTo(200)
         assertThat(response.body).isEqualTo(payload)
-        then(userService).should().getMemberByAdmin(principal, 20L)
+        then(userService).should().getMemberByAdmin(principal, 20L, false)
     }
 
     @Test
@@ -85,7 +89,9 @@ class AdminUserControllerTests {
             point = 100L,
             free = 1,
             createdAt = OffsetDateTime.parse("2026-03-01T10:00:00+09:00"),
-            updatedAt = OffsetDateTime.parse("2026-03-04T10:00:00+09:00")
+            updatedAt = OffsetDateTime.parse("2026-03-04T10:00:00+09:00"),
+            accessSummary = emptyAccessSummary(),
+            recentAccessLogs = emptyList()
         )
         given(userService.updateMemberByAdmin(principal, 20L, request)).willReturn(payload)
 
@@ -113,6 +119,23 @@ class AdminUserControllerTests {
             userId = 999L,
             email = "admin@vlainter.com",
             sessionId = "session-999"
+        )
+    }
+
+    private fun emptyAccessSummary(): AdminMemberAccessSummaryResponse {
+        return AdminMemberAccessSummaryResponse(
+            recentLoginCount = 0,
+            activeSessionCount = 0,
+            totalActionCount = 0,
+            averageActionCount = 0.0,
+            averageSessionMinutes = 0,
+            lastLoginAt = null,
+            lastLoginIpAddress = null,
+            completedInterviewCount = 0,
+            totalInterviewCount = 0,
+            interviewCompletionRate = 0.0,
+            dailyLoginCounts = emptyList<AdminMemberAccessDailyCountResponse>(),
+            calculatedAt = null
         )
     }
 }

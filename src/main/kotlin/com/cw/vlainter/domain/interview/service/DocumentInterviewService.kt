@@ -9,6 +9,7 @@ import com.cw.vlainter.domain.interview.dto.InterviewHistoryDocumentResponse
 import com.cw.vlainter.domain.interview.dto.InterviewQuestionResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryResponse
 import com.cw.vlainter.domain.interview.dto.ReadyDocumentResponse
+import com.cw.vlainter.domain.interview.dto.ResumeInterviewSessionResponse
 import com.cw.vlainter.domain.interview.dto.StartMockInterviewRequest
 import com.cw.vlainter.domain.interview.dto.StartTechInterviewResponse
 import com.cw.vlainter.domain.interview.entity.DocChunkEmbedding
@@ -52,6 +53,7 @@ import com.cw.vlainter.global.config.properties.AiProvider
 import com.cw.vlainter.global.config.properties.OcrProperties
 import com.cw.vlainter.global.config.properties.S3Properties
 import com.cw.vlainter.global.security.AuthPrincipal
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.rendering.PDFRenderer
@@ -421,6 +423,8 @@ class DocumentInterviewService(
                                 "categoryName" to techMetaSkillNames.joinToString(", "),
                                 "jobName" to techMetaJobName,
                                 "questionSetId" to selectedQuestionSet?.id,
+                                "providerUsed" to aiRoutingContextHolder.snapshot().providerUsed?.name,
+                                "fallbackDepth" to aiRoutingContextHolder.snapshot().fallbackDepth,
                                 "selectedDocuments" to files.map { file ->
                                     mapOf(
                                         "fileId" to file.id,
@@ -651,6 +655,79 @@ class DocumentInterviewService(
                     finishedAt = session.finishedAt
                 )
             }
+    }
+
+    @Transactional(readOnly = true)
+    fun getLatestIncompleteMockSession(principal: AuthPrincipal): ResumeInterviewSessionResponse? {
+        val latestSession = interviewSessionRepository
+            .findAllByUser_IdAndModeInOrderByUpdatedAtDescCreatedAtDesc(
+                userId = principal.userId,
+                modes = listOf(InterviewMode.DOC, InterviewMode.MIXED)
+            )
+            .firstOrNull()
+            ?: return null
+        if (latestSession.status != InterviewStatus.IN_PROGRESS) {
+            return null
+        }
+
+        val root = runCatching { objectMapper.readTree(latestSession.configJson) }.getOrNull() ?: return null
+        val meta = root.get("meta")
+        val selectedDocumentsNode = meta?.get("selectedDocuments")
+        val selectedDocuments = when {
+            selectedDocumentsNode == null -> emptyList()
+            selectedDocumentsNode.isArray -> selectedDocumentsNode
+                .mapNotNull { item -> item.toInterviewHistoryDocumentResponse() }
+            selectedDocumentsNode.isObject -> selectedDocumentsNode
+                .fieldNames()
+                .asSequence()
+                .mapNotNull { fieldName -> selectedDocumentsNode.get(fieldName)?.toInterviewHistoryDocumentResponse() }
+                .toList()
+            else -> emptyList()
+        }
+        if (selectedDocuments.isEmpty()) return null
+        val currentTurn = interviewTurnRepository.findFirstBySession_IdAndUserAnswerIsNullOrderByTurnNoAsc(latestSession.id)
+            ?: return null
+        val queueSize = root["queue"]?.takeIf { it.isArray }?.size() ?: 0
+        return ResumeInterviewSessionResponse(
+            sessionId = latestSession.id,
+            status = latestSession.status.name,
+            mode = latestSession.mode.name,
+            currentQuestion = toInterviewQuestionResponse(currentTurn),
+            questionCount = meta?.get("questionCount")?.asInt() ?: max(queueSize, 1),
+            difficulty = meta?.get("difficulty")?.asText(),
+            difficultyRating = meta?.get("difficultyRating")?.asInt(),
+            categoryId = meta?.get("categoryId")?.takeIf { it.canConvertToLong() }?.asLong(),
+            categoryName = meta?.get("categoryName")?.asText()?.takeIf { it.isNotBlank() },
+            jobName = meta?.get("jobName")?.asText()?.takeIf { it.isNotBlank() },
+            selectedDocuments = selectedDocuments,
+            questionSetId = meta?.get("questionSetId")?.takeIf { it.canConvertToLong() }?.asLong(),
+            includeSelfIntroduction = meta?.get("includeSelfIntroduction")?.asBoolean() == true,
+            providerUsed = meta?.get("providerUsed")?.asText()?.takeIf { it.isNotBlank() },
+            fallbackDepth = meta?.get("fallbackDepth")?.asInt() ?: 0
+        )
+    }
+
+    @Transactional
+    fun dismissMockSession(principal: AuthPrincipal, sessionId: Long) {
+        val session = interviewSessionRepository.findByIdAndUser_Id(sessionId, principal.userId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "면접 세션을 찾을 수 없습니다.")
+        if (session.mode == InterviewMode.QUESTION_SET_PRACTICE) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "질문 세트 연습 세션은 이 경로에서 종료할 수 없습니다.")
+        }
+        if (session.status != InterviewStatus.IN_PROGRESS) return
+        session.status = InterviewStatus.DONE
+        session.finishedAt = OffsetDateTime.now()
+    }
+
+    private fun JsonNode.toInterviewHistoryDocumentResponse(): InterviewHistoryDocumentResponse? {
+        val label = this["label"]?.asText()?.trim().orEmpty()
+        if (label.isBlank()) return null
+        return InterviewHistoryDocumentResponse(
+            fileId = this["fileId"]?.takeIf { it.canConvertToLong() }?.asLong(),
+            fileType = this["fileType"]?.asText(),
+            label = label,
+            ocrUsed = this["ocrUsed"]?.asBoolean() == true
+        )
     }
 
     private fun retrievePromptSnippets(

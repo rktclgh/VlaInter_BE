@@ -153,3 +153,21 @@ data class InterviewSessionHistoryResponse(
     val startedAt: OffsetDateTime?,
     val finishedAt: OffsetDateTime?
 )
+
+data class ResumeInterviewSessionResponse(
+    val sessionId: Long,
+    val status: String,
+    val mode: String,
+    val currentQuestion: InterviewQuestionResponse,
+    val questionCount: Int,
+    val difficulty: String?,
+    val difficultyRating: Int?,
+    val categoryId: Long?,
+    val categoryName: String?,
+    val jobName: String?,
+    val selectedDocuments: List<InterviewHistoryDocumentResponse>,
+    val questionSetId: Long?,
+    val includeSelfIntroduction: Boolean,
+    val providerUsed: String? = null,
+    val fallbackDepth: Int = 0
+)

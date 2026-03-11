@@ -31,6 +31,7 @@ class AuthService(
     private val passwordEncoder: PasswordEncoder,
     private val jwtTokenProvider: JwtTokenProvider,
     private val loginSessionStore: LoginSessionStore,
+    private val authAccessAuditService: AuthAccessAuditService,
     private val redirectUriValidator: RedirectUriValidator,
     private val emailVerificationService: EmailVerificationService
 ) {
@@ -55,7 +56,7 @@ class AuthService(
         validateUserForLogin(user)
         val validatedRedirectUri = redirectUriValidator.validate(request.redirectUri)
 
-        return issueLoginResult(user, validatedRedirectUri)
+        return issueLoginResult(user, validatedRedirectUri, AuthProviderType.EMAIL)
     }
 
     fun loginOrSignupWithEmail(email: String, nameHint: String?, redirectUri: String?): LoginResult {
@@ -86,10 +87,10 @@ class AuthService(
 
         validateUserForLogin(user)
         val validatedRedirectUri = redirectUriValidator.validate(redirectUri)
-        return issueLoginResult(user, validatedRedirectUri)
+        return issueLoginResult(user, validatedRedirectUri, AuthProviderType.KAKAO)
     }
 
-    private fun issueLoginResult(user: User, validatedRedirectUri: String?): LoginResult {
+    private fun issueLoginResult(user: User, validatedRedirectUri: String?, authProvider: AuthProviderType): LoginResult {
 
         val sessionId = UUID.randomUUID().toString()
         val accessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId, user.role)
@@ -110,7 +111,9 @@ class AuthService(
             role = user.role,
             accessToken = accessToken,
             refreshToken = refreshToken,
-            redirectUri = validatedRedirectUri
+            redirectUri = validatedRedirectUri,
+            sessionId = sessionId,
+            authProvider = authProvider
         )
     }
 
@@ -201,6 +204,7 @@ class AuthService(
             ?.takeIf { jwtTokenProvider.isValidRefreshToken(it) }
             ?.let { jwtTokenProvider.extractSessionIdFromRefreshToken(it) }
         if (!refreshSessionId.isNullOrBlank()) {
+            authAccessAuditService.markLogout(refreshSessionId)
             loginSessionStore.delete(refreshSessionId)
             return
         }
@@ -208,6 +212,7 @@ class AuthService(
         val accessSessionId = accessToken
             ?.let { jwtTokenProvider.extractSessionIdFromAccessTokenAllowExpired(it) }
         if (!accessSessionId.isNullOrBlank()) {
+            authAccessAuditService.markLogout(accessSessionId)
             loginSessionStore.delete(accessSessionId)
         }
     }
@@ -256,7 +261,9 @@ data class LoginResult(
     val role: UserRole,
     val accessToken: String,
     val refreshToken: String,
-    val redirectUri: String?
+    val redirectUri: String?,
+    val sessionId: String,
+    val authProvider: AuthProviderType
 )
 
 /**

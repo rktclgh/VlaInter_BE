@@ -4,6 +4,8 @@ import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import jakarta.persistence.LockModeType
+import org.springframework.data.domain.Page
+import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Lock
@@ -19,6 +21,8 @@ interface UserRepository : JpaRepository<User, Long> {
      * 이메일(로그인 ID) 기준 사용자 조회.
      */
     fun findByEmail(email: String): Optional<User>
+
+    fun existsByEmailAndIdNot(email: String, id: Long): Boolean
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select u from User u where u.id = :userId")
@@ -52,4 +56,16 @@ interface UserRepository : JpaRepository<User, Long> {
         @Param("role") role: UserRole = UserRole.ADMIN,
         @Param("excludedStatus") excludedStatus: UserStatus = UserStatus.DELETED
     ): List<User>
+    fun countByStatusNot(status: UserStatus): Long
+
+    @Query(
+        """
+        select u
+        from User u
+        where (:keyword = '' or lower(u.email) like lower(concat('%', :keyword, '%'))
+           or lower(u.name) like lower(concat('%', :keyword, '%'))
+           or str(u.id) = :keyword)
+        """
+    )
+    fun searchMembers(@Param("keyword") keyword: String, pageable: Pageable): Page<User>
 }

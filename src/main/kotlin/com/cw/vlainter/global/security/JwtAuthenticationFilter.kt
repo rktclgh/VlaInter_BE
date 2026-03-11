@@ -1,5 +1,6 @@
 package com.cw.vlainter.global.security
 
+import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
 import com.cw.vlainter.domain.user.entity.UserRole
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
@@ -22,7 +23,8 @@ import org.springframework.web.filter.OncePerRequestFilter
 class JwtAuthenticationFilter(
     private val authCookieManager: AuthCookieManager,
     private val jwtTokenProvider: JwtTokenProvider,
-    private val loginSessionStore: LoginSessionStore
+    private val loginSessionStore: LoginSessionStore,
+    private val authAccessAuditService: AuthAccessAuditService
 ) : OncePerRequestFilter() {
     /**
      * 인증이 필요한 요청에 대해 SecurityContext를 채운다.
@@ -58,7 +60,13 @@ class JwtAuthenticationFilter(
         val authority = SimpleGrantedAuthority("ROLE_${claims.role.name}")
         val authentication = UsernamePasswordAuthenticationToken(principal, null, listOf(authority))
         SecurityContextHolder.getContext().authentication = authentication
-        filterChain.doFilter(request, response)
+        try {
+            filterChain.doFilter(request, response)
+        } finally {
+            if (request.requestURI.startsWith("/api/") && !request.requestURI.startsWith("/api/auth/")) {
+                authAccessAuditService.touchActivity(principal.sessionId, request.method)
+            }
+        }
     }
 
     /**

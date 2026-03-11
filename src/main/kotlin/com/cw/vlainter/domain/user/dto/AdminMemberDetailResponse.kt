@@ -13,5 +13,7 @@ data class AdminMemberDetailResponse(
     val point: Long,
     val free: Int,
     val createdAt: OffsetDateTime?,
-    val updatedAt: OffsetDateTime?
+    val updatedAt: OffsetDateTime?,
+    val accessSummary: AdminMemberAccessSummaryResponse,
+    val recentAccessLogs: List<AdminMemberAccessLogResponse>
 )

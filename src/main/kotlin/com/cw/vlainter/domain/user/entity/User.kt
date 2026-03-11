@@ -42,6 +42,15 @@ class User (
     @Column(name = "gemini_api_key_encrypted", length = 4096)
     var geminiApiKeyEncrypted: String? = null,
 
+    @Column(name = "deleted_original_email")
+    var deletedOriginalEmail: String? = null,
+
+    @Column(name = "deleted_original_name", length = 100)
+    var deletedOriginalName: String? = null,
+
+    @Column(name = "deleted_at")
+    var deletedAt: OffsetDateTime? = null,
+
     @Column(name = "created_at", nullable = false)
     var createdAt: OffsetDateTime? = null,
 

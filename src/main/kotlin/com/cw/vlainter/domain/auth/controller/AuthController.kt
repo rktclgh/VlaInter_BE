@@ -4,6 +4,7 @@ import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.auth.dto.LoginResponse
 import com.cw.vlainter.domain.auth.dto.KakaoLoginRequest
 import com.cw.vlainter.domain.auth.dto.SignupRequest
+import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
 import com.cw.vlainter.domain.auth.service.AuthService
 import com.cw.vlainter.domain.auth.service.KakaoAuthService
 import com.cw.vlainter.global.security.AuthPrincipal
@@ -34,7 +35,8 @@ import java.util.LinkedHashMap
 class AuthController(
     private val authService: AuthService,
     private val kakaoAuthService: KakaoAuthService,
-    private val authCookieManager: AuthCookieManager
+    private val authCookieManager: AuthCookieManager,
+    private val authAccessAuditService: AuthAccessAuditService
 ) {
     private val logger = LoggerFactory.getLogger(AuthController::class.java)
 
@@ -123,6 +125,14 @@ class AuthController(
             val result = authService.login(request)
             invalidateExistingSession(servletRequest, response)
             addAuthCookies(response, result.accessToken, result.refreshToken)
+            authAccessAuditService.recordLogin(
+                sessionId = result.sessionId,
+                userId = result.userId,
+                email = result.email,
+                authProvider = result.authProvider,
+                ipAddress = clientIp,
+                userAgent = servletRequest.getHeader("User-Agent")
+            )
             logger.info("Auth login success userId={} email={} ip={}", result.userId, result.email, clientIp)
 
             return ResponseEntity.ok(
@@ -169,6 +179,14 @@ class AuthController(
             )
             invalidateExistingSession(servletRequest, response)
             addAuthCookies(response, result.accessToken, result.refreshToken)
+            authAccessAuditService.recordLogin(
+                sessionId = result.sessionId,
+                userId = result.userId,
+                email = result.email,
+                authProvider = result.authProvider,
+                ipAddress = clientIp,
+                userAgent = servletRequest.getHeader("User-Agent")
+            )
             logger.info("Auth kakao login success userId={} email={} ip={}", result.userId, result.email, clientIp)
 
             return ResponseEntity.ok(

@@ -4,6 +4,7 @@ import com.cw.vlainter.domain.interview.dto.BookmarkTurnRequest
 import com.cw.vlainter.domain.interview.dto.InterviewSessionResultsResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryResponse
 import com.cw.vlainter.domain.interview.dto.QuestionAttemptResponse
+import com.cw.vlainter.domain.interview.dto.ResumeInterviewSessionResponse
 import com.cw.vlainter.domain.interview.dto.SavedQuestionResponse
 import com.cw.vlainter.domain.interview.dto.StartTechInterviewRequest
 import com.cw.vlainter.domain.interview.dto.StartTechInterviewResponse
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
@@ -57,6 +59,23 @@ class InterviewPracticeController(
         @AuthenticationPrincipal principal: AuthPrincipal
     ): ResponseEntity<List<InterviewSessionHistoryResponse>> {
         return ResponseEntity.ok(interviewPracticeService.getTechSessionHistory(principal))
+    }
+
+    @GetMapping("/sessions/latest-incomplete")
+    fun getLatestIncompleteSession(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @RequestParam(required = false) sessionMode: String?
+    ): ResponseEntity<ResumeInterviewSessionResponse?> {
+        return ResponseEntity.ok(interviewPracticeService.getLatestIncompleteTechSession(principal, sessionMode))
+    }
+
+    @PostMapping("/sessions/{sessionId}/dismiss")
+    fun dismissSession(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable sessionId: Long
+    ): ResponseEntity<Map<String, String>> {
+        interviewPracticeService.dismissTechSession(principal, sessionId)
+        return ResponseEntity.ok(mapOf("message" to "진행 중인 세션을 종료했습니다."))
     }
 
     @PostMapping("/turns/{turnId}/bookmark")
