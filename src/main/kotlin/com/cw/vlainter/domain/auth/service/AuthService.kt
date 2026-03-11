@@ -9,6 +9,7 @@ import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.JwtTokenProvider
 import com.cw.vlainter.global.security.LoginSessionStore
 import com.cw.vlainter.global.security.RedirectUriValidator
+import org.slf4j.LoggerFactory
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.security.crypto.password.PasswordEncoder
@@ -33,6 +34,7 @@ class AuthService(
     private val redirectUriValidator: RedirectUriValidator,
     private val emailVerificationService: EmailVerificationService
 ) {
+    private val logger = LoggerFactory.getLogger(AuthService::class.java)
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
 
     /**
@@ -62,9 +64,10 @@ class AuthService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이메일 정보가 유효하지 않습니다.")
         }
 
-        val user = userRepository.findByEmail(normalizedEmail).orElseGet {
+        val existingUser = userRepository.findByEmail(normalizedEmail)
+        val user = existingUser.orElseGet {
             val resolvedName = resolveSocialName(nameHint, normalizedEmail)
-            userRepository.save(
+            val createdUser = userRepository.save(
                 User(
                     email = normalizedEmail,
                     password = passwordEncoder.encode(generateSocialRandomPassword()),
@@ -73,6 +76,12 @@ class AuthService(
                     role = UserRole.USER
                 )
             )
+            logger.info("Auth social signup created new user userId={} email={}", createdUser.id, createdUser.email)
+            createdUser
+        }
+
+        if (existingUser.isPresent) {
+            logger.info("Auth social login matched existing user userId={} email={}", user.id, user.email)
         }
 
         validateUserForLogin(user)
@@ -86,6 +95,13 @@ class AuthService(
         val accessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId, user.role)
         val refreshToken = jwtTokenProvider.createRefreshToken(user.id, sessionId)
         loginSessionStore.create(sessionId, user.id, refreshToken)
+        logger.info(
+            "Auth session issued userId={} email={} role={} sidPrefix={}",
+            user.id,
+            user.email,
+            user.role,
+            sessionId.take(8)
+        )
 
         return LoginResult(
             userId = user.id,
@@ -177,11 +193,23 @@ class AuthService(
      * Access Token은 짧은 수명을 가지며, 세션 삭제 이후 필터 단계에서 차단된다.
      */
     fun logout(refreshToken: String?) {
-        if (refreshToken.isNullOrBlank()) return
-        if (!jwtTokenProvider.isValidRefreshToken(refreshToken)) return
+        logoutByTokens(accessToken = null, refreshToken = refreshToken)
+    }
 
-        val sessionId = jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)
-        loginSessionStore.delete(sessionId)
+    fun logoutByTokens(accessToken: String?, refreshToken: String?) {
+        val refreshSessionId = refreshToken
+            ?.takeIf { jwtTokenProvider.isValidRefreshToken(it) }
+            ?.let { jwtTokenProvider.extractSessionIdFromRefreshToken(it) }
+        if (!refreshSessionId.isNullOrBlank()) {
+            loginSessionStore.delete(refreshSessionId)
+            return
+        }
+
+        val accessSessionId = accessToken
+            ?.let { jwtTokenProvider.extractSessionIdFromAccessTokenAllowExpired(it) }
+        if (!accessSessionId.isNullOrBlank()) {
+            loginSessionStore.delete(accessSessionId)
+        }
     }
 
     /**

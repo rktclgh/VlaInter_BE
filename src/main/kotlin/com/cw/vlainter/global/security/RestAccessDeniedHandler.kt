@@ -21,7 +21,7 @@ class RestAccessDeniedHandler(
     ) {
         val requestPath = resolveRequestPath(request)
         if (!requestPath.startsWith("/api/")) {
-            response.sendRedirect("${request.contextPath}/errors/403")
+            redirectToForbiddenPage(request, response)
             return
         }
 
@@ -45,5 +45,13 @@ class RestAccessDeniedHandler(
         } else {
             requestUri
         }
+    }
+
+    private fun redirectToForbiddenPage(
+        request: HttpServletRequest,
+        response: HttpServletResponse
+    ) {
+        response.status = HttpStatus.SEE_OTHER.value()
+        response.setHeader("Location", "${request.contextPath}/errors/403")
     }
 }

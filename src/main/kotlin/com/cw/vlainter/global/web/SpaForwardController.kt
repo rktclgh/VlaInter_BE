@@ -31,10 +31,7 @@ class SpaForwardController {
         "/login",
         "/join",
         "/auth/kakao/callback",
-        "/content/interview",
-        "/content/files",
-        "/content/mypage",
-        "/content/point-charge"
+        "/content/**"
     )
     fun forwardToIndex(): String = "forward:/index.html"
 }
