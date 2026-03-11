@@ -89,7 +89,15 @@ else
 fi
 
 echo "[INFO] 프록시 스위칭 완료. 프록시 헬스체크 확인 중"
-curl -fsS "http://127.0.0.1:8080${HEALTH_PATH}" >/dev/null
+proxy_deadline=$((SECONDS + 30))
+until curl -fsS "http://127.0.0.1:8080${HEALTH_PATH}" >/dev/null 2>&1; do
+  if [ "$SECONDS" -ge "$proxy_deadline" ]; then
+    echo "[ERROR] 프록시 헬스체크 실패: http://127.0.0.1:8080${HEALTH_PATH}"
+    docker logs vlainter-proxy --tail 200 || true
+    exit 1
+  fi
+  sleep 1
+done
 
 if [ -n "$previous_color" ] && docker ps --format '{{.Names}}' | grep -q "^vlainter-app-${previous_color}\$"; then
   echo "[INFO] 이전 컨테이너 중지: ${previous_color}"
