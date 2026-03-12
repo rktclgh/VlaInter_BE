@@ -88,18 +88,30 @@ class AuthService(
                     userName = createdUser.name,
                     signupChannel = "카카오"
                 )
-                logger.info("Auth social signup created new user userId={} email={}", createdUser.id, createdUser.email)
+                logger.info(
+                    "Auth social signup created new user userId={} emailHash={}",
+                    createdUser.id,
+                    AuthLogSanitizer.hash(createdUser.email)
+                )
                 createdUser
             } catch (_: DataIntegrityViolationException) {
                 val reusedUser = userRepository.findByEmail(normalizedEmail)
                     .orElseThrow { ResponseStatusException(HttpStatus.CONFLICT, "이미 가입된 이메일입니다.") }
-                logger.info("Auth social login reused existing user after concurrent signup userId={} email={}", reusedUser.id, reusedUser.email)
+                logger.info(
+                    "Auth social login reused existing user after concurrent signup userId={} emailHash={}",
+                    reusedUser.id,
+                    AuthLogSanitizer.hash(reusedUser.email)
+                )
                 reusedUser
             }
         }
 
         if (existingUser != null) {
-            logger.info("Auth social login matched existing user userId={} email={}", user.id, user.email)
+            logger.info(
+                "Auth social login matched existing user userId={} emailHash={}",
+                user.id,
+                AuthLogSanitizer.hash(user.email)
+            )
         }
 
         validateUserForLogin(user)
@@ -114,9 +126,9 @@ class AuthService(
         val refreshToken = jwtTokenProvider.createRefreshToken(user.id, sessionId)
         loginSessionStore.create(sessionId, user.id, refreshToken)
         logger.info(
-            "Auth session issued userId={} email={} role={} sidPrefix={}",
+            "Auth session issued userId={} emailHash={} role={} sidPrefix={}",
             user.id,
-            user.email,
+            AuthLogSanitizer.hash(user.email),
             user.role,
             sessionId.take(8)
         )

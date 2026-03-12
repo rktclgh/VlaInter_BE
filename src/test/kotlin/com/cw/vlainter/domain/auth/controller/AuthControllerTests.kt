@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.auth.controller
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
+import com.cw.vlainter.domain.auth.service.AuthRateLimitService
 import com.cw.vlainter.domain.auth.service.AuthService
 import com.cw.vlainter.domain.auth.service.AuthProviderType
 import com.cw.vlainter.domain.auth.service.KakaoAuthService
@@ -46,11 +47,20 @@ class AuthControllerTests {
     @Mock
     private lateinit var authAccessAuditService: AuthAccessAuditService
 
+    @Mock
+    private lateinit var authRateLimitService: AuthRateLimitService
+
     private lateinit var mockMvc: MockMvc
 
     @BeforeEach
     fun setUp() {
-        val controller = AuthController(authService, kakaoAuthService, authCookieManager, authAccessAuditService)
+        val controller = AuthController(
+            authService,
+            kakaoAuthService,
+            authCookieManager,
+            authAccessAuditService,
+            authRateLimitService
+        )
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build()
     }
 
@@ -104,6 +114,7 @@ class AuthControllerTests {
         assertTrue(setCookies.any { it.startsWith("vlainter_rt=refresh-token") })
 
         then(authService).should().login(request)
+        then(authRateLimitService).should().checkLoginAttempt(request.email, "127.0.0.1")
         then(authCookieManager).should().createAccessTokenCookie("access-token")
         then(authCookieManager).should().createRefreshTokenCookie("refresh-token")
         then(authAccessAuditService).should(timeout(1000)).recordLogin(
@@ -125,7 +136,7 @@ class AuthControllerTests {
         )
             .andExpect(status().isBadRequest)
 
-        verifyNoInteractions(authService, authCookieManager)
+        verifyNoInteractions(authService, authCookieManager, authRateLimitService)
     }
 
     @Test
@@ -141,6 +152,7 @@ class AuthControllerTests {
         )
             .andExpect(status().isUnauthorized)
 
+        then(authRateLimitService).should().checkLoginAttempt(request.email, "127.0.0.1")
         then(authService).should().login(request)
         verifyNoInteractions(authCookieManager, authAccessAuditService)
     }

@@ -8,17 +8,27 @@ import org.springframework.http.ResponseEntity
 import org.springframework.http.converter.HttpMessageNotReadableException
 import org.slf4j.LoggerFactory
 import org.springframework.validation.FieldError
+import org.springframework.web.HttpRequestMethodNotSupportedException
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.MissingServletRequestParameterException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.multipart.MaxUploadSizeExceededException
+import org.springframework.web.servlet.resource.NoResourceFoundException
 import org.springframework.web.server.ResponseStatusException
 
 @RestControllerAdvice
 class GlobalExceptionHandler {
     private val logger = LoggerFactory.getLogger(GlobalExceptionHandler::class.java)
     private val missingFieldRegex = Regex("missing (?:creator )?property '([^']+)'", RegexOption.IGNORE_CASE)
+    private val noisyProbeMarkers = listOf(
+        ".env",
+        "swagger-ui",
+        "v3/api-docs",
+        "settings.json",
+        "fluent-mail",
+        "wp-"
+    )
 
     @ExceptionHandler(ResponseStatusException::class)
     fun handleResponseStatusException(
@@ -150,6 +160,43 @@ class GlobalExceptionHandler {
             )
     }
 
+    @ExceptionHandler(NoResourceFoundException::class)
+    fun handleNoResourceFound(
+        ex: NoResourceFoundException,
+        request: HttpServletRequest
+    ): ResponseEntity<ApiErrorResponse> {
+        logMissingResource(request.requestURI, ex)
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+            ApiErrorResponse(
+                status = HttpStatus.NOT_FOUND.value(),
+                code = HttpStatus.NOT_FOUND.name,
+                message = "요청한 리소스를 찾을 수 없습니다.",
+                path = request.requestURI
+            )
+        )
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException::class)
+    fun handleHttpRequestMethodNotSupported(
+        ex: HttpRequestMethodNotSupportedException,
+        request: HttpServletRequest
+    ): ResponseEntity<ApiErrorResponse> {
+        logger.warn(
+            "Method not supported path={} method={} supported={}",
+            request.requestURI,
+            request.method,
+            ex.supportedHttpMethods?.joinToString(",") ?: "-"
+        )
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(
+            ApiErrorResponse(
+                status = HttpStatus.METHOD_NOT_ALLOWED.value(),
+                code = HttpStatus.METHOD_NOT_ALLOWED.name,
+                message = "허용되지 않은 요청 메서드입니다.",
+                path = request.requestURI
+            )
+        )
+    }
+
     @ExceptionHandler(Exception::class)
     fun handleUnhandledException(
         ex: Exception,
@@ -194,5 +241,14 @@ class GlobalExceptionHandler {
             HttpStatus.SERVICE_UNAVAILABLE -> "현재 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해주세요."
             else -> "요청 처리 중 오류가 발생했습니다."
         }
+    }
+
+    private fun logMissingResource(requestUri: String, ex: NoResourceFoundException) {
+        val lowered = requestUri.lowercase()
+        if (noisyProbeMarkers.any { lowered.contains(it) }) {
+            logger.warn("Suspicious resource probe blocked path={} method={}", requestUri, ex.httpMethod)
+            return
+        }
+        logger.warn("Static resource not found path={} method={}", requestUri, ex.httpMethod)
     }
 }
