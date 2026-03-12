@@ -38,6 +38,12 @@ class InterviewEvaluationService(
     companion object {
         const val INTRO_CATEGORY = INTERVIEW_INTRO_CATEGORY
         const val INTRO_QUESTION_TEXT = INTERVIEW_INTRO_QUESTION_TEXT
+        val NUMBER_REGEX = Regex("""\d""")
+        val DOCUMENT_CONTEXT_SIGNALS = setOf("상황", "배경", "당시", "문제", "이슈", "프로젝트", "서비스", "요구사항")
+        val DOCUMENT_TASK_SIGNALS = setOf("역할", "담당", "책임", "목표", "과제", "요구", "목적")
+        val DOCUMENT_ACTION_SIGNALS = setOf("제가", "저는", "구현", "설계", "개선", "도입", "분석", "해결", "최적화", "리팩토링", "협업", "검증", "작성", "적용", "정리")
+        val DOCUMENT_RESULT_SIGNALS = setOf("결과", "성과", "개선", "향상", "감소", "증가", "단축", "완료", "달성", "안정화", "배포", "출시")
+        val DOCUMENT_REASONING_SIGNALS = setOf("이유", "근거", "왜냐", "그래서", "이를 위해", "때문에", "검증", "비교", "판단", "트레이드오프")
     }
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -183,6 +189,17 @@ class InterviewEvaluationService(
             )
         }
 
+        if (documentQuestion != null) {
+            return buildDocumentHeuristicEvaluation(
+                questionText = documentQuestion.questionText,
+                referenceAnswer = documentQuestion.referenceAnswer,
+                evidence = parseJsonArray(documentQuestion.evidenceJson),
+                answer = answer,
+                userGeneratedQuestion = userGeneratedQuestion,
+                resolvedAnswer = resolvedAnswer
+            )
+        }
+
         val canonical = resolvedAnswer.modelAnswer.orEmpty()
         val score = if (isLowEffortAnswer(answer)) {
             BigDecimal.ZERO.setScale(2)
@@ -215,11 +232,196 @@ class InterviewEvaluationService(
         )
     }
 
+    private fun buildDocumentHeuristicEvaluation(
+        questionText: String,
+        referenceAnswer: String?,
+        evidence: List<String>,
+        answer: String,
+        userGeneratedQuestion: Boolean,
+        resolvedAnswer: ResolvedAnswerContent
+    ): EvaluationResult {
+        if (isLowEffortAnswer(answer)) {
+            return EvaluationResult(
+                score = BigDecimal.ZERO.setScale(2),
+                feedback = "질문 의도에 맞는 핵심 경험과 본인의 행동이 거의 드러나지 않았습니다. 문서에 적은 경험을 기준으로 다시 답변해 보세요.",
+                bestPractice = if (userGeneratedQuestion) "" else "질문의 의도에 맞춰 당시 상황, 맡은 역할, 실제 행동, 결과를 STAR 순서로 다시 정리해 보세요.",
+                modelAnswer = resolvedAnswer.modelAnswer,
+                rubricScoresJson = """{"coverage":0,"accuracy":0,"communication":0}""",
+                evidenceJson = objectMapper.writeValueAsString(listOf("low_effort_answer")),
+                model = "heuristic",
+                modelVersion = "document-v2"
+            )
+        }
+
+        val answerTokens = tokenize(answer)
+        val questionTokens = tokenize(questionText)
+        val evidenceTokens = evidence.flatMap { tokenize(it) }.toSet()
+        val softBenchmarkTokens = extractDocumentSoftBenchmarkTokens(referenceAnswer, evidence)
+
+        val intentHits = answerTokens.intersect(questionTokens).size
+        val evidenceHits = answerTokens.intersect(evidenceTokens).size
+        val benchmarkHits = answerTokens.intersect(softBenchmarkTokens.toSet()).size
+        val contextSignals = countSignalMatches(answer, DOCUMENT_CONTEXT_SIGNALS)
+        val taskSignals = countSignalMatches(answer, DOCUMENT_TASK_SIGNALS)
+        val actionSignals = countSignalMatches(answer, DOCUMENT_ACTION_SIGNALS)
+        val resultSignals = countSignalMatches(answer, DOCUMENT_RESULT_SIGNALS)
+        val hasNumber = NUMBER_REGEX.containsMatchIn(answer)
+        val hasReasoning = DOCUMENT_REASONING_SIGNALS.any { answer.contains(it) }
+        val sentenceCount = answer.split(Regex("[.!?。]|\\n"))
+            .map { it.trim() }
+            .count { it.isNotBlank() }
+
+        val intentScore = (
+            25 +
+                min(35, intentHits * 12) +
+                min(20, evidenceHits * 6) +
+                if (answer.length >= 80) 10 else 0 +
+                if (actionSignals > 0) 10 else 0
+            ).coerceIn(0, 100)
+
+        val starScore = (
+            min(25, contextSignals * 12) +
+                min(20, taskSignals * 10) +
+                min(30, actionSignals * 12) +
+                min(25, resultSignals * 12 + if (hasNumber) 8 else 0)
+            ).coerceIn(0, 100)
+
+        val coverageScore = (intentScore * 0.6 + starScore * 0.4).toInt().coerceIn(0, 100)
+
+        val accuracyScore = (
+            20 +
+                min(25, evidenceHits * 7) +
+                min(15, benchmarkHits * 4) +
+                if (hasNumber) 15 else 0 +
+                if (hasReasoning) 15 else 0 +
+                if (answer.length >= 120) 10 else 0
+            ).coerceIn(0, 100)
+
+        val communicationScore = (
+            25 +
+                min(20, sentenceCount * 6) +
+                if (answer.length in 80..600) 20 else 8 +
+                if (answer.contains("\n") || sentenceCount >= 3) 15 else 5 +
+                if (answer.trim().endsWith(".") || answer.trim().endsWith("다") || answer.trim().endsWith("요")) 10 else 0
+            ).coerceIn(0, 100)
+
+        val totalScore = BigDecimal(
+            (
+                coverageScore * 0.45 +
+                    accuracyScore * 0.35 +
+                    communicationScore * 0.20
+                ).coerceIn(0.0, 100.0)
+        ).setScale(2, RoundingMode.HALF_UP)
+
+        val missingStarParts = buildList {
+            if (contextSignals == 0) add("상황")
+            if (taskSignals == 0) add("과제/역할")
+            if (actionSignals == 0) add("행동")
+            if (resultSignals == 0 && !hasNumber) add("결과")
+        }
+        val missingKeywords = softBenchmarkTokens
+            .filterNot { it in answerTokens }
+            .distinct()
+            .take(3)
+        val evidenceNotes = buildList {
+            add("질문 핵심 키워드 반영 ${intentHits}건")
+            add("문서 근거 포인트 반영 ${evidenceHits}건")
+            if (missingStarParts.isNotEmpty()) {
+                add("STAR 누락 요소: ${missingStarParts.joinToString(", ")}")
+            }
+            if (!hasNumber) {
+                add("수치/결과 근거 부족")
+            }
+        }
+
+        val feedback = buildString {
+            append(
+                when {
+                    coverageScore >= 80 -> "질문 의도에는 대체로 잘 맞게 답했습니다."
+                    coverageScore >= 60 -> "질문 의도와 관련된 경험은 보이지만, 핵심 초점이 조금 더 선명해야 합니다."
+                    else -> "질문이 묻는 핵심 경험과 답변 초점이 충분히 맞물리지 않았습니다."
+                }
+            )
+            append(' ')
+            append(
+                when {
+                    starScore >= 75 -> "상황, 역할, 행동, 결과 흐름도 비교적 자연스럽게 드러납니다."
+                    starScore >= 50 -> "STAR 흐름은 일부 보이지만, 빠진 요소가 있어 설득력이 다소 약합니다."
+                    else -> "STAR 구조가 약해 면접 답변으로 들었을 때 경험의 맥락과 본인 기여도가 충분히 드러나지 않습니다."
+                }
+            )
+            append(' ')
+            append(
+                when {
+                    accuracyScore >= 75 -> "기술적 설명과 근거도 비교적 설득력 있습니다."
+                    accuracyScore >= 55 -> "기술적 설명은 가능하지만, 선택 이유나 성과 근거를 더 보강할 필요가 있습니다."
+                    else -> "기술 선택 이유, 검증 근거, 성과 설명이 부족해 답변의 신뢰도가 떨어집니다."
+                }
+            )
+        }
+
+        val bestPractice = if (userGeneratedQuestion) {
+            ""
+        } else {
+            buildString {
+                if (missingStarParts.isNotEmpty()) {
+                    append("다음 답변에서는 ${missingStarParts.joinToString(", ")} 요소를 더 분명히 넣어 STAR 흐름을 완성해 보세요. ")
+                } else {
+                    append("현재 답변 흐름은 나쁘지 않으니, 행동과 결과를 더 압축적으로 연결해 전달력을 높여 보세요. ")
+                }
+                if (missingKeywords.isNotEmpty()) {
+                    append("${missingKeywords.joinToString(", ")} 같은 문서 맥락의 구체 요소를 넣으면 질문과의 연결성이 더 선명해집니다. ")
+                }
+                if (!hasNumber) {
+                    append("가능하면 수치, 사용자 영향, 성능 변화, 완료 결과처럼 확인 가능한 근거를 함께 제시하세요.")
+                } else if (!hasReasoning) {
+                    append("결과를 말할 때는 왜 그런 선택을 했는지 판단 근거도 같이 설명해 주세요.")
+                } else {
+                    append("특히 본인이 직접 판단하고 실행한 부분을 더 짧고 선명하게 강조하면 좋습니다.")
+                }
+            }.trim()
+        }
+
+        return EvaluationResult(
+            score = totalScore,
+            feedback = feedback,
+            bestPractice = bestPractice,
+            modelAnswer = resolvedAnswer.modelAnswer,
+            rubricScoresJson = objectMapper.writeValueAsString(
+                mapOf(
+                    "coverage" to coverageScore,
+                    "accuracy" to accuracyScore,
+                    "communication" to communicationScore
+                )
+            ),
+            evidenceJson = objectMapper.writeValueAsString(evidenceNotes),
+            model = "heuristic",
+            modelVersion = "document-v2"
+        )
+    }
+
     private fun tokenize(text: String): Set<String> {
         return text.lowercase()
             .split(Regex("[^a-zA-Z0-9가-힣]+"))
             .filter { it.length >= 2 }
             .toSet()
+    }
+
+    private fun countSignalMatches(answer: String, signals: Set<String>): Int {
+        return signals.count { answer.contains(it, ignoreCase = true) }
+    }
+
+    private fun extractDocumentSoftBenchmarkTokens(referenceAnswer: String?, evidence: List<String>): List<String> {
+        val stopwords = setOf(
+            "질문", "답변", "경험", "프로젝트", "서비스", "사용자", "당시", "이후", "정도",
+            "통해", "관련", "기반", "설명", "대한", "문서", "면접", "저는", "제가", "그리고"
+        )
+        return buildList {
+            addAll(tokenize(referenceAnswer.orEmpty()))
+            evidence.forEach { addAll(tokenize(it)) }
+        }.filterNot { it in stopwords }
+            .distinct()
+            .take(8)
     }
 
     private fun isLowEffortAnswer(answer: String): Boolean {

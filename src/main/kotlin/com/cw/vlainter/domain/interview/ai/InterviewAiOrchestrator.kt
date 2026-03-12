@@ -232,7 +232,7 @@ class InterviewAiOrchestrator(
             [질문]
             $questionText
 
-            [참고 답안]
+            [STAR형 참고 답안]
             ${referenceAnswer?.takeIf { it.isNotBlank() } ?: "(참고 답안 없음)"}
 
             [근거 포인트]
@@ -256,8 +256,14 @@ class InterviewAiOrchestrator(
 
             규칙:
             - 반드시 JSON 객체만 반환
-            - 답변이 문서 맥락과 어긋나면 낮은 점수를 부여
-            - 사실 기반 근거와 전달력을 함께 평가
+            - 평가는 반드시 사용자 답변 자체를 중심으로 수행
+            - 참고 답안과 표현, 문장 순서, 단어 선택이 다르다는 이유만으로 감점하지 말 것
+            - 참고 답안은 정답 매칭용이 아니라, 빠진 관점과 STAR 보강 포인트를 찾는 보조 자료로만 활용할 것
+            - coverage는 질문 의도 적합성과 STAR 구조 완성도를 함께 평가한 점수로 산정
+            - accuracy는 기술적 설명의 타당성, 논리, 근거, 성과 설명의 설득력을 중심으로 산정
+            - communication은 답변 구조, 전달력, 면접 답변다운 정리 정도를 평가
+            - 답변이 문서 맥락과 명확히 어긋나거나 주장 근거가 부족하면 낮은 점수를 부여
+            - bestPractice에는 빠진 STAR 요소(Situation, Task, Action, Result)와 보강할 근거를 구체적으로 적을 것
         """.trimIndent()
 
         return runCatching {
@@ -416,7 +422,7 @@ class InterviewAiOrchestrator(
                 {
                   "questionText": "면접 질문",
                   "questionType": "RESUME_EXPERIENCE | PORTFOLIO_PROJECT | INTRODUCE_MOTIVATION 등",
-                  "referenceAnswer": "이 질문에 대한 이상적인 모범답안(면접 답변 형식, 4~8문장)",
+                  "referenceAnswer": "이 질문에 대한 STAR형 모범답안(Situation, Task, Action, Result가 드러나는 면접 답변 형식, 4~8문장)",
                   "evidence": ["질문의 근거가 된 문서 포인트", "..."]
                 }
               ]
@@ -426,6 +432,8 @@ class InterviewAiOrchestrator(
             - 총 ${questionCount}개 질문 생성
             - 질문은 구체적이어야 하며 문서의 내용과 직접 연결되어야 함
             - 단순 나열형 질문 대신 이유, 역할, 의사결정, 결과를 묻는 면접형 질문 우선
+            - referenceAnswer는 질문의 의도에 맞는 STAR형 예시 답변이어야 하며, 상황/과제/행동/결과가 자연스럽게 드러나야 함
+            - referenceAnswer는 사용자의 실제 경험을 단정하지 말고, 문서 맥락을 바탕으로 한 설득력 있는 예시 답변 형태로 작성할 것
             - OCR 오류처럼 보이는 깨진 문자열, 무의미한 영문 대문자 나열, 문맥이 없는 잡음은 근거로 사용하지 말 것
             - 말이 안 되는 발췌는 건너뛰고, 의미가 분명한 다른 발췌를 선택할 것
             - 질문에 문서 발췌를 그대로 길게 인용하지 말고 자연스러운 면접 문장으로 바꿀 것
