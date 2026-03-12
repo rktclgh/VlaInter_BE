@@ -7,6 +7,7 @@ import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.BDDMockito.given
 import org.mockito.Mock
 import org.mockito.Mockito.doReturn
+import org.mockito.Mockito.verify
 import org.mockito.junit.jupiter.MockitoExtension
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.ValueOperations
@@ -34,6 +35,10 @@ class SuspiciousRequestBlockServiceTests {
         val blocked = service().recordSuspiciousRequest("127.0.0.1", "GET", "/.env")
 
         assertFalse(blocked)
+        verify(redisWindowCounterService).incrementWithWindow(
+            "security:probe:count:${SensitiveValueSanitizer.hash("127.0.0.1")}",
+            Duration.ofMinutes(10)
+        )
     }
 
     @Test
@@ -45,6 +50,15 @@ class SuspiciousRequestBlockServiceTests {
         val blocked = service().recordSuspiciousRequest("127.0.0.1", "GET", "/swagger-ui/")
 
         assertTrue(blocked)
+        verify(redisWindowCounterService).incrementWithWindow(
+            "security:probe:count:${SensitiveValueSanitizer.hash("127.0.0.1")}",
+            Duration.ofMinutes(10)
+        )
+        verify(valueOperations).set(
+            "security:probe:block:${SensitiveValueSanitizer.hash("127.0.0.1")}",
+            "1",
+            Duration.ofMinutes(30)
+        )
         given(redisTemplate.hasKey("security:probe:block:${SensitiveValueSanitizer.hash("127.0.0.1")}")).willReturn(true)
         assertTrue(service().isBlocked("127.0.0.1"))
     }

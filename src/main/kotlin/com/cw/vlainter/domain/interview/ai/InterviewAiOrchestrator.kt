@@ -204,7 +204,7 @@ class InterviewAiOrchestrator(
             null -> true
             is AiProviderAuthorizationException -> false
             is GeminiTransientException -> lastError.statusCode == 429 || lastError.statusCode == 503
-            else -> true
+            else -> false
         }
     }
 
@@ -496,7 +496,7 @@ class InterviewAiOrchestrator(
             - feedback, bestPractice, evidence는 모두 ${responseLanguage.displayLanguageName()}로 작성
             - kind=TECH: 질문 의도 적합성, 기술 정확성, 실무 근거를 중심으로 평가
             - kind=DOCUMENT: 사용자 답변 자체를 중심으로 평가하고 referenceAnswer는 정답 매칭이 아니라 보조 힌트로만 활용
-            - questionType이 INTRODUCE_MOTIVATION, INTRODUCE_VALUE, INTRODUCE_FUTURE_PLAN 인 DOCUMENT 항목은 STAR를 과도하게 강제하지 말고 동기, 판단 기준, 실제 적용 계획, 근거 연결성을 평가
+            - questionType이 INTRODUCE_MOTIVATION, INTRODUCE_VALUE, INTRODUCE_FUTURE_PLAN, RESUME_MOTIVATION, RESUME_VALUE 인 DOCUMENT 항목은 STAR를 과도하게 강제하지 말고 동기, 판단 기준, 실제 적용 계획, 근거 연결성을 평가
             - 그 외 DOCUMENT 항목은 질문 의도와 STAR 흐름(Situation, Task, Action, Result)을 함께 평가
             - kind=INTRO: 자기소개 답변으로서 역할, 강점, 지원 맥락, 전달력을 평가
             - answerLanguage=EN 이면 communication 점수에 grammar, sentence completeness, clarity, and natural professional English quality를 반영
@@ -1228,15 +1228,15 @@ class InterviewAiOrchestrator(
     ): String {
         val normalized = questionType.trim().uppercase()
         val fileTypeKey = normalizeDocumentFileType(fileTypeLabel)
-        if (normalized.isBlank()) return toDocumentQuestionType(fileTypeLabel)
         if (fileTypeKey != "RESUME") return normalized
-        if (normalized.startsWith("RESUME_")) return normalized
 
         val lowered = questionText.lowercase()
         val resultSignals = listOf("성과", "결과", "효과", "개선", "기준", "이유", "선택", "판단", "why", "reason", "result", "impact", "decision")
         return when {
             evidenceKind == "MOTIVATION_OR_ASPIRATION" -> "RESUME_MOTIVATION"
             evidenceKind == "VALUE_OR_ATTITUDE" -> "RESUME_VALUE"
+            normalized.isBlank() -> toDocumentQuestionType(fileTypeLabel)
+            normalized.startsWith("RESUME_") -> normalized
             normalized == "INTRODUCE_MOTIVATION" || normalized == "INTRODUCE_FUTURE_PLAN" -> "RESUME_MOTIVATION"
             normalized == "INTRODUCE_VALUE" -> "RESUME_VALUE"
             normalized.startsWith("PORTFOLIO_") && resultSignals.any { lowered.contains(it) } -> "RESUME_RESULT"

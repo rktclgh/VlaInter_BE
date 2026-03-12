@@ -24,28 +24,31 @@ class SuspiciousRequestBlockingFilter(
         response: HttpServletResponse,
         filterChain: FilterChain
     ) {
+        val requestMethod = request.method
+        val requestUri = request.requestURI
         val clientIp = clientIpResolver.resolve(request)
         if (suspiciousRequestBlockService.isBlocked(clientIp)) {
-            writeBlockedResponse(response, request.requestURI)
+            writeBlockedResponse(response, requestUri)
             auditLogger.warn(
                 "Blocked request from suspicious client ipHash={} method={} path={}",
                 SensitiveValueSanitizer.hash(clientIp),
-                request.method,
-                request.requestURI
+                requestMethod,
+                requestUri
             )
             return
         }
 
-        if (suspiciousRequestBlockService.recordSuspiciousRequest(clientIp, request.method, request.requestURI)) {
-            writeBlockedResponse(response, request.requestURI)
+        if (!suspiciousRequestBlockService.isSuspiciousRequest(requestMethod, requestUri)) {
+            filterChain.doFilter(request, response)
+            return
+        }
+
+        if (suspiciousRequestBlockService.recordSuspiciousRequest(clientIp, requestMethod, requestUri)) {
+            writeBlockedResponse(response, requestUri)
             return
         }
 
         filterChain.doFilter(request, response)
-    }
-
-    override fun shouldNotFilter(request: HttpServletRequest): Boolean {
-        return !suspiciousRequestBlockService.isSuspiciousRequest(request.method, request.requestURI)
     }
 
     private fun writeBlockedResponse(response: HttpServletResponse, requestUri: String) {

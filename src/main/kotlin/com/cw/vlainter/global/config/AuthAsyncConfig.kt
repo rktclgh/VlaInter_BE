@@ -14,7 +14,8 @@ class AuthAsyncConfig {
             maxPoolSize = 2
             queueCapacity = 200
             setThreadNamePrefix("auth-audit-")
-            setWaitForTasksToCompleteOnShutdown(false)
+            setWaitForTasksToCompleteOnShutdown(true)
+            setAwaitTerminationSeconds(10)
             initialize()
         }
     }

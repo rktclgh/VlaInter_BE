@@ -20,11 +20,6 @@ class ClientIpResolver(
         if (remoteAddr.isBlank()) return "unknown"
         if (!isTrustedProxy(remoteAddr)) return remoteAddr
 
-        request.getHeader("CF-Connecting-IP")
-            ?.trim()
-            ?.takeIf { it.isNotBlank() && isParsableIp(it) }
-            ?.let { return it }
-
         val forwarded = request.getHeader("X-Forwarded-For")
             ?.split(",")
             ?.map { it.trim() }

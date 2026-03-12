@@ -298,6 +298,41 @@ class InterviewAiOrchestratorTests {
     }
 
     @Test
+    fun `이력서에서 questionType이 비어 있어도 evidenceKind 기준으로 resume 동기 유형으로 정규화한다`() {
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willReturn(
+            LlmGenerationResult(
+                model = "gemini",
+                modelVersion = "v1",
+                text = """
+                    {
+                      "questions": [
+                        {
+                          "questionText": "지원한 이유와 입사 후 어떤 기준으로 기여하고 싶은지 설명해 주세요.",
+                          "questionType": "",
+                          "evidenceKind": "MOTIVATION_OR_ASPIRATION",
+                          "referenceAnswer": "해당 직무에 지원한 이유는 안정적인 서비스 운영을 더 깊게 경험하고 싶었기 때문입니다. 프로젝트와 인턴에서 사용자 경험과 운영 안정성의 중요성을 체감했고, 입사 후에는 기능 구현뿐 아니라 운영 관점의 판단 기준까지 함께 가져가고 싶습니다. 특히 장애 예방과 사용성 개선을 함께 고려하는 방식으로 기여하고자 합니다.",
+                          "evidence": [
+                            "지원동기와 입사 후 기여 방향을 설명한 이력서형 문장이 포함되어 있음"
+                          ]
+                        }
+                      ]
+                    }
+                """.trimIndent()
+            )
+        )
+
+        val generated = orchestrator.generateDocumentQuestions(
+            fileTypeLabel = "RESUME",
+            difficulty = null,
+            questionCount = 1,
+            contextSnippets = listOf("지원동기와 입사 후 기여 방향을 설명한 이력서형 문장이 포함되어 있다.")
+        )
+
+        assertThat(generated).hasSize(1)
+        assertThat(generated.first().questionType).isEqualTo("RESUME_MOTIVATION")
+    }
+
+    @Test
     fun `문서 질문 생성은 일부만 통과해도 partial success로 반환한다`() {
         given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willReturn(
             LlmGenerationResult(

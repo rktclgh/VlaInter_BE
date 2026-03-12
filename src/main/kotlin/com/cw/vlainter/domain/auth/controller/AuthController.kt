@@ -18,6 +18,7 @@ import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.core.task.TaskRejectedException
 import org.springframework.http.HttpHeaders
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -30,6 +31,7 @@ import org.springframework.web.server.ResponseStatusException
 import java.util.LinkedHashMap
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * 인증 관련 HTTP API를 제공한다.
@@ -219,20 +221,26 @@ class AuthController(
     }
 
     private fun recordLoginAuditAsync(result: LoginResult, clientIp: String, userAgent: String?) {
-        CompletableFuture.runAsync({
-            try {
-                authAccessAuditService.recordLogin(
-                    sessionId = result.sessionId,
-                    userId = result.userId,
-                    email = result.email,
-                    authProvider = result.authProvider,
-                    ipAddress = clientIp,
-                    userAgent = userAgent
-                )
-            } catch (ex: Exception) {
-                logger.warn("로그인 접속 감사 로그 기록에 실패했습니다. userId={} sidPrefix={}", result.userId, result.sessionId.take(8), ex)
-            }
-        }, authAuditExecutor)
+        try {
+            CompletableFuture.runAsync({
+                try {
+                    authAccessAuditService.recordLogin(
+                        sessionId = result.sessionId,
+                        userId = result.userId,
+                        email = result.email,
+                        authProvider = result.authProvider,
+                        ipAddress = clientIp,
+                        userAgent = userAgent
+                    )
+                } catch (ex: Exception) {
+                    logger.warn("로그인 접속 감사 로그 기록에 실패했습니다. userId={} sidPrefix={}", result.userId, result.sessionId.take(8), ex)
+                }
+            }, authAuditExecutor)
+        } catch (ex: TaskRejectedException) {
+            logger.warn("로그인 접속 감사 로그 제출이 거절되었습니다. userId={} sidPrefix={}", result.userId, result.sessionId.take(8), ex)
+        } catch (ex: RejectedExecutionException) {
+            logger.warn("로그인 접속 감사 로그 제출이 거절되었습니다. userId={} sidPrefix={}", result.userId, result.sessionId.take(8), ex)
+        }
     }
 
     /**

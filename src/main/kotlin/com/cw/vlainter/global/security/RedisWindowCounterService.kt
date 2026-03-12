@@ -27,11 +27,18 @@ class RedisWindowCounterService(
         resultType = Long::class.java
     }
 
+    /**
+     * Increments a Redis counter and guarantees the requested window TTL in one atomic script.
+     *
+     * Throws [IllegalStateException] when Redis returns a null script result so callers never
+     * silently treat a failed increment as a successful count.
+     */
     fun incrementWithWindow(key: String, window: Duration): Long {
-        return redisTemplate.execute(
+        val count = redisTemplate.execute(
             incrementWithWindowScript,
             listOf(key),
             window.toMillis().toString()
-        )
+        ) as Long?
+        return count ?: throw IllegalStateException("Redis window counter increment returned null for key=$key")
     }
 }

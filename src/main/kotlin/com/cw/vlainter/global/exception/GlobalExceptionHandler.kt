@@ -187,7 +187,13 @@ class GlobalExceptionHandler {
             request.method,
             ex.supportedHttpMethods?.joinToString(",") ?: "-"
         )
-        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(
+        var responseBuilder = ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
+        ex.supportedHttpMethods
+            ?.map { org.springframework.http.HttpMethod.valueOf(it.name()) }
+            ?.toTypedArray()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { supportedMethods -> responseBuilder = responseBuilder.allow(*supportedMethods) }
+        return responseBuilder.body(
             ApiErrorResponse(
                 status = HttpStatus.METHOD_NOT_ALLOWED.value(),
                 code = HttpStatus.METHOD_NOT_ALLOWED.name,
@@ -249,6 +255,6 @@ class GlobalExceptionHandler {
             logger.warn("Suspicious resource probe detected path={} method={}", requestUri, ex.httpMethod)
             return
         }
-        logger.warn("Static resource not found path={} method={}", requestUri, ex.httpMethod)
+        logger.info("Static resource not found path={} method={}", requestUri, ex.httpMethod)
     }
 }
