@@ -18,6 +18,7 @@ import org.mockito.BDDMockito.given
 import org.mockito.BDDMockito.then
 import org.mockito.BDDMockito.willThrow
 import org.mockito.Mock
+import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verifyNoInteractions
@@ -283,6 +284,7 @@ class EmailVerificationServiceTests {
     private fun service(): EmailVerificationService {
         lenient().`when`(emailTemplateService.logoContentId()).thenReturn("vlainter-logo")
         lenient().`when`(emailTemplateService.logoResource()).thenReturn(ClassPathResource("email/logo/favicon.png"))
+        clearInvocations(emailTemplateService)
         return EmailVerificationService(
             mailSender = mailSender,
             redisTemplate = redisTemplate,

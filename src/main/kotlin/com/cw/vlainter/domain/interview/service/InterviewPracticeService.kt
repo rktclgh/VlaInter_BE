@@ -51,6 +51,7 @@ import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
+import org.slf4j.LoggerFactory
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
@@ -84,10 +85,12 @@ class InterviewPracticeService(
 ) {
     companion object {
         private const val AI_GENERATED_SET_DESCRIPTION = "카테고리 기반 자동 생성 문답"
-        private val ENGLISH_WORD_REGEX = Regex("""\b[A-Za-z]{2,}\b""")
+        private val ENGLISH_WORD_REGEX = Regex("""\b[A-Za-z](?:[A-Za-z']*[A-Za-z])?\b""")
         private val ENGLISH_LETTER_REGEX = Regex("""[A-Za-z]""")
         private val HANGUL_REGEX = Regex("""[가-힣]""")
     }
+
+    private val logger = LoggerFactory.getLogger(javaClass)
 
     @Transactional
     fun startTechInterview(principal: AuthPrincipal, request: StartTechInterviewRequest): StartTechInterviewResponse {
@@ -850,14 +853,18 @@ class InterviewPracticeService(
         evidence: List<String>
     ): com.cw.vlainter.domain.interview.ai.LocalizedInterviewContent? {
         if (language != InterviewLanguage.EN) return null
-        return userGeminiApiKeyService.withUserApiKey(userId) {
-            interviewAiOrchestrator.localizeTurnContent(
-                questionText = questionText,
-                modelAnswer = modelAnswer,
-                evidence = evidence,
-                language = language
-            )
-        }
+        return runCatching {
+            userGeminiApiKeyService.withUserApiKey(userId) {
+                interviewAiOrchestrator.localizeTurnContent(
+                    questionText = questionText,
+                    modelAnswer = modelAnswer,
+                    evidence = evidence,
+                    language = language
+                )
+            }
+        }.onFailure { ex ->
+            logger.warn("turn content localization skipped userId={} language={} reason={}", userId, language, ex::class.simpleName, ex)
+        }.getOrNull()
     }
 
     private fun buildLocalizedTechQueueEntries(
@@ -866,19 +873,23 @@ class InterviewPracticeService(
         questions: List<QaQuestion>
     ): List<Map<String, Any?>> {
         if (language != InterviewLanguage.EN || questions.isEmpty()) return emptyList()
-        val localized = userGeminiApiKeyService.withUserApiKey(userId) {
-            interviewAiOrchestrator.localizeTurnContents(
-                questions.map { question ->
-                    com.cw.vlainter.domain.interview.ai.TurnContentLocalizationRequest(
-                        key = question.id.toString(),
-                        questionText = question.questionText,
-                        modelAnswer = question.canonicalAnswer,
-                        evidence = emptyList()
-                    )
-                },
-                language
-            )
-        }
+        val localized = runCatching {
+            userGeminiApiKeyService.withUserApiKey(userId) {
+                interviewAiOrchestrator.localizeTurnContents(
+                    questions.map { question ->
+                        com.cw.vlainter.domain.interview.ai.TurnContentLocalizationRequest(
+                            key = question.id.toString(),
+                            questionText = question.questionText,
+                            modelAnswer = question.canonicalAnswer,
+                            evidence = emptyList()
+                        )
+                    },
+                    language
+                )
+            }
+        }.onFailure { ex ->
+            logger.warn("tech queue localization skipped userId={} language={} reason={}", userId, language, ex::class.simpleName, ex)
+        }.getOrNull() ?: return emptyList()
         return buildSessionLocalizedQueueEntries(
             kind = InterviewQuestionKind.TECH,
             entries = localized.entries.associate { (key, value) ->
@@ -1118,10 +1129,10 @@ class InterviewPracticeService(
         val hangulLetters = HANGUL_REGEX.findAll(answer).count()
         val englishWords = ENGLISH_WORD_REGEX.findAll(answer).count()
         val looksEnglishEnough = when {
-            englishWords >= 5 && englishLetters >= hangulLetters * 2 -> true
-            englishWords >= 3 && hangulLetters == 0 && englishLetters >= 12 -> true
-            englishWords >= 8 -> true
-            else -> false
+            englishLetters < 2 || englishWords == 0 -> false
+            hangulLetters == 0 -> true
+            hangulLetters > englishLetters -> false
+            else -> true
         }
         if (!looksEnglishEnough) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "영어 면접에서는 영어 답변으로 작성해 주세요.")

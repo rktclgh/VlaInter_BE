@@ -37,7 +37,7 @@ dependencies {
 	implementation("org.apache.pdfbox:pdfbox:2.0.32") {
 		exclude(group = "commons-logging", module = "commons-logging")
 	}
-	implementation("org.apache.poi:poi-ooxml:5.4.1") {
+	implementation("org.apache.poi:poi-ooxml:5.5.1") {
 		exclude(group = "commons-logging", module = "commons-logging")
 	}
 	implementation("com.fasterxml.jackson.module:jackson-module-kotlin")

@@ -41,7 +41,7 @@ internal object DocumentQuestionGenerationPolicy {
     )
     private val resultMarkers = listOf(
         "성과", "결과", "향상", "개선", "증가", "감소", "달성", "절감", "완료", "출시", "리스크 관리",
-        "%", "배", "명", "건", "ms", "초", "퍼센트",
+        "%", "배", "명", "건", "초", "퍼센트",
         "result", "outcome", "impact", "reduced", "increased", "improved", "decreased",
         "faster", "latency", "throughput", "conversion", "retention", "%"
     )

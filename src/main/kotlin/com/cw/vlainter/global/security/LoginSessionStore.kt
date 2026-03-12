@@ -3,6 +3,7 @@ package com.cw.vlainter.global.security
 import com.cw.vlainter.global.config.properties.JwtProperties
 import org.slf4j.LoggerFactory
 import org.springframework.data.redis.core.StringRedisTemplate
+import org.springframework.data.redis.core.script.DefaultRedisScript
 import org.springframework.stereotype.Component
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -25,6 +26,50 @@ class LoginSessionStore(
     private val jwtProperties: JwtProperties
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val rotateRefreshTokenScript = DefaultRedisScript<String>().apply {
+        resultType = String::class.java
+        setScriptText("""
+            local sessionKey = KEYS[1]
+            local expectedUserId = ARGV[1]
+            local providedHash = ARGV[2]
+            local nextHash = ARGV[3]
+            local nowMs = tonumber(ARGV[4])
+            local graceMs = tonumber(ARGV[5])
+            local ttlSeconds = tonumber(ARGV[6])
+
+            if redis.call('EXISTS', sessionKey) == 0 then
+                return 'SESSION_NOT_FOUND'
+            end
+
+            local status = redis.call('HGET', sessionKey, 'status')
+            local storedUserId = redis.call('HGET', sessionKey, 'userId')
+            if status ~= 'ACTIVE' or storedUserId ~= expectedUserId then
+                return 'SESSION_NOT_FOUND'
+            end
+
+            local currentHash = redis.call('HGET', sessionKey, 'refreshHash') or ''
+            if currentHash == providedHash then
+                redis.call('HSET', sessionKey,
+                    'previousRefreshHash', currentHash,
+                    'refreshHash', nextHash,
+                    'rotatedAtEpochMs', tostring(nowMs)
+                )
+                redis.call('EXPIRE', sessionKey, ttlSeconds)
+                return 'ROTATED'
+            end
+
+            local previousHash = redis.call('HGET', sessionKey, 'previousRefreshHash') or ''
+            if previousHash == providedHash then
+                local rotatedAt = tonumber(redis.call('HGET', sessionKey, 'rotatedAtEpochMs') or '0')
+                local elapsed = nowMs - rotatedAt
+                if rotatedAt > 0 and elapsed >= 0 and elapsed <= graceMs then
+                    return 'PREVIOUS_TOKEN_WITHIN_GRACE'
+                end
+            end
+
+            return 'HASH_MISMATCH'
+        """.trimIndent())
+    }
 
     /**
      * 새 로그인 세션 생성.
@@ -110,6 +155,31 @@ class LoginSessionStore(
         redisTemplate.expire(sessionKey, Duration.ofSeconds(jwtProperties.refreshTokenExpSeconds))
     }
 
+    fun rotateRefreshTokenAtomically(
+        sessionId: String,
+        userId: Long,
+        currentRefreshToken: String,
+        nextRefreshToken: String,
+        graceWindow: Duration
+    ): RefreshTokenRotationResult {
+        val result: String = redisTemplate.execute(
+            rotateRefreshTokenScript,
+            listOf(key(sessionId)),
+            userId.toString(),
+            hash(currentRefreshToken),
+            hash(nextRefreshToken),
+            System.currentTimeMillis().toString(),
+            graceWindow.toMillis().toString(),
+            jwtProperties.refreshTokenExpSeconds.toString()
+        )
+
+        return runCatching { RefreshTokenRotationResult.valueOf(result) }
+            .getOrElse {
+                logger.warn("unknown refresh rotation result sidPrefix={} result={}", sessionId.take(8), result)
+                RefreshTokenRotationResult.SESSION_NOT_FOUND
+            }
+    }
+
     /**
      * 로그아웃/비정상 세션 감지 시 세션을 삭제한다.
      */
@@ -152,6 +222,13 @@ class LoginSessionStore(
 
 enum class RefreshTokenValidationResult {
     CURRENT_TOKEN,
+    PREVIOUS_TOKEN_WITHIN_GRACE,
+    HASH_MISMATCH,
+    SESSION_NOT_FOUND
+}
+
+enum class RefreshTokenRotationResult {
+    ROTATED,
     PREVIOUS_TOKEN_WITHIN_GRACE,
     HASH_MISMATCH,
     SESSION_NOT_FOUND

@@ -45,4 +45,14 @@ class DocumentQuestionGenerationPolicyTests {
 
         assertThat(classified.single().kind).isEqualTo(DocumentSnippetKind.PROJECT_OR_RESULT)
     }
+
+    @Test
+    fun `영문 systems나 teams는 result kind로 오분류되지 않는다`() {
+        val classified = DocumentQuestionGenerationPolicy.classifySnippets(
+            fileType = FileType.PORTFOLIO,
+            snippets = listOf("Designed backend systems and collaborated with product teams to stabilize deployments.")
+        )
+
+        assertThat(classified.single().kind).isNotEqualTo(DocumentSnippetKind.PROJECT_OR_RESULT)
+    }
 }

@@ -18,27 +18,26 @@ class UserLifecycleEmailService(
     private val logger = LoggerFactory.getLogger(javaClass)
 
     fun sendWelcomeEmail(email: String, userName: String, signupChannel: String) {
-        val html = emailTemplateService.buildWelcomeEmail(userName, signupChannel)
         sendBestEffort(
             recipient = email,
             subject = "[VlaInter] 가입해주셔서 감사합니다",
-            html = html,
+            htmlProvider = { emailTemplateService.buildWelcomeEmail(userName, signupChannel) },
             event = "welcome"
         )
     }
 
     fun sendAccountDeletionEmail(email: String, userName: String) {
-        val html = emailTemplateService.buildAccountDeletionEmail(userName)
         sendBestEffort(
             recipient = email,
             subject = "[VlaInter] 회원 탈퇴가 완료되었습니다",
-            html = html,
+            htmlProvider = { emailTemplateService.buildAccountDeletionEmail(userName) },
             event = "account-deletion"
         )
     }
 
-    private fun sendBestEffort(recipient: String, subject: String, html: String, event: String) {
+    private fun sendBestEffort(recipient: String, subject: String, htmlProvider: () -> String, event: String) {
         runCatching {
+            val html = htmlProvider()
             val message = mailSender.createMimeMessage()
             val helper = MimeMessageHelper(message, true, StandardCharsets.UTF_8.name())
             if (senderEmail.isNotBlank()) {
@@ -54,7 +53,7 @@ class UserLifecycleEmailService(
             )
             mailSender.send(message)
         }.onFailure { ex ->
-            logger.warn("lifecycle email send failed event={} recipient={} reason={}", event, recipient, ex.message)
+            logger.warn("lifecycle email send failed event={} reason={}", event, ex::class.simpleName, ex)
         }
     }
 }

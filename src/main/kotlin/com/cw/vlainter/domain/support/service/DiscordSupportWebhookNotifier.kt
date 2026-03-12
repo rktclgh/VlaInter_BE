@@ -10,7 +10,6 @@ import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Component
 import org.springframework.util.LinkedMultiValueMap
-import org.springframework.web.client.RestClientException
 import org.springframework.web.client.RestTemplate
 import org.springframework.web.multipart.MultipartFile
 import java.nio.charset.StandardCharsets
@@ -59,11 +58,10 @@ class DiscordSupportWebhookNotifier(
             return false
         }
 
-        val requestBody = LinkedMultiValueMap<String, Any>()
-        requestBody.add("payload_json", buildJsonPart(payload))
-        buildFilePart(payload.screenshot)?.let { requestBody.add("files[0]", it) }
-
         return try {
+            val requestBody = LinkedMultiValueMap<String, Any>()
+            requestBody.add("payload_json", buildJsonPart(payload))
+            buildFilePart(payload.screenshot)?.let { requestBody.add("files[0]", it) }
             val headers = HttpHeaders()
             headers.contentType = MediaType.MULTIPART_FORM_DATA
             restTemplate.postForEntity(
@@ -72,7 +70,7 @@ class DiscordSupportWebhookNotifier(
                 String::class.java
             )
             true
-        } catch (ex: RestClientException) {
+        } catch (ex: Exception) {
             logger.warn(
                 "support webhook send failed category={} reporterId={} errorType={}",
                 payload.category,
@@ -92,8 +90,8 @@ class DiscordSupportWebhookNotifier(
             "fields" to listOf(
                 mapOf("name" to "사용자", "value" to buildReporterField(payload), "inline" to true),
                 mapOf("name" to "첨부", "value" to resolveAttachmentStatus(payload), "inline" to true),
-                mapOf("name" to "현재 위치", "value" to wrapCode(payload.currentPath.ifBlank { "-" }), "inline" to false),
-                mapOf("name" to "브라우저", "value" to wrapCode(shortenBrowser(payload.userAgent)), "inline" to false),
+                mapOf("name" to "현재 위치", "value" to formatCodeField(payload.currentPath.ifBlank { "-" }), "inline" to false),
+                mapOf("name" to "브라우저", "value" to formatCodeField(shortenBrowser(payload.userAgent)), "inline" to false),
             ),
             "footer" to mapOf("text" to "VlaInter Support Report"),
             "timestamp" to OffsetDateTime.now().toString()
@@ -190,4 +188,19 @@ class DiscordSupportWebhookNotifier(
     }
 
     private fun wrapCode(value: String): String = "```$value```"
+
+    private fun formatCodeField(value: String, maxLength: Int = 1024): String {
+        val fencedPrefix = "```"
+        val fencedSuffix = "```"
+        val availableContentLength = (maxLength - fencedPrefix.length - fencedSuffix.length).coerceAtLeast(1)
+        return wrapCode(truncateByCodePoint(value.ifBlank { "-" }, availableContentLength))
+    }
+
+    private fun truncateByCodePoint(value: String, maxLength: Int): String {
+        if (value.length <= maxLength) return value
+        if (maxLength <= 1) return "…"
+        val safeCodePointCount = (maxLength - 1).coerceAtLeast(0).coerceAtMost(value.codePointCount(0, value.length))
+        val safeEndIndex = value.offsetByCodePoints(0, safeCodePointCount)
+        return value.substring(0, safeEndIndex) + "…"
+    }
 }

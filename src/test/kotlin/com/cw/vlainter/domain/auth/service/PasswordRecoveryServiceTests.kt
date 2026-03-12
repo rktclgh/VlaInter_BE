@@ -140,11 +140,11 @@ class PasswordRecoveryServiceTests {
         )
     }
 
-    private fun allowRateLimitFor() {
+    private fun allowRateLimitFor(email: String = "user@vlainter.com") {
         given(redisTemplate.opsForValue()).willReturn(redisValueOperations)
         given(
             redisValueOperations.setIfAbsent(
-                "auth:password-recovery:cooldown:user@vlainter.com",
+                "auth:password-recovery:cooldown:$email",
                 "1",
                 Duration.ofMinutes(1)
             )

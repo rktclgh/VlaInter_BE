@@ -455,26 +455,26 @@ class InterviewEvaluationService(
 
         val intentScore = (
             25 +
-                min(35, intentHits * 12) +
-                min(20, evidenceHits * 6) +
-                if (answer.length >= 80) 10 else 0 +
-                if (actionSignals > 0) 10 else 0
+                cappedProduct(intentHits, 12, 35) +
+                cappedProduct(evidenceHits, 6, 20) +
+                (if (answer.length >= 80) 10 else 0) +
+                (if (actionSignals > 0) 10 else 0)
             ).coerceIn(0, 100)
 
         val starScore = (
-            min(25, contextSignals * 12) +
-                min(20, taskSignals * 10) +
-                min(30, actionSignals * 12) +
-                min(25, resultSignals * 12 + if (hasNumber) 8 else 0)
+            cappedProduct(contextSignals, 12, 25) +
+                cappedProduct(taskSignals, 10, 20) +
+                cappedProduct(actionSignals, 12, 30) +
+                min(25, cappedProduct(resultSignals, 12, 25) + (if (hasNumber) 8 else 0))
             ).coerceIn(0, 100)
 
         val motivationScore = (
             25 +
-                min(25, intentHits * 10) +
-                min(20, evidenceHits * 6) +
-                if (hasReasoning) 15 else 0 +
-                if (hasMotivationSignal) 15 else 0 +
-                if (hasFuturePlan) 15 else 0
+                cappedProduct(intentHits, 10, 25) +
+                cappedProduct(evidenceHits, 6, 20) +
+                (if (hasReasoning) 15 else 0) +
+                (if (hasMotivationSignal) 15 else 0) +
+                (if (hasFuturePlan) 15 else 0)
             ).coerceIn(0, 100)
 
         val coverageScore = if (starRecommended) {
@@ -485,11 +485,11 @@ class InterviewEvaluationService(
 
         val accuracyScore = (
             20 +
-                min(25, evidenceHits * 7) +
-                min(15, benchmarkHits * 4) +
-                if (hasNumber) 15 else 0 +
-                if (hasReasoning) 15 else 0 +
-                if (answer.length >= 120) 10 else 0
+                cappedProduct(evidenceHits, 7, 25) +
+                cappedProduct(benchmarkHits, 4, 15) +
+                (if (hasNumber) 15 else 0) +
+                (if (hasReasoning) 15 else 0) +
+                (if (answer.length >= 120) 10 else 0)
             ).coerceIn(0, 100)
 
         val communicationScore = if (answerLanguage == InterviewLanguage.EN) {
@@ -497,10 +497,10 @@ class InterviewEvaluationService(
         } else {
             (
                 25 +
-                    min(20, sentenceCount * 6) +
-                    if (answer.length in 80..600) 20 else 8 +
-                    if (answer.contains("\n") || sentenceCount >= 3) 15 else 5 +
-                    if (answer.trim().endsWith(".") || answer.trim().endsWith("다") || answer.trim().endsWith("요")) 10 else 0
+                    cappedProduct(sentenceCount, 6, 20) +
+                    (if (answer.length in 80..600) 20 else 8) +
+                    (if (answer.contains("\n") || sentenceCount >= 3) 15 else 5) +
+                    (if (answer.trim().endsWith(".") || answer.trim().endsWith("다") || answer.trim().endsWith("요")) 10 else 0)
                 ).coerceIn(0, 100)
         }
 
@@ -715,6 +715,10 @@ class InterviewEvaluationService(
         return signals.count { answer.contains(it, ignoreCase = true) }
     }
 
+    private fun cappedProduct(count: Int, multiplier: Int, cap: Int): Int {
+        return min(cap.toLong(), count.toLong() * multiplier.toLong()).toInt()
+    }
+
     private fun extractDocumentSoftBenchmarkTokens(referenceAnswer: String?, evidence: List<String>): List<String> {
         val stopwords = setOf(
             "질문", "답변", "경험", "프로젝트", "서비스", "사용자", "당시", "이후", "정도",
@@ -763,11 +767,11 @@ class InterviewEvaluationService(
         val punctuationEnding = answer.trim().lastOrNull()?.let { it == '.' || it == '!' || it == '?' } == true
         return (
             20 +
-                min(25, sentenceCount * 7) +
+                cappedProduct(sentenceCount, 7, 25) +
                 min(20, englishWords) +
-                if (englishLetters >= hangulLetters * 2) 15 else 4 +
-                if (punctuationEnding) 10 else 3 +
-                if (answer.length in 60..800) 10 else 4
+                (if (englishLetters >= hangulLetters * 2) 15 else 4) +
+                (if (punctuationEnding) 10 else 3) +
+                (if (answer.length in 60..800) 10 else 4)
             ).coerceIn(0, 100).toDouble()
     }
 

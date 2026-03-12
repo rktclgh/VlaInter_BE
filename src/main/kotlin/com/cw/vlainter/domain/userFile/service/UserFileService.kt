@@ -49,7 +49,6 @@ class UserFileService(
         val ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS = setOf("pdf", "docx", "pptx")
         val ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES = setOf(
             "application/pdf",
-            "application/octet-stream",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
@@ -225,7 +224,7 @@ class UserFileService(
 
         if (fileType == FileType.RESUME || fileType == FileType.INTRODUCE || fileType == FileType.PORTFOLIO) {
             val extensionValid = extension in ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS
-            val contentTypeValid = contentType.isBlank() || contentType in ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES
+            val contentTypeValid = contentType.isNotBlank() && contentType in ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES
             if (!extensionValid || !contentTypeValid) {
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
