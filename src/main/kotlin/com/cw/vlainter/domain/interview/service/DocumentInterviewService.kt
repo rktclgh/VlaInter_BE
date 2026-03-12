@@ -338,7 +338,7 @@ class DocumentInterviewService(
             val requestedCount = request.questionCount.coerceAtLeast(5).coerceAtMost(20)
             val desiredTechTarget = max(1, (requestedCount * 0.4).roundToInt())
             val (techCandidates, generatedQuestions) = userGeminiApiKeyService.withUserApiKey(actor.id) {
-                val resolvedTechCandidates = if (selectedSetQuestions.isNotEmpty()) {
+                var resolvedTechCandidates = if (selectedSetQuestions.isNotEmpty()) {
                     selectedSetQuestions
                 } else {
                     resolveOrGenerateTechCandidates(
@@ -362,15 +362,31 @@ class DocumentInterviewService(
                     questionCount = documentTarget,
                     language = request.language
                 )
+                val requiredTechCount = (requestedCount - resolvedDocumentQuestions.size).coerceAtLeast(0)
+                if (requiredTechCount > resolvedTechCandidates.size) {
+                    resolvedTechCandidates = if (selectedSetQuestions.isNotEmpty()) {
+                        selectedSetQuestions
+                    } else {
+                        resolveOrGenerateTechCandidates(
+                            actor = actor,
+                            contexts = techContexts,
+                            difficulty = request.difficulty,
+                            requestedCount = requiredTechCount,
+                            language = request.language
+                        )
+                    }
+                }
                 resolvedTechCandidates to resolvedDocumentQuestions
             }
 
             val techTarget = if (techCandidates.isNotEmpty()) {
-                min(techCandidates.size, max(1, (requestedCount * 0.4).roundToInt()))
+                min(techCandidates.size, (requestedCount - generatedQuestions.size).coerceAtLeast(0))
             } else {
                 0
             }
             val selectedTech = techCandidates.shuffled().take(techTarget)
+            val localizedQueue = buildLocalizedDocumentQueueEntries(actor.id, request.language, generatedQuestions) +
+                buildLocalizedTechQueueEntries(actor.id, request.language, selectedTech)
             val techMetaJobName = selectedQuestionSet?.jobName
                 ?: techContexts.firstOrNull()?.jobName
                 ?: selectedTech.firstOrNull()?.jobName
@@ -432,6 +448,7 @@ class DocumentInterviewService(
                                 "categoryName" to techMetaSkillNames.joinToString(", "),
                                 "jobName" to techMetaJobName,
                                 "questionSetId" to selectedQuestionSet?.id,
+                                "localizedQueue" to localizedQueue,
                                 "providerUsed" to aiRoutingContextHolder.snapshot().providerUsed?.name,
                                 "fallbackDepth" to aiRoutingContextHolder.snapshot().fallbackDepth,
                                 "selectedDocuments" to files.map { file ->
@@ -478,7 +495,10 @@ class DocumentInterviewService(
         questionCount: Int,
         language: InterviewLanguage
     ): List<DocumentQuestion> {
-        val allocation = distribute(questionCount, files.size)
+        val allocation = DocumentQuestionGenerationPolicy.allocateQuestionCounts(
+            total = questionCount,
+            fileTypes = files.map { it.fileType }
+        )
         val results = mutableListOf<DocumentQuestion>()
         val skippedReasons = mutableListOf<String>()
         var lastGeminiTransient: GeminiTransientException? = null
@@ -486,6 +506,7 @@ class DocumentInterviewService(
         files.forEachIndexed { index, file ->
             val targetCount = allocation[index]
             if (targetCount <= 0) return@forEachIndexed
+            val snippetBudget = DocumentQuestionGenerationPolicy.snippetBudget(file.fileType, targetCount)
 
             val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(actor.id, file.id)
                 .map { it.chunkText }
@@ -501,20 +522,25 @@ class DocumentInterviewService(
                 fileTypeLabel = file.fileType.toPromptLabel(),
                 snippets = snippets
             )
-            val strictValidatedSnippets = snippetValidation.acceptedSnippets
+            val heuristicValidatedSnippets = snippets
                 .map(::sanitizePromptSnippet)
-                .filter(::isUsablePromptSnippet)
+                .filter { isUsablePromptSnippet(file.fileType, it) }
                 .distinct()
-                .take(max(2, min(targetCount + 1, 5)))
+                .take(snippetBudget)
+            val strictValidatedSnippets = (snippetValidation.acceptedSnippets
+                .map(::sanitizePromptSnippet)
+                .filter { isUsablePromptSnippet(file.fileType, it) } + heuristicValidatedSnippets)
+                .distinct()
+                .take(snippetBudget)
 
             val relaxedValidatedSnippets = if (strictValidatedSnippets.isNotEmpty()) {
                 strictValidatedSnippets
             } else {
-                (snippets + fallbackPromptSnippets(chunks))
+                (snippets + fallbackPromptSnippets(chunks, snippetBudget, file.fileType))
                     .map(::sanitizePromptSnippet)
-                    .filter(::isUsablePromptSnippet)
+                    .filter { isUsablePromptSnippet(file.fileType, it) }
                     .distinct()
-                    .take(max(2, min(targetCount + 1, 5)))
+                    .take(snippetBudget)
             }
             if (relaxedValidatedSnippets.isEmpty()) {
                 val reason = "발췌 검증/완화 모두 실패(fileId=${file.id}, name=${file.originalFileName})"
@@ -530,13 +556,19 @@ class DocumentInterviewService(
                     file.originalFileName
                 )
             }
+            val classifiedSnippets = DocumentQuestionGenerationPolicy.classifySnippets(
+                fileType = file.fileType,
+                snippets = relaxedValidatedSnippets
+            )
 
             val generated = runCatching {
                 interviewAiOrchestrator.generateDocumentQuestions(
                     fileTypeLabel = file.fileType.toPromptLabel(),
                     difficulty = difficulty,
                     questionCount = targetCount,
-                    contextSnippets = relaxedValidatedSnippets,
+                    contextSnippets = classifiedSnippets.mapIndexed { snippetIndex, snippet ->
+                        snippet.toPromptBlock(snippetIndex + 1)
+                    },
                     language = language
                 )
             }.onFailure { ex ->
@@ -576,6 +608,13 @@ class DocumentInterviewService(
                                 "acceptedCount" to relaxedValidatedSnippets.size,
                                 "strictAcceptedCount" to strictValidatedSnippets.size,
                                 "usedRelaxedFallback" to usedRelaxedFallback,
+                                "snippetBudget" to snippetBudget,
+                                "classifiedKinds" to classifiedSnippets.map {
+                                    mapOf(
+                                        "kind" to it.kind.name,
+                                        "snippet" to it.text.take(160)
+                                    )
+                                },
                                 "details" to snippetValidation.details.map {
                                     mapOf(
                                         "index" to it.index,
@@ -751,7 +790,12 @@ class DocumentInterviewService(
         difficulty: QuestionDifficulty?,
         questionCount: Int
     ): List<String> {
-        val retrievalQueries = buildRetrievalQueries(file.fileType, difficulty, questionCount)
+        val snippetBudget = DocumentQuestionGenerationPolicy.snippetBudget(file.fileType, questionCount)
+        val retrievalQueries = buildRetrievalQueries(
+            fileType = file.fileType,
+            difficulty = difficulty,
+            queryLimit = DocumentQuestionGenerationPolicy.retrievalQueryLimit(file.fileType, questionCount)
+        )
         val allChunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, file.id)
         val seenChunkNos = linkedSetOf<Int>()
         val results = mutableListOf<String>()
@@ -776,13 +820,13 @@ class DocumentInterviewService(
         if (results.isNotEmpty()) {
             return results
                 .map(::sanitizePromptSnippet)
-                .filter(::isUsablePromptSnippet)
+                .filter { isUsablePromptSnippet(file.fileType, it) }
                 .map { it.take(420) }
-                .take(max(2, min(questionCount + 1, 5)))
+                .take(snippetBudget)
         }
 
         val chunks = allChunks.map { it.chunkText }
-        return fallbackPromptSnippets(chunks)
+        return fallbackPromptSnippets(chunks, snippetBudget, file.fileType)
     }
 
     private fun semanticRetrieve(chunks: List<DocChunkEmbedding>, queryVector: List<Double>): List<Pair<Int, String>> {
@@ -855,7 +899,7 @@ class DocumentInterviewService(
     private fun buildRetrievalQueries(
         fileType: FileType,
         difficulty: QuestionDifficulty?,
-        questionCount: Int
+        queryLimit: Int
     ): List<String> {
         val difficultyHint = when (difficulty) {
             QuestionDifficulty.HARD -> "의사결정 근거, 트레이드오프, 수치 성과"
@@ -877,28 +921,39 @@ class DocumentInterviewService(
             FileType.INTRODUCE -> listOf(
                 "자기소개서에서 지원 동기와 직무 적합성이 드러나는 내용",
                 "자기소개서에서 강점과 근거 경험이 드러나는 내용",
-                "자기소개서에서 어려움 극복과 성장 과정이 드러나는 내용"
+                "자기소개서에서 어려움 극복과 성장 과정이 드러나는 내용",
+                "자기소개서에서 미래 계획이나 포부가 드러나는 내용",
+                "자기소개서에서 중요하게 여기는 가치관과 일하는 기준이 드러나는 내용"
             )
             else -> listOf("문서에서 면접 질문으로 발전시킬 수 있는 핵심 경험")
         }
 
         return base
-            .take(max(2, min(questionCount, 3)))
+            .take(queryLimit)
             .map { "$it, 중점: $difficultyHint" }
     }
 
-    private fun fallbackPromptSnippets(chunks: List<String>): List<String> {
+    private fun fallbackPromptSnippets(chunks: List<String>, snippetBudget: Int, fileType: FileType): List<String> {
         val normalized = chunks
             .map(::sanitizePromptSnippet)
-            .filter(::isUsablePromptSnippet)
+            .filter { isUsablePromptSnippet(fileType, it) }
 
         if (normalized.isEmpty()) {
-            return chunks.take(1).map { it.take(500) }
+            return chunks.take(min(1, snippetBudget)).map { it.take(500) }
         }
 
         val indexes = when {
-            normalized.size <= 3 -> normalized.indices.toList()
-            else -> listOf(0, normalized.size / 2, normalized.lastIndex)
+            normalized.size <= snippetBudget -> normalized.indices.toList()
+            else -> buildList {
+                add(0)
+                val step = max(1, normalized.lastIndex / max(1, snippetBudget - 1))
+                var current = step
+                while (size < snippetBudget - 1 && current < normalized.lastIndex) {
+                    add(current)
+                    current += step
+                }
+                add(normalized.lastIndex)
+            }
         }.distinct()
 
         return indexes.map { normalized[it].take(500) }
@@ -1197,6 +1252,20 @@ class DocumentInterviewService(
             InterviewQuestionKind.TECH -> {
                 val question = questionRepository.findByIdAndDeletedAtIsNull(ref.id)
                     ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "질문을 찾을 수 없습니다: ${ref.id}")
+                val storedLocalized = findSessionLocalizedQueueContent(objectMapper, session.configJson, language, ref.kind, ref.id)
+                val localized = storedLocalized?.let {
+                    com.cw.vlainter.domain.interview.ai.LocalizedInterviewContent(
+                        questionText = it.questionText ?: question.questionText,
+                        modelAnswer = it.modelAnswer,
+                        evidence = it.evidence
+                    )
+                } ?: localizeTurnContentIfNeeded(
+                    userId = session.user.id,
+                    language = language,
+                    questionText = question.questionText,
+                    modelAnswer = question.canonicalAnswer,
+                    evidence = emptyList()
+                )
                 InterviewTurn(
                     session = session,
                     turnNo = 1,
@@ -1209,37 +1278,68 @@ class DocumentInterviewService(
                         }
                     },
                     question = question,
-                    questionTextSnapshot = interviewAiOrchestrator.localizeInterviewText(
-                        question.questionText,
-                        language,
-                        "interview question"
-                    ) ?: question.questionText,
+                    questionTextSnapshot = localized?.questionText ?: question.questionText,
                     categorySnapshot = question.category.name,
                     jobSnapshot = question.jobName ?: question.category.parent?.name?.trim(),
                     skillSnapshot = question.skillName ?: question.category.name.trim(),
                     category = question.category,
                     difficulty = question.difficulty.name,
-                    tagsJson = question.tagsJson
+                    tagsJson = question.tagsJson,
+                    ragContextJson = buildTurnRagContextJson(
+                        objectMapper = objectMapper,
+                        evidence = emptyList(),
+                        language = language,
+                        localized = localized?.let {
+                            StoredLocalizedTurnContent(
+                                questionText = it.questionText,
+                                modelAnswer = it.modelAnswer,
+                                evidence = it.evidence
+                            )
+                        }
+                    )
                 )
             }
 
             InterviewQuestionKind.DOCUMENT -> {
                 val question = documentQuestionRepository.findByIdAndUserId(ref.id, session.user.id)
                     ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "문서 질문을 찾을 수 없습니다: ${ref.id}")
+                val evidence = runCatching { objectMapper.readValue(question.evidenceJson, Array<String>::class.java).toList() }
+                    .getOrDefault(emptyList())
+                val storedLocalized = findSessionLocalizedQueueContent(objectMapper, session.configJson, language, ref.kind, ref.id)
+                val localized = storedLocalized?.let {
+                    com.cw.vlainter.domain.interview.ai.LocalizedInterviewContent(
+                        questionText = it.questionText ?: question.questionText,
+                        modelAnswer = it.modelAnswer ?: question.referenceAnswer,
+                        evidence = it.evidence.ifEmpty { evidence }
+                    )
+                } ?: localizeTurnContentIfNeeded(
+                    userId = session.user.id,
+                    language = language,
+                    questionText = question.questionText,
+                    modelAnswer = question.referenceAnswer,
+                    evidence = evidence
+                )
                 InterviewTurn(
                     session = session,
                     turnNo = 1,
                     sourceTag = TurnSourceTag.DOC_RAG,
                     documentQuestion = question,
-                    questionTextSnapshot = interviewAiOrchestrator.localizeInterviewText(
-                        question.questionText,
-                        language,
-                        "interview question"
-                    ) ?: question.questionText,
+                    questionTextSnapshot = localized?.questionText ?: question.questionText,
                     categorySnapshot = question.questionType,
                     difficulty = question.difficulty,
                     tagsJson = "[]",
-                    ragContextJson = question.evidenceJson
+                    ragContextJson = buildTurnRagContextJson(
+                        objectMapper = objectMapper,
+                        evidence = evidence,
+                        language = language,
+                        localized = localized?.let {
+                            StoredLocalizedTurnContent(
+                                questionText = it.questionText,
+                                modelAnswer = it.modelAnswer,
+                                evidence = it.evidence
+                            )
+                        }
+                    )
                 )
             }
 
@@ -1275,6 +1375,88 @@ class DocumentInterviewService(
             category = turn.categorySnapshot,
             difficulty = turn.difficulty,
             tags = runCatching { objectMapper.readValue(turn.tagsJson, Array<String>::class.java).toList() }.getOrDefault(emptyList())
+        )
+    }
+
+    private fun localizeTurnContentIfNeeded(
+        userId: Long,
+        language: InterviewLanguage,
+        questionText: String,
+        modelAnswer: String?,
+        evidence: List<String>
+    ): com.cw.vlainter.domain.interview.ai.LocalizedInterviewContent? {
+        if (language != InterviewLanguage.EN) return null
+        return userGeminiApiKeyService.withUserApiKey(userId) {
+            interviewAiOrchestrator.localizeTurnContent(
+                questionText = questionText,
+                modelAnswer = modelAnswer,
+                evidence = evidence,
+                language = language
+            )
+        }
+    }
+
+    private fun buildLocalizedTechQueueEntries(
+        userId: Long,
+        language: InterviewLanguage,
+        questions: List<QaQuestion>
+    ): List<Map<String, Any?>> {
+        if (language != InterviewLanguage.EN || questions.isEmpty()) return emptyList()
+        val localized = userGeminiApiKeyService.withUserApiKey(userId) {
+            interviewAiOrchestrator.localizeTurnContents(
+                questions.map { question ->
+                    com.cw.vlainter.domain.interview.ai.TurnContentLocalizationRequest(
+                        key = question.id.toString(),
+                        questionText = question.questionText,
+                        modelAnswer = question.canonicalAnswer,
+                        evidence = emptyList()
+                    )
+                },
+                language
+            )
+        }
+        return buildSessionLocalizedQueueEntries(
+            kind = InterviewQuestionKind.TECH,
+            entries = localized.entries.associate { (key, value) ->
+                key.toLong() to StoredLocalizedTurnContent(
+                    questionText = value.questionText,
+                    modelAnswer = value.modelAnswer,
+                    evidence = value.evidence
+                )
+            }
+        )
+    }
+
+    private fun buildLocalizedDocumentQueueEntries(
+        userId: Long,
+        language: InterviewLanguage,
+        questions: List<DocumentQuestion>
+    ): List<Map<String, Any?>> {
+        if (language != InterviewLanguage.EN || questions.isEmpty()) return emptyList()
+        val localized = userGeminiApiKeyService.withUserApiKey(userId) {
+            interviewAiOrchestrator.localizeTurnContents(
+                questions.map { question ->
+                    com.cw.vlainter.domain.interview.ai.TurnContentLocalizationRequest(
+                        key = question.id.toString(),
+                        questionText = question.questionText,
+                        modelAnswer = question.referenceAnswer,
+                        evidence = runCatching {
+                            objectMapper.readValue(question.evidenceJson, Array<String>::class.java).toList()
+                        }.getOrDefault(emptyList())
+                    )
+                },
+                language
+            )
+        }
+        return buildSessionLocalizedQueueEntries(
+            kind = InterviewQuestionKind.DOCUMENT,
+            entries = localized.entries.associate { (key, value) ->
+                key.toLong() to StoredLocalizedTurnContent(
+                    questionText = value.questionText,
+                    modelAnswer = value.modelAnswer,
+                    evidence = value.evidence
+                )
+            }
         )
     }
 
@@ -1333,8 +1515,10 @@ class DocumentInterviewService(
     private fun sanitizePromptSnippet(text: String): String =
         text.replace(Regex("\\s+"), " ").trim()
 
-    private fun isUsablePromptSnippet(text: String): Boolean {
-        if (text.length < 40) return false
+    private fun isUsablePromptSnippet(fileType: FileType, text: String): Boolean {
+        val minimumLength = if (fileType == FileType.INTRODUCE) 28 else 40
+        val minimumLongTokens = if (fileType == FileType.INTRODUCE) 3 else 4
+        if (text.length < minimumLength) return false
         val lettersOnly = text.filter { it.isLetter() }
         if (lettersOnly.isEmpty()) return false
         val uppercaseRatio = lettersOnly.count { it.isUpperCase() }.toDouble() / lettersOnly.length.toDouble()
@@ -1342,7 +1526,7 @@ class DocumentInterviewService(
         val weirdTokenCount = text.split(" ").count { token ->
             token.length >= 6 && token.count(Char::isUpperCase) >= 4
         }
-        return uppercaseRatio < 0.72 && longTokens >= 4 && weirdTokenCount <= 3
+        return uppercaseRatio < 0.72 && longTokens >= minimumLongTokens && weirdTokenCount <= 3
     }
 
     private fun fingerprintFor(questionText: String, categoryPath: String, difficulty: String): String {
@@ -1381,13 +1565,6 @@ class DocumentInterviewService(
     }
 
     private fun estimateTokenCount(text: String): Int = max(1, text.length / 4)
-
-    private fun distribute(total: Int, bucketCount: Int): List<Int> {
-        if (bucketCount <= 0) return emptyList()
-        val base = total / bucketCount
-        val remainder = total % bucketCount
-        return List(bucketCount) { index -> base + if (index < remainder) 1 else 0 }
-    }
 
     private fun loadActiveUser(userId: Long): User {
         val user = userRepository.findById(userId)

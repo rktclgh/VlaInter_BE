@@ -103,12 +103,56 @@ class InterviewAiOrchestratorTests {
         )
 
         assertThat(generated).hasSize(1)
-        assertThat(capturedPrompt).contains("STAR형 모범답안")
-        assertThat(capturedPrompt).contains("상황/과제/행동/결과가 자연스럽게 드러나야 함")
+        assertThat(capturedPrompt).contains("evidenceKind")
+        assertThat(capturedPrompt).contains("ACTUAL_EXPERIENCE와 PROJECT_OR_RESULT 발췌에서는 referenceAnswer를 STAR형 예시 답변으로 작성")
     }
 
     @Test
-    fun `영어 문서 답변 평가 프롬프트는 영어 응답과 grammar 기준을 명시한다`() {
+    fun `자기소개서 질문 생성 프롬프트는 포부성 문장을 경험처럼 단정하지 않도록 제한한다`() {
+        var capturedPrompt = ""
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+            capturedPrompt = invocation.getArgument(0)
+            LlmGenerationResult(
+                model = "gemini",
+                modelVersion = "v1",
+                text = """
+                    {
+                      "questions": [
+                        {
+                          "questionText": "후보자 경험을 더 좋게 만들고 싶다고 했는데, 입사 후 어떤 기준으로 그 관점을 실천하고 싶나요?",
+                          "questionType": "INTRODUCE_FUTURE_PLAN",
+                          "evidenceKind": "MOTIVATION_OR_ASPIRATION",
+                          "referenceAnswer": "후보자 경험을 중요하게 보는 이유와 그 기준을 입사 후 어떻게 적용할지 차례로 설명합니다.",
+                          "evidence": [
+                            "후보자 경험을 더 좋게 만들고 싶고 불필요한 업무를 줄이겠다는 포부를 언급함"
+                          ]
+                        }
+                      ]
+                    }
+                """.trimIndent()
+            )
+        }
+
+        val generated = orchestrator.generateDocumentQuestions(
+            fileTypeLabel = "INTRODUCE",
+            difficulty = null,
+            questionCount = 1,
+            contextSnippets = listOf(
+                """
+                    [문서 발췌 1]
+                    kind=MOTIVATION_OR_ASPIRATION
+                    text=인턴으로서 단순히 채용만 하는 것이 아니라 후보자에게 더 좋은 경험을 주고 싶고, 불필요한 업무를 과감히 줄이겠다는 마음가짐을 가지고 있습니다.
+                """.trimIndent()
+            )
+        )
+
+        assertThat(generated).hasSize(1)
+        assertThat(capturedPrompt).contains("자기소개서의 미래지향적 문장, 포부, 마음가짐, 가치관을 이미 수행한 경험처럼 단정하여 질문하지 말 것")
+        assertThat(capturedPrompt).contains("INTRODUCE_MOTIVATION, INTRODUCE_VALUE, INTRODUCE_FUTURE_PLAN, INTRODUCE_EXPERIENCE")
+    }
+
+    @Test
+    fun `영어 문서 답변 평가 프롬프트는 평가 출력은 한국어로 유지하고 영어 문법 기준을 명시한다`() {
         var capturedPrompt = ""
         given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
             capturedPrompt = invocation.getArgument(0)
@@ -118,14 +162,14 @@ class InterviewAiOrchestratorTests {
                 text = """
                     {
                       "score": 79,
-                      "feedback": "The answer is relevant.",
-                      "bestPractice": "Make the result more specific.",
+                      "feedback": "답변은 질문과 관련이 있습니다.",
+                      "bestPractice": "결과를 더 구체적으로 말해 보세요.",
                       "rubric": {
                         "coverage": 80,
                         "accuracy": 76,
                         "communication": 81
                       },
-                      "evidence": ["Relevant", "Needs clearer result"]
+                      "evidence": ["질문 관련성 있음", "결과 보강 필요"]
                     }
                 """.trimIndent()
             )
@@ -136,12 +180,13 @@ class InterviewAiOrchestratorTests {
             referenceAnswer = "I would explain the situation, my role, the actions I took, and the measurable result.",
             evidence = listOf("The portfolio mentions reducing dashboard latency and restructuring the API response."),
             userAnswer = "I traced the bottleneck with profiling and changed the cache strategy.",
-            language = InterviewLanguage.EN
+            language = InterviewLanguage.EN,
+            responseLanguage = InterviewLanguage.KO
         )
 
-        assertThat(capturedPrompt).contains("feedback, bestPractice, and evidence must be written in English.")
+        assertThat(capturedPrompt).contains("아래 입력을 바탕으로 한국어 JSON만 출력하세요.")
         assertThat(capturedPrompt).contains("grammar, sentence completeness, clarity, and natural professional English quality")
-        assertThat(capturedPrompt).contains("document-based interview evaluator")
+        assertThat(capturedPrompt).contains("당신은 면접 답변을 평가하는 면접관입니다.")
     }
 
     @Test
@@ -176,5 +221,78 @@ class InterviewAiOrchestratorTests {
 
         assertThat(capturedPrompt).contains("Generate realistic technical interview questions and reference answers in English.")
         assertThat(capturedPrompt).contains("questionText와 canonicalAnswer는 모두 English로 작성할 것")
+    }
+
+    @Test
+    fun `배치 평가 프롬프트는 모든 항목을 한 번에 평가하고 key를 유지한다`() {
+        var capturedPrompt = ""
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+            capturedPrompt = invocation.getArgument(0)
+            LlmGenerationResult(
+                model = "gemini",
+                modelVersion = "v1",
+                text = """
+                    {
+                      "items": [
+                        {
+                          "key": "101",
+                          "score": 78,
+                          "feedback": "질문 의도에는 대체로 맞습니다.",
+                          "bestPractice": "결과를 조금 더 구체화해 보세요.",
+                          "rubric": {
+                            "coverage": 80,
+                            "accuracy": 74,
+                            "communication": 79
+                          },
+                          "evidence": ["질문 의도 적합", "결과 근거 보강 필요"]
+                        },
+                        {
+                          "key": "102",
+                          "score": 65,
+                          "feedback": "동기 설명은 있으나 근거가 조금 약합니다.",
+                          "bestPractice": "판단 기준과 실제 적용 계획을 함께 설명해 보세요.",
+                          "rubric": {
+                            "coverage": 68,
+                            "accuracy": 60,
+                            "communication": 67
+                          },
+                          "evidence": ["동기 설명 존재", "근거 부족"]
+                        }
+                      ]
+                    }
+                """.trimIndent()
+            )
+        }
+
+        val result = orchestrator.evaluateTurnsBatch(
+            listOf(
+                BatchTurnEvaluationInput(
+                    key = "101",
+                    kind = "TECH",
+                    answerLanguage = "EN",
+                    questionText = "How would you explain JWT refresh token rotation?",
+                    referenceAnswer = "I would explain why rotation reduces replay risk and how session revocation works.",
+                    userAnswer = "I would rotate refresh tokens to reduce replay risk and revoke sessions on mismatch."
+                ),
+                BatchTurnEvaluationInput(
+                    key = "102",
+                    kind = "DOCUMENT",
+                    answerLanguage = "KO",
+                    questionText = "후보자 경험을 중요하게 보는 이유와 입사 후 적용 계획을 설명해 주세요.",
+                    questionType = "INTRODUCE_FUTURE_PLAN",
+                    referenceAnswer = "지원 동기와 실제 적용 계획을 차례로 설명합니다.",
+                    evidence = listOf("후보자 경험을 더 좋게 만들고 싶다는 포부를 기재함"),
+                    userAnswer = "지원자가 채용 과정에서 가장 먼저 체감하는 것이 안내 품질이라고 생각해 이 관점을 중요하게 봅니다."
+                )
+            ),
+            responseLanguage = InterviewLanguage.KO
+        )
+
+        assertThat(result).hasSize(2)
+        assertThat(result).containsKeys("101", "102")
+        assertThat(capturedPrompt).contains("반드시 모든 입력 key를 유지해서 반환")
+        assertThat(capturedPrompt).contains("\"kind\":\"TECH\"")
+        assertThat(capturedPrompt).contains("\"kind\":\"DOCUMENT\"")
+        assertThat(capturedPrompt).contains("answerLanguage=EN 이면 communication 점수에 grammar")
     }
 }

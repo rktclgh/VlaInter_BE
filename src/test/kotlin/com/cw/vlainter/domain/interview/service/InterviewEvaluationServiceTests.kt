@@ -77,9 +77,12 @@ class InterviewEvaluationServiceTests {
         given(
             interviewAiOrchestrator.evaluateDocumentAnswer(
                 questionText = turn.documentQuestion!!.questionText,
+                questionType = turn.documentQuestion!!.questionType,
                 referenceAnswer = turn.documentQuestion!!.referenceAnswer,
                 evidence = objectMapper.readValue(turn.documentQuestion!!.evidenceJson, Array<String>::class.java).toList(),
-                userAnswer = turn.userAnswer!!
+                userAnswer = turn.userAnswer!!,
+                language = InterviewLanguage.KO,
+                responseLanguage = InterviewLanguage.KO
             )
         ).willReturn(null)
 
@@ -101,9 +104,12 @@ class InterviewEvaluationServiceTests {
         given(
             interviewAiOrchestrator.evaluateDocumentAnswer(
                 questionText = turn.documentQuestion!!.questionText,
+                questionType = turn.documentQuestion!!.questionType,
                 referenceAnswer = turn.documentQuestion!!.referenceAnswer,
                 evidence = objectMapper.readValue(turn.documentQuestion!!.evidenceJson, Array<String>::class.java).toList(),
-                userAnswer = turn.userAnswer!!
+                userAnswer = turn.userAnswer!!,
+                language = InterviewLanguage.KO,
+                responseLanguage = InterviewLanguage.KO
             )
         ).willReturn(null)
 
@@ -116,7 +122,7 @@ class InterviewEvaluationServiceTests {
     }
 
     @Test
-    fun `영어 문서 면접 fallback 평가는 영어 피드백과 문장 완성도 기준을 사용한다`() {
+    fun `영어 문서 면접 fallback 평가는 한국어 피드백으로 반환하되 영어 문장 완성도 기준을 사용한다`() {
         val turn = createDocumentTurn(
             answer = "In that project, I owned the performance investigation. I profiled the API response path, found excessive serialization overhead, and changed the cache policy. As a result, the dashboard loaded faster and support complaints decreased.",
             referenceAnswer = "I would describe the situation, my responsibility, the actions I took, and the measurable outcome.",
@@ -126,26 +132,57 @@ class InterviewEvaluationServiceTests {
         given(
             interviewAiOrchestrator.evaluateDocumentAnswer(
                 questionText = turn.documentQuestion!!.questionText,
+                questionType = turn.documentQuestion!!.questionType,
                 referenceAnswer = turn.documentQuestion!!.referenceAnswer,
                 evidence = objectMapper.readValue(turn.documentQuestion!!.evidenceJson, Array<String>::class.java).toList(),
                 userAnswer = turn.userAnswer!!,
-                language = InterviewLanguage.EN
+                language = InterviewLanguage.EN,
+                responseLanguage = InterviewLanguage.KO
             )
         ).willReturn(null)
 
         val result = invokeBuildEvaluation(turn, turn.userAnswer!!)
 
         assertThat(result.score.toInt()).isGreaterThanOrEqualTo(60)
-        assertThat(result.feedback).doesNotContainPattern("[가-힣]")
-        assertThat(result.bestPractice).doesNotContainPattern("[가-힣]")
-        assertThat(result.bestPractice.lowercase()).containsAnyOf("star", "result", "document")
+        assertThat(result.feedback).containsPattern("[가-힣]")
+        assertThat(result.bestPractice).containsPattern("[가-힣]")
+        assertThat(result.bestPractice).containsAnyOf("STAR", "수치", "결과", "근거")
+        assertThat(result.model).isEqualTo("heuristic")
+    }
+
+    @Test
+    fun `동기형 자기소개 질문 fallback 평가는 STAR를 강제하지 않는다`() {
+        val turn = createDocumentTurn(
+            answer = "후보자 경험을 중요하게 생각한 이유는 지원자가 가장 먼저 체감하는 것이 채용 과정의 일관성과 안내 품질이라고 봤기 때문입니다. 입사 후에는 불필요한 안내 중복을 줄이고, 지원자가 다음 단계를 명확히 알 수 있게 만드는 방식으로 이 관점을 적용하고 싶습니다.",
+            referenceAnswer = "지원 동기와 중요하게 보는 기준을 먼저 설명하고, 실제 업무에서 어떻게 적용할지 구체적으로 답합니다.",
+            questionType = "INTRODUCE_FUTURE_PLAN"
+        )
+
+        given(
+            interviewAiOrchestrator.evaluateDocumentAnswer(
+                questionText = turn.documentQuestion!!.questionText,
+                questionType = turn.documentQuestion!!.questionType,
+                referenceAnswer = turn.documentQuestion!!.referenceAnswer,
+                evidence = objectMapper.readValue(turn.documentQuestion!!.evidenceJson, Array<String>::class.java).toList(),
+                userAnswer = turn.userAnswer!!,
+                language = InterviewLanguage.KO,
+                responseLanguage = InterviewLanguage.KO
+            )
+        ).willReturn(null)
+
+        val result = invokeBuildEvaluation(turn, turn.userAnswer!!)
+
+        assertThat(result.score.toInt()).isGreaterThanOrEqualTo(60)
+        assertThat(result.feedback).containsAnyOf("동기", "판단 기준")
+        assertThat(result.bestPractice).doesNotContain("STAR")
         assertThat(result.model).isEqualTo("heuristic")
     }
 
     private fun createDocumentTurn(
         answer: String,
         referenceAnswer: String?,
-        language: InterviewLanguage = InterviewLanguage.KO
+        language: InterviewLanguage = InterviewLanguage.KO,
+        questionType: String = "PORTFOLIO_PROJECT"
     ): InterviewTurn {
         val user = User(
             id = 1L,
@@ -181,9 +218,13 @@ class InterviewEvaluationServiceTests {
             questionText = if (language == InterviewLanguage.EN) {
                 "How did you identify and improve the performance bottleneck in your portfolio project?"
             } else {
-                "포트폴리오 프로젝트에서 성능 병목을 어떻게 발견하고 개선하셨나요?"
+                if (questionType == "INTRODUCE_FUTURE_PLAN") {
+                    "후보자 경험을 더 좋게 만들고 싶다고 했는데, 입사 후 어떤 기준으로 그 관점을 실천하고 싶나요?"
+                } else {
+                    "포트폴리오 프로젝트에서 성능 병목을 어떻게 발견하고 개선하셨나요?"
+                }
             },
-            questionType = "PORTFOLIO_PROJECT",
+            questionType = questionType,
             referenceAnswer = referenceAnswer,
             evidenceJson = objectMapper.writeValueAsString(
                 if (language == InterviewLanguage.EN) {
@@ -192,10 +233,17 @@ class InterviewEvaluationServiceTests {
                         "It also mentions faster perceived speed and fewer support complaints."
                     )
                 } else {
-                    listOf(
-                        "포트폴리오에 대시보드 초기 로딩 개선과 API 구조 조정 경험이 기재되어 있음",
-                        "사용자 체감 속도 개선과 관련 문의 감소를 언급함"
-                    )
+                    if (questionType == "INTRODUCE_FUTURE_PLAN") {
+                        listOf(
+                            "자기소개서에서 후보자 경험을 더 좋게 만들고 싶다는 포부를 언급함",
+                            "불필요한 업무를 줄이겠다는 기준과 마음가짐을 설명함"
+                        )
+                    } else {
+                        listOf(
+                            "포트폴리오에 대시보드 초기 로딩 개선과 API 구조 조정 경험이 기재되어 있음",
+                            "사용자 체감 속도 개선과 관련 문의 감소를 언급함"
+                        )
+                    }
                 }
             )
         )
