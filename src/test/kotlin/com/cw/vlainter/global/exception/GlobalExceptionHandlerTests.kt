@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.http.MediaType
 import org.springframework.http.HttpStatus
+import org.springframework.http.HttpMethod
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.servlet.resource.NoResourceFoundException
 import org.springframework.web.server.ResponseStatusException
 
 class GlobalExceptionHandlerTests {
@@ -61,6 +63,24 @@ class GlobalExceptionHandlerTests {
             .andExpect(jsonPath("$.message").isNotEmpty)
     }
 
+    @Test
+    fun noResourceFoundReturns404WithUnifiedBody() {
+        mockMvc.perform(get("/test-errors/missing-resource"))
+            .andExpect(status().isNotFound)
+            .andExpect(jsonPath("$.status").value(404))
+            .andExpect(jsonPath("$.code").value("NOT_FOUND"))
+            .andExpect(jsonPath("$.path").value("/test-errors/missing-resource"))
+    }
+
+    @Test
+    fun methodNotSupportedReturns405WithUnifiedBody() {
+        mockMvc.perform(post("/test-errors/get-only"))
+            .andExpect(status().isMethodNotAllowed)
+            .andExpect(jsonPath("$.status").value(405))
+            .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"))
+            .andExpect(jsonPath("$.path").value("/test-errors/get-only"))
+    }
+
     @RestController
     class TestExceptionController {
         @GetMapping("/test-errors/bad-request")
@@ -77,6 +97,14 @@ class GlobalExceptionHandlerTests {
         fun unhandled(): String {
             throw IllegalStateException("unhandled")
         }
+
+        @GetMapping("/test-errors/missing-resource")
+        fun missingResource(): String {
+            throw NoResourceFoundException(HttpMethod.GET, "/test-errors/missing-resource")
+        }
+
+        @GetMapping("/test-errors/get-only")
+        fun getOnly(): String = "ok"
     }
 
     data class RequiredBodyRequest(

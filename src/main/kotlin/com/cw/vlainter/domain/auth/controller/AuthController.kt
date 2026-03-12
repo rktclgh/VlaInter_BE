@@ -5,15 +5,20 @@ import com.cw.vlainter.domain.auth.dto.LoginResponse
 import com.cw.vlainter.domain.auth.dto.KakaoLoginRequest
 import com.cw.vlainter.domain.auth.dto.SignupRequest
 import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
+import com.cw.vlainter.domain.auth.service.AuthLogSanitizer
+import com.cw.vlainter.domain.auth.service.AuthRateLimitService
 import com.cw.vlainter.domain.auth.service.AuthService
 import com.cw.vlainter.domain.auth.service.KakaoAuthService
 import com.cw.vlainter.domain.auth.service.LoginResult
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.cw.vlainter.global.security.AuthCookieManager
+import com.cw.vlainter.global.security.ClientIpResolver
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.core.task.TaskRejectedException
 import org.springframework.http.HttpHeaders
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -25,6 +30,8 @@ import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
 import java.util.LinkedHashMap
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * 인증 관련 HTTP API를 제공한다.
@@ -38,7 +45,11 @@ class AuthController(
     private val authService: AuthService,
     private val kakaoAuthService: KakaoAuthService,
     private val authCookieManager: AuthCookieManager,
-    private val authAccessAuditService: AuthAccessAuditService
+    private val authAccessAuditService: AuthAccessAuditService,
+    private val authRateLimitService: AuthRateLimitService,
+    private val clientIpResolver: ClientIpResolver,
+    @Qualifier("authAuditExecutor")
+    private val authAuditExecutor: Executor
 ) {
     private val logger = LoggerFactory.getLogger(AuthController::class.java)
 
@@ -49,18 +60,24 @@ class AuthController(
         servletRequest: HttpServletRequest
     ): ResponseEntity<Map<String, Any>> {
         val email = request.email.trim().lowercase()
-        val clientIp = extractClientIp(servletRequest)
+        val clientIp = clientIpResolver.resolve(servletRequest)
+        authRateLimitService.checkSignupAttempt(email, clientIp)
         logger.info(
-            "Auth signup attempt email={} name={} passwordLength={} ip={}",
-            email,
-            request.name,
+            "Auth signup attempt emailHash={} nameLength={} passwordLength={} ipHash={}",
+            AuthLogSanitizer.hash(email),
+            request.name.length,
             request.password.length,
-            clientIp
+            AuthLogSanitizer.hash(clientIp)
         )
 
         try {
             val createdUser = authService.signup(request)
-            logger.info("Auth signup success userId={} email={} ip={}", createdUser.id, createdUser.email, clientIp)
+            logger.info(
+                "Auth signup success userId={} emailHash={} ipHash={}",
+                createdUser.id,
+                AuthLogSanitizer.hash(createdUser.email),
+                AuthLogSanitizer.hash(clientIp)
+            )
             return ResponseEntity.ok(
                 mapOf(
                     "message" to "회원가입이 완료되었습니다."
@@ -68,11 +85,11 @@ class AuthController(
             )
         } catch (ex: ResponseStatusException) {
             logger.warn(
-                "Auth signup failed email={} status={} reason={} ip={}",
-                email,
+                "Auth signup failed emailHash={} status={} reason={} ipHash={}",
+                AuthLogSanitizer.hash(email),
                 ex.statusCode.value(),
                 ex.reason,
-                clientIp
+                AuthLogSanitizer.hash(clientIp)
             )
             throw ex
         }
@@ -110,13 +127,14 @@ class AuthController(
         servletRequest: HttpServletRequest
     ): ResponseEntity<LoginResponse> {
         val email = request.email.trim().lowercase()
-        val clientIp = extractClientIp(servletRequest)
+        val clientIp = clientIpResolver.resolve(servletRequest)
+        authRateLimitService.checkLoginAttempt(email, clientIp)
         logger.info(
-            "Auth login attempt email={} hasRedirectUri={} passwordLength={} ip={}",
-            email,
+            "Auth login attempt emailHash={} hasRedirectUri={} passwordLength={} ipHash={}",
+            AuthLogSanitizer.hash(email),
             !request.redirectUri.isNullOrBlank(),
             request.password.length,
-            clientIp
+            AuthLogSanitizer.hash(clientIp)
         )
 
         try {
@@ -124,7 +142,12 @@ class AuthController(
             invalidateExistingSession(servletRequest, response)
             addAuthCookies(response, result.accessToken, result.refreshToken)
             recordLoginAuditAsync(result, clientIp, servletRequest.getHeader("User-Agent"))
-            logger.info("Auth login success userId={} email={} ip={}", result.userId, result.email, clientIp)
+            logger.info(
+                "Auth login success userId={} emailHash={} ipHash={}",
+                result.userId,
+                AuthLogSanitizer.hash(result.email),
+                AuthLogSanitizer.hash(clientIp)
+            )
 
             return ResponseEntity.ok(
                 LoginResponse(
@@ -136,11 +159,11 @@ class AuthController(
             )
         } catch (ex: ResponseStatusException) {
             logger.warn(
-                "Auth login failed email={} status={} reason={} ip={}",
-                email,
+                "Auth login failed emailHash={} status={} reason={} ipHash={}",
+                AuthLogSanitizer.hash(email),
                 ex.statusCode.value(),
                 ex.reason,
-                clientIp
+                AuthLogSanitizer.hash(clientIp)
             )
             throw ex
         }
@@ -153,12 +176,13 @@ class AuthController(
         response: HttpServletResponse,
         servletRequest: HttpServletRequest
     ): ResponseEntity<LoginResponse> {
-        val clientIp = extractClientIp(servletRequest)
+        val clientIp = clientIpResolver.resolve(servletRequest)
+        authRateLimitService.checkKakaoLoginAttempt(clientIp)
         logger.info(
-            "Auth kakao login attempt hasRedirectUri={} hasClientId={} ip={}",
+            "Auth kakao login attempt hasRedirectUri={} hasClientId={} ipHash={}",
             !request.redirectUri.isNullOrBlank(),
             !request.clientId.isNullOrBlank(),
-            clientIp
+            AuthLogSanitizer.hash(clientIp)
         )
 
         try {
@@ -170,7 +194,12 @@ class AuthController(
             invalidateExistingSession(servletRequest, response)
             addAuthCookies(response, result.accessToken, result.refreshToken)
             recordLoginAuditAsync(result, clientIp, servletRequest.getHeader("User-Agent"))
-            logger.info("Auth kakao login success userId={} email={} ip={}", result.userId, result.email, clientIp)
+            logger.info(
+                "Auth kakao login success userId={} emailHash={} ipHash={}",
+                result.userId,
+                AuthLogSanitizer.hash(result.email),
+                AuthLogSanitizer.hash(clientIp)
+            )
 
             return ResponseEntity.ok(
                 LoginResponse(
@@ -182,37 +211,35 @@ class AuthController(
             )
         } catch (ex: ResponseStatusException) {
             logger.warn(
-                "Auth kakao login failed status={} reason={} ip={}",
+                "Auth kakao login failed status={} reason={} ipHash={}",
                 ex.statusCode.value(),
                 ex.reason,
-                clientIp
+                AuthLogSanitizer.hash(clientIp)
             )
             throw ex
         }
     }
 
-    private fun extractClientIp(request: HttpServletRequest): String {
-        val forwarded = request.getHeader("X-Forwarded-For")
-        if (!forwarded.isNullOrBlank()) {
-            return forwarded.split(",").first().trim()
-        }
-        return request.remoteAddr ?: "unknown"
-    }
-
     private fun recordLoginAuditAsync(result: LoginResult, clientIp: String, userAgent: String?) {
-        CompletableFuture.runAsync {
-            try {
-                authAccessAuditService.recordLogin(
-                    sessionId = result.sessionId,
-                    userId = result.userId,
-                    email = result.email,
-                    authProvider = result.authProvider,
-                    ipAddress = clientIp,
-                    userAgent = userAgent
-                )
-            } catch (ex: Exception) {
-                logger.warn("로그인 접속 감사 로그 기록에 실패했습니다. userId={} sidPrefix={}", result.userId, result.sessionId.take(8), ex)
-            }
+        try {
+            CompletableFuture.runAsync({
+                try {
+                    authAccessAuditService.recordLogin(
+                        sessionId = result.sessionId,
+                        userId = result.userId,
+                        email = result.email,
+                        authProvider = result.authProvider,
+                        ipAddress = clientIp,
+                        userAgent = userAgent
+                    )
+                } catch (ex: Exception) {
+                    logger.warn("로그인 접속 감사 로그 기록에 실패했습니다. userId={} sidPrefix={}", result.userId, result.sessionId.take(8), ex)
+                }
+            }, authAuditExecutor)
+        } catch (ex: TaskRejectedException) {
+            logger.warn("로그인 접속 감사 로그 제출이 거절되었습니다. userId={} sidPrefix={}", result.userId, result.sessionId.take(8), ex)
+        } catch (ex: RejectedExecutionException) {
+            logger.warn("로그인 접속 감사 로그 제출이 거절되었습니다. userId={} sidPrefix={}", result.userId, result.sessionId.take(8), ex)
         }
     }
 

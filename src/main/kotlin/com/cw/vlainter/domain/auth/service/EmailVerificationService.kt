@@ -3,6 +3,7 @@ package com.cw.vlainter.domain.auth.service
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.config.properties.EmailVerificationProperties
 import com.cw.vlainter.global.mail.EmailTemplateService
+import com.cw.vlainter.global.security.RedisWindowCounterService
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.script.DefaultRedisScript
@@ -21,6 +22,7 @@ import java.time.Duration
 class EmailVerificationService(
     private val mailSender: JavaMailSender,
     private val redisTemplate: StringRedisTemplate,
+    private val redisWindowCounterService: RedisWindowCounterService,
     private val userRepository: UserRepository,
     private val emailTemplateService: EmailTemplateService,
     private val emailVerificationProperties: EmailVerificationProperties,
@@ -207,15 +209,13 @@ class EmailVerificationService(
     }
 
     private fun increaseFailedAttempts(verificationKey: String, attemptsKey: String): Long {
-        val attempts = redisTemplate.opsForValue().increment(attemptsKey) ?: 1L
         val codeTtl = redisTemplate.getExpire(verificationKey)
         val attemptsTtl = if (codeTtl > 0L) {
             codeTtl
         } else {
             emailVerificationProperties.codeExpSeconds
         }
-        redisTemplate.expire(attemptsKey, Duration.ofSeconds(attemptsTtl))
-        return attempts
+        return redisWindowCounterService.incrementWithWindow(attemptsKey, Duration.ofSeconds(attemptsTtl))
     }
 
     private fun markEmailAsVerified(email: String) {

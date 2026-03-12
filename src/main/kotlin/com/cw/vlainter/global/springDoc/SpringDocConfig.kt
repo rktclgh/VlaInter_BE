@@ -6,11 +6,13 @@ import io.swagger.v3.oas.annotations.info.Info
 import io.swagger.v3.oas.annotations.security.SecurityRequirement
 import io.swagger.v3.oas.annotations.security.SecurityScheme
 import org.springdoc.core.models.GroupedOpenApi
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
 
 @Configuration
+@ConditionalOnProperty(prefix = "app.docs", name = ["enabled"], havingValue = "true")
 @OpenAPIDefinition(
     info = Info(title = "Vlainter API", version = "v1", description = "API 문서"),
     security = [SecurityRequirement(name = "bearerAuth")]

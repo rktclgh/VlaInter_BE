@@ -700,7 +700,9 @@ class InterviewEvaluationService(
         return questionType?.trim()?.uppercase() !in setOf(
             "INTRODUCE_MOTIVATION",
             "INTRODUCE_VALUE",
-            "INTRODUCE_FUTURE_PLAN"
+            "INTRODUCE_FUTURE_PLAN",
+            "RESUME_MOTIVATION",
+            "RESUME_VALUE"
         )
     }
 
