@@ -63,6 +63,7 @@ class SecurityConfig(
             }
             .authorizeHttpRequests {
                 var registry = it.requestMatchers(*PUBLIC_API_PATHS).permitAll()
+                registry = registry.requestMatchers("/actuator/health").permitAll()
                 if (docsEnabled) {
                     registry = registry.requestMatchers(*PUBLIC_DOCS_PATHS).permitAll()
                 }
@@ -112,9 +113,9 @@ class SecurityConfig(
         )
 
         val PUBLIC_DOCS_PATHS = arrayOf(
+            "/swagger-ui.html",
             "/swagger-ui/**",
-            "/v3/api-docs/**",
-            "/actuator/health"
+            "/v3/api-docs/**"
         )
 
         // SPA 엔트리로 직접 접근 가능한 FE 페이지 화이트리스트

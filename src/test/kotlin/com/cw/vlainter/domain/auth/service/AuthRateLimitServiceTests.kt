@@ -4,12 +4,10 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.extension.ExtendWith
-import org.mockito.BDDMockito.given
-import org.mockito.BDDMockito.then
+import com.cw.vlainter.global.security.RedisWindowCounterService
 import org.mockito.Mock
+import org.mockito.Mockito.doReturn
 import org.mockito.junit.jupiter.MockitoExtension
-import org.springframework.data.redis.core.StringRedisTemplate
-import org.springframework.data.redis.core.ValueOperations
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
 import java.time.Duration
@@ -18,30 +16,26 @@ import java.time.Duration
 class AuthRateLimitServiceTests {
 
     @Mock
-    private lateinit var redisTemplate: StringRedisTemplate
+    private lateinit var redisWindowCounterService: RedisWindowCounterService
 
-    @Mock
-    private lateinit var valueOperations: ValueOperations<String, String>
-
-    private fun service(): AuthRateLimitService = AuthRateLimitService(redisTemplate)
+    private fun service(): AuthRateLimitService = AuthRateLimitService(redisWindowCounterService)
 
     @Test
-    fun `login attempt under limit is allowed and expiry is set for first hit`() {
-        given(redisTemplate.opsForValue()).willReturn(valueOperations)
-        given(valueOperations.increment("auth:login:ip:${AuthLogSanitizer.hash("127.0.0.1")}")).willReturn(1L)
-        given(valueOperations.increment("auth:login:email:${AuthLogSanitizer.hash("user@vlainter.com")}")).willReturn(1L)
+    fun `login attempt under limit is allowed`() {
+        doReturn(1L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:login:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(1))
+        doReturn(1L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:login:email:${AuthLogSanitizer.hash("user@vlainter.com")}", Duration.ofMinutes(1))
 
         service().checkLoginAttempt("user@vlainter.com", "127.0.0.1")
-
-        then(redisTemplate).should().expire("auth:login:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(1))
-        then(redisTemplate).should().expire("auth:login:email:${AuthLogSanitizer.hash("user@vlainter.com")}", Duration.ofMinutes(1))
     }
 
     @Test
     fun `login attempt over email limit returns 429`() {
-        given(redisTemplate.opsForValue()).willReturn(valueOperations)
-        given(valueOperations.increment("auth:login:ip:${AuthLogSanitizer.hash("127.0.0.1")}")).willReturn(2L)
-        given(valueOperations.increment("auth:login:email:${AuthLogSanitizer.hash("user@vlainter.com")}")).willReturn(9L)
+        doReturn(2L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:login:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(1))
+        doReturn(9L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:login:email:${AuthLogSanitizer.hash("user@vlainter.com")}", Duration.ofMinutes(1))
 
         val exception = assertThrows<ResponseStatusException> {
             service().checkLoginAttempt("user@vlainter.com", "127.0.0.1")
@@ -51,9 +45,65 @@ class AuthRateLimitServiceTests {
     }
 
     @Test
+    fun `login attempt over ip limit returns 429`() {
+        doReturn(21L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:login:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(1))
+
+        val exception = assertThrows<ResponseStatusException> {
+            service().checkLoginAttempt("user@vlainter.com", "127.0.0.1")
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.TOO_MANY_REQUESTS)
+    }
+
+    @Test
+    fun `signup attempt under limit is allowed`() {
+        doReturn(1L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:signup:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(10))
+        doReturn(1L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:signup:email:${AuthLogSanitizer.hash("user@vlainter.com")}", Duration.ofMinutes(10))
+
+        service().checkSignupAttempt("user@vlainter.com", "127.0.0.1")
+    }
+
+    @Test
+    fun `signup attempt over ip limit returns 429`() {
+        doReturn(9L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:signup:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(10))
+
+        val exception = assertThrows<ResponseStatusException> {
+            service().checkSignupAttempt("user@vlainter.com", "127.0.0.1")
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.TOO_MANY_REQUESTS)
+    }
+
+    @Test
+    fun `signup attempt over email limit returns 429`() {
+        doReturn(2L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:signup:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(10))
+        doReturn(4L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:signup:email:${AuthLogSanitizer.hash("user@vlainter.com")}", Duration.ofMinutes(10))
+
+        val exception = assertThrows<ResponseStatusException> {
+            service().checkSignupAttempt("user@vlainter.com", "127.0.0.1")
+        }
+
+        assertThat(exception.statusCode).isEqualTo(HttpStatus.TOO_MANY_REQUESTS)
+    }
+
+    @Test
+    fun `kakao login attempt at threshold is allowed`() {
+        doReturn(20L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:kakao:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(1))
+
+        service().checkKakaoLoginAttempt("127.0.0.1")
+    }
+
+    @Test
     fun `kakao login attempt over ip limit returns 429`() {
-        given(redisTemplate.opsForValue()).willReturn(valueOperations)
-        given(valueOperations.increment("auth:kakao:ip:${AuthLogSanitizer.hash("127.0.0.1")}")).willReturn(21L)
+        doReturn(21L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:kakao:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(1))
 
         val exception = assertThrows<ResponseStatusException> {
             service().checkKakaoLoginAttempt("127.0.0.1")

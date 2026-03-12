@@ -9,6 +9,7 @@ import com.cw.vlainter.domain.auth.service.KakaoAuthService
 import com.cw.vlainter.domain.auth.service.LoginResult
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.global.security.AuthCookieManager
+import com.cw.vlainter.global.security.ClientIpResolver
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -31,6 +32,7 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPat
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import org.springframework.web.server.ResponseStatusException
+import java.util.concurrent.Executor
 
 @ExtendWith(MockitoExtension::class)
 class AuthControllerTests {
@@ -51,6 +53,8 @@ class AuthControllerTests {
     private lateinit var authRateLimitService: AuthRateLimitService
 
     private lateinit var mockMvc: MockMvc
+    private val clientIpResolver = ClientIpResolver("127.0.0.1/32,::1/128")
+    private val directExecutor = Executor { runnable -> runnable.run() }
 
     @BeforeEach
     fun setUp() {
@@ -59,7 +63,9 @@ class AuthControllerTests {
             kakaoAuthService,
             authCookieManager,
             authAccessAuditService,
-            authRateLimitService
+            authRateLimitService,
+            clientIpResolver,
+            directExecutor
         )
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build()
     }
@@ -86,7 +92,6 @@ class AuthControllerTests {
         val refreshCookie = ResponseCookie.from("vlainter_rt", "refresh-token").httpOnly(true).path("/").build()
         val clearAccessCookie = ResponseCookie.from("vlainter_at", "").httpOnly(true).path("/").maxAge(0).build()
         val clearRefreshCookie = ResponseCookie.from("vlainter_rt", "").httpOnly(true).path("/").maxAge(0).build()
-
         given(authService.login(request)).willReturn(loginResult)
         given(authCookieManager.createAccessTokenCookie("access-token")).willReturn(accessCookie)
         given(authCookieManager.createRefreshTokenCookie("refresh-token")).willReturn(refreshCookie)

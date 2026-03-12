@@ -14,6 +14,7 @@ import org.springframework.web.filter.OncePerRequestFilter
 @Component
 class SuspiciousRequestBlockingFilter(
     private val suspiciousRequestBlockService: SuspiciousRequestBlockService,
+    private val clientIpResolver: ClientIpResolver,
     private val objectMapper: ObjectMapper
 ) : OncePerRequestFilter() {
     private val auditLogger = LoggerFactory.getLogger(SuspiciousRequestBlockingFilter::class.java)
@@ -23,12 +24,12 @@ class SuspiciousRequestBlockingFilter(
         response: HttpServletResponse,
         filterChain: FilterChain
     ) {
-        val clientIp = ClientIpResolver.resolve(request)
+        val clientIp = clientIpResolver.resolve(request)
         if (suspiciousRequestBlockService.isBlocked(clientIp)) {
             writeBlockedResponse(response, request.requestURI)
             auditLogger.warn(
                 "Blocked request from suspicious client ipHash={} method={} path={}",
-                com.cw.vlainter.domain.auth.service.AuthLogSanitizer.hash(clientIp),
+                SensitiveValueSanitizer.hash(clientIp),
                 request.method,
                 request.requestURI
             )
@@ -41,6 +42,10 @@ class SuspiciousRequestBlockingFilter(
         }
 
         filterChain.doFilter(request, response)
+    }
+
+    override fun shouldNotFilter(request: HttpServletRequest): Boolean {
+        return !suspiciousRequestBlockService.isSuspiciousRequest(request.method, request.requestURI)
     }
 
     private fun writeBlockedResponse(response: HttpServletResponse, requestUri: String) {
@@ -57,5 +62,6 @@ class SuspiciousRequestBlockingFilter(
                 )
             )
         )
+        response.writer.flush()
     }
 }

@@ -1,6 +1,6 @@
 package com.cw.vlainter.domain.auth.service
 
-import org.springframework.data.redis.core.StringRedisTemplate
+import com.cw.vlainter.global.security.RedisWindowCounterService
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.web.server.ResponseStatusException
@@ -8,7 +8,7 @@ import java.time.Duration
 
 @Service
 class AuthRateLimitService(
-    private val redisTemplate: StringRedisTemplate
+    private val redisWindowCounterService: RedisWindowCounterService
 ) {
     fun checkLoginAttempt(email: String, clientIp: String) {
         enforceLimit(
@@ -50,11 +50,7 @@ class AuthRateLimitService(
     }
 
     private fun enforceLimit(key: String, limit: Long, window: Duration, message: String) {
-        val valueOps = redisTemplate.opsForValue()
-        val count = valueOps.increment(key) ?: 1L
-        if (count == 1L) {
-            redisTemplate.expire(key, window)
-        }
+        val count = redisWindowCounterService.incrementWithWindow(key, window)
         if (count > limit) {
             throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, message)
         }

@@ -19,15 +19,20 @@ class SuspiciousRequestBlockingFilterTests {
     lateinit var suspiciousRequestBlockService: SuspiciousRequestBlockService
 
     @Mock
+    lateinit var clientIpResolver: ClientIpResolver
+
+    @Mock
     lateinit var filterChain: FilterChain
 
     private val objectMapper = ObjectMapper()
 
     @Test
     fun `returns 429 when client is already blocked`() {
-        val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, objectMapper)
+        val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
         val request = MockHttpServletRequest("GET", "/.env").apply { remoteAddr = "127.0.0.1" }
         val response = MockHttpServletResponse()
+        given(suspiciousRequestBlockService.isSuspiciousRequest("GET", "/.env")).willReturn(true)
+        given(clientIpResolver.resolve(request)).willReturn("127.0.0.1")
         given(suspiciousRequestBlockService.isBlocked("127.0.0.1")).willReturn(true)
 
         filter.doFilter(request, response, filterChain)
@@ -38,21 +43,33 @@ class SuspiciousRequestBlockingFilterTests {
     }
 
     @Test
-    fun `passes normal request through when client is not blocked`() {
-        val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, objectMapper)
+    fun `returns 429 when suspicious request reaches threshold`() {
+        val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
+        val request = MockHttpServletRequest("GET", "/.env").apply { remoteAddr = "127.0.0.1" }
+        val response = MockHttpServletResponse()
+        given(suspiciousRequestBlockService.isSuspiciousRequest("GET", "/.env")).willReturn(true)
+        given(clientIpResolver.resolve(request)).willReturn("127.0.0.1")
+        given(suspiciousRequestBlockService.isBlocked("127.0.0.1")).willReturn(false)
+        given(suspiciousRequestBlockService.recordSuspiciousRequest("127.0.0.1", "GET", "/.env")).willReturn(true)
+
+        filter.doFilter(request, response, filterChain)
+
+        assertEquals(429, response.status)
+        then(filterChain).shouldHaveNoInteractions()
+    }
+
+    @Test
+    fun `passes normal request through when filter is skipped`() {
+        val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
         val request = MockHttpServletRequest("GET", "/api/interview/categories").apply { remoteAddr = "127.0.0.1" }
         val response = MockHttpServletResponse()
-        given(suspiciousRequestBlockService.isBlocked("127.0.0.1")).willReturn(false)
-        given(
-            suspiciousRequestBlockService.recordSuspiciousRequest(
-                "127.0.0.1",
-                "GET",
-                "/api/interview/categories"
-            )
-        ).willReturn(false)
+        given(suspiciousRequestBlockService.isSuspiciousRequest("GET", "/api/interview/categories")).willReturn(false)
 
         filter.doFilter(request, response, filterChain)
 
         then(filterChain).should().doFilter(request, response)
+        then(suspiciousRequestBlockService).should().isSuspiciousRequest("GET", "/api/interview/categories")
+        then(suspiciousRequestBlockService).shouldHaveNoMoreInteractions()
+        then(clientIpResolver).shouldHaveNoInteractions()
     }
 }

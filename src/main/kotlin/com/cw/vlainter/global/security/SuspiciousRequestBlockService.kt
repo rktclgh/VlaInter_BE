@@ -1,6 +1,5 @@
 package com.cw.vlainter.global.security
 
-import com.cw.vlainter.domain.auth.service.AuthLogSanitizer
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.data.redis.core.StringRedisTemplate
@@ -10,6 +9,7 @@ import java.time.Duration
 @Service
 class SuspiciousRequestBlockService(
     private val redisTemplate: StringRedisTemplate,
+    private val redisWindowCounterService: RedisWindowCounterService,
     @Value("\${app.docs.enabled:false}")
     private val docsEnabled: Boolean
 ) {
@@ -24,8 +24,8 @@ class SuspiciousRequestBlockService(
             return false
         }
 
-        val count = increment(counterKey(clientIp), PROBE_WINDOW)
-        val ipHash = AuthLogSanitizer.hash(clientIp)
+        val count = redisWindowCounterService.incrementWithWindow(counterKey(clientIp), PROBE_WINDOW)
+        val ipHash = SensitiveValueSanitizer.hash(clientIp)
         logger.warn(
             "Suspicious request probe detected ipHash={} method={} path={} count={}",
             ipHash,
@@ -73,18 +73,9 @@ class SuspiciousRequestBlockService(
         return false
     }
 
-    private fun increment(key: String, window: Duration): Long {
-        val valueOps = redisTemplate.opsForValue()
-        val count = valueOps.increment(key) ?: 1L
-        if (count == 1L) {
-            redisTemplate.expire(key, window)
-        }
-        return count
-    }
+    private fun counterKey(clientIp: String): String = "security:probe:count:${SensitiveValueSanitizer.hash(clientIp)}"
 
-    private fun counterKey(clientIp: String): String = "security:probe:count:${AuthLogSanitizer.hash(clientIp)}"
-
-    private fun blockKey(clientIp: String): String = "security:probe:block:${AuthLogSanitizer.hash(clientIp)}"
+    private fun blockKey(clientIp: String): String = "security:probe:block:${SensitiveValueSanitizer.hash(clientIp)}"
 
     private companion object {
         const val PROBE_THRESHOLD = 5L

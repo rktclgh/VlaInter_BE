@@ -246,7 +246,7 @@ class GlobalExceptionHandler {
     private fun logMissingResource(requestUri: String, ex: NoResourceFoundException) {
         val lowered = requestUri.lowercase()
         if (noisyProbeMarkers.any { lowered.contains(it) }) {
-            logger.warn("Suspicious resource probe blocked path={} method={}", requestUri, ex.httpMethod)
+            logger.warn("Suspicious resource probe detected path={} method={}", requestUri, ex.httpMethod)
             return
         }
         logger.warn("Static resource not found path={} method={}", requestUri, ex.httpMethod)

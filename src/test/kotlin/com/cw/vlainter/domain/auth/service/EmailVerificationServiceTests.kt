@@ -4,6 +4,7 @@ import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.config.properties.EmailVerificationProperties
 import com.cw.vlainter.global.mail.EmailTemplateService
+import com.cw.vlainter.global.security.RedisWindowCounterService
 import jakarta.mail.Session
 import jakarta.mail.internet.MimeMessage
 import org.assertj.core.api.Assertions.assertThat
@@ -19,6 +20,7 @@ import org.mockito.BDDMockito.then
 import org.mockito.BDDMockito.willThrow
 import org.mockito.Mock
 import org.mockito.Mockito.clearInvocations
+import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verifyNoInteractions
@@ -53,6 +55,9 @@ class EmailVerificationServiceTests {
 
     @Mock
     private lateinit var emailTemplateService: EmailTemplateService
+
+    @Mock
+    private lateinit var redisWindowCounterService: RedisWindowCounterService
 
     private val properties = EmailVerificationProperties(
         codeExpSeconds = 300,
@@ -102,9 +107,7 @@ class EmailVerificationServiceTests {
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
         assertThat(exception.reason).isNotBlank()
-        then(userRepository).should(never()).findByEmail(anyString())
-        then(redisTemplate).should(never()).hasKey(any(String::class.java))
-        verifyNoInteractions(valueOperations, mailSender, emailTemplateService)
+        verifyNoInteractions(userRepository, redisTemplate, valueOperations, mailSender, emailTemplateService)
     }
 
     @Test
@@ -201,7 +204,7 @@ class EmailVerificationServiceTests {
         )
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
         given(valueOperations.get("auth:email-verification:attempts:$normalizedEmail")).willReturn(null)
-        given(redisTemplate.execute(any(DefaultRedisScript::class.java), eq(keys), anyString())).willReturn(1L)
+        doReturn(1L).`when`(redisTemplate).execute(any(DefaultRedisScript::class.java), eq(keys), anyString())
 
         val result = service().verifyCode(rawEmail, inputCode)
 
@@ -219,16 +222,16 @@ class EmailVerificationServiceTests {
         )
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
         given(valueOperations.get("auth:email-verification:attempts:$email")).willReturn(null)
-        given(redisTemplate.execute(any(DefaultRedisScript::class.java), eq(keys), anyString())).willReturn(0L)
-        given(valueOperations.increment("auth:email-verification:attempts:$email")).willReturn(1L)
+        doReturn(0L).`when`(redisTemplate).execute(any(DefaultRedisScript::class.java), eq(keys), anyString())
         given(redisTemplate.getExpire("auth:email-verification:code:$email")).willReturn(120L)
+        given(redisWindowCounterService.incrementWithWindow("auth:email-verification:attempts:$email", Duration.ofSeconds(120))).willReturn(1L)
 
         val exception = assertThrows<ResponseStatusException> {
             service().verifyCode(email, "123456")
         }
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
-        then(redisTemplate).should().expire("auth:email-verification:attempts:$email", Duration.ofSeconds(120))
+        then(redisWindowCounterService).should().incrementWithWindow("auth:email-verification:attempts:$email", Duration.ofSeconds(120))
     }
 
     @Test
@@ -241,16 +244,16 @@ class EmailVerificationServiceTests {
         )
         given(redisTemplate.opsForValue()).willReturn(valueOperations)
         given(valueOperations.get("auth:email-verification:attempts:$email")).willReturn(null)
-        given(redisTemplate.execute(any(DefaultRedisScript::class.java), eq(keys), anyString())).willReturn(-1L)
-        given(valueOperations.increment("auth:email-verification:attempts:$email")).willReturn(2L)
+        doReturn(-1L).`when`(redisTemplate).execute(any(DefaultRedisScript::class.java), eq(keys), anyString())
         given(redisTemplate.getExpire("auth:email-verification:code:$email")).willReturn(90L)
+        given(redisWindowCounterService.incrementWithWindow("auth:email-verification:attempts:$email", Duration.ofSeconds(90))).willReturn(2L)
 
         val exception = assertThrows<ResponseStatusException> {
             service().verifyCode(email, "123456")
         }
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
-        then(redisTemplate).should().expire("auth:email-verification:attempts:$email", Duration.ofSeconds(90))
+        then(redisWindowCounterService).should().incrementWithWindow("auth:email-verification:attempts:$email", Duration.ofSeconds(90))
     }
 
     @Test
@@ -264,8 +267,7 @@ class EmailVerificationServiceTests {
         }
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.TOO_MANY_REQUESTS)
-        then(valueOperations).should(never()).increment(anyString())
-        then(redisTemplate).should(never()).expire(anyString(), any(Duration::class.java))
+        then(redisWindowCounterService).shouldHaveNoInteractions()
     }
 
     @Test
@@ -278,7 +280,7 @@ class EmailVerificationServiceTests {
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
         verifyNoInteractions(valueOperations)
-        then(redisTemplate).should(never()).expire(anyString(), any(Duration::class.java))
+        then(redisWindowCounterService).shouldHaveNoInteractions()
     }
 
     private fun service(): EmailVerificationService {
@@ -288,6 +290,7 @@ class EmailVerificationServiceTests {
         return EmailVerificationService(
             mailSender = mailSender,
             redisTemplate = redisTemplate,
+            redisWindowCounterService = redisWindowCounterService,
             userRepository = userRepository,
             emailTemplateService = emailTemplateService,
             emailVerificationProperties = properties,

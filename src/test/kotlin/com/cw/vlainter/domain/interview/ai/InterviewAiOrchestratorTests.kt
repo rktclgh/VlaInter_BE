@@ -294,7 +294,7 @@ class InterviewAiOrchestratorTests {
         )
 
         assertThat(generated).hasSize(1)
-        assertThat(generated.first().questionType).isEqualTo("RESUME_RESULT")
+        assertThat(generated.first().questionType).isEqualTo("RESUME_MOTIVATION")
     }
 
     @Test

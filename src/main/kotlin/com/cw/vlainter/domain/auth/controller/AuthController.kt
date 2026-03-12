@@ -17,6 +17,7 @@ import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.http.HttpHeaders
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -28,6 +29,7 @@ import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
 import java.util.LinkedHashMap
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executor
 
 /**
  * 인증 관련 HTTP API를 제공한다.
@@ -42,7 +44,10 @@ class AuthController(
     private val kakaoAuthService: KakaoAuthService,
     private val authCookieManager: AuthCookieManager,
     private val authAccessAuditService: AuthAccessAuditService,
-    private val authRateLimitService: AuthRateLimitService
+    private val authRateLimitService: AuthRateLimitService,
+    private val clientIpResolver: ClientIpResolver,
+    @Qualifier("authAuditExecutor")
+    private val authAuditExecutor: Executor
 ) {
     private val logger = LoggerFactory.getLogger(AuthController::class.java)
 
@@ -53,7 +58,7 @@ class AuthController(
         servletRequest: HttpServletRequest
     ): ResponseEntity<Map<String, Any>> {
         val email = request.email.trim().lowercase()
-        val clientIp = ClientIpResolver.resolve(servletRequest)
+        val clientIp = clientIpResolver.resolve(servletRequest)
         authRateLimitService.checkSignupAttempt(email, clientIp)
         logger.info(
             "Auth signup attempt emailHash={} nameLength={} passwordLength={} ipHash={}",
@@ -120,7 +125,7 @@ class AuthController(
         servletRequest: HttpServletRequest
     ): ResponseEntity<LoginResponse> {
         val email = request.email.trim().lowercase()
-        val clientIp = ClientIpResolver.resolve(servletRequest)
+        val clientIp = clientIpResolver.resolve(servletRequest)
         authRateLimitService.checkLoginAttempt(email, clientIp)
         logger.info(
             "Auth login attempt emailHash={} hasRedirectUri={} passwordLength={} ipHash={}",
@@ -169,7 +174,7 @@ class AuthController(
         response: HttpServletResponse,
         servletRequest: HttpServletRequest
     ): ResponseEntity<LoginResponse> {
-        val clientIp = ClientIpResolver.resolve(servletRequest)
+        val clientIp = clientIpResolver.resolve(servletRequest)
         authRateLimitService.checkKakaoLoginAttempt(clientIp)
         logger.info(
             "Auth kakao login attempt hasRedirectUri={} hasClientId={} ipHash={}",
@@ -214,7 +219,7 @@ class AuthController(
     }
 
     private fun recordLoginAuditAsync(result: LoginResult, clientIp: String, userAgent: String?) {
-        CompletableFuture.runAsync {
+        CompletableFuture.runAsync({
             try {
                 authAccessAuditService.recordLogin(
                     sessionId = result.sessionId,
@@ -227,7 +232,7 @@ class AuthController(
             } catch (ex: Exception) {
                 logger.warn("로그인 접속 감사 로그 기록에 실패했습니다. userId={} sidPrefix={}", result.userId, result.sessionId.take(8), ex)
             }
-        }
+        }, authAuditExecutor)
     }
 
     /**
