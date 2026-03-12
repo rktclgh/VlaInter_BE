@@ -17,6 +17,30 @@ class InterviewAiOrchestrator(
     private val llmProviderRouter: LlmProviderRouter,
     private val objectMapper: ObjectMapper
 ) {
+    private val interviewQuestionEndings = listOf(
+        "설명해 주세요",
+        "말씀해 주세요",
+        "얘기해 주세요",
+        "이야기해 주세요",
+        "알려 주세요",
+        "공유해 주세요",
+        "정리해 주세요",
+        "설명해주세요",
+        "말씀해주세요",
+        "얘기해주세요",
+        "이야기해주세요",
+        "알려주세요",
+        "공유해주세요",
+        "정리해주세요",
+        "무엇인가요",
+        "왜 그런가요",
+        "어떻게 생각하시나요",
+        "어떻게 보시나요",
+        "해주실 수 있나요",
+        "말해주실 수 있나요",
+        "설명해주실 수 있나요"
+    )
+
     private val logger = LoggerFactory.getLogger(javaClass)
 
     data class DocumentQuestionValidationResult(
@@ -963,30 +987,7 @@ class InterviewAiOrchestrator(
         if (trimmed.endsWith("?")) return true
 
         val normalized = trimmed.removeSuffix(".").removeSuffix("!").trim()
-        val allowedEndings = listOf(
-            "설명해 주세요",
-            "말씀해 주세요",
-            "얘기해 주세요",
-            "이야기해 주세요",
-            "알려 주세요",
-            "공유해 주세요",
-            "정리해 주세요",
-            "설명해주세요",
-            "말씀해주세요",
-            "얘기해주세요",
-            "이야기해주세요",
-            "알려주세요",
-            "공유해주세요",
-            "정리해주세요",
-            "무엇인가요",
-            "왜 그런가요",
-            "어떻게 생각하시나요",
-            "어떻게 보시나요",
-            "해주실 수 있나요",
-            "말해주실 수 있나요",
-            "설명해주실 수 있나요"
-        )
-        return allowedEndings.any { normalized.endsWith(it) }
+        return interviewQuestionEndings.any { normalized.endsWith(it) }
     }
 
     private fun documentQuestionTypeRules(fileTypeKey: String): List<String> {

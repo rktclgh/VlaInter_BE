@@ -951,14 +951,16 @@ class DocumentInterviewService(
         val indexes = when {
             prioritized.size <= snippetBudget -> prioritized.indices.toList()
             else -> buildList {
+                val candidateCount = min(prioritized.size, max(snippetBudget, snippetBudget * 2))
+                val candidateLastIndex = candidateCount - 1
                 add(0)
-                val step = max(1, prioritized.lastIndex / max(1, snippetBudget - 1))
+                val step = max(1, candidateLastIndex / max(1, snippetBudget - 1))
                 var current = step
-                while (size < snippetBudget - 1 && current < prioritized.lastIndex) {
+                while (size < snippetBudget - 1 && current < candidateLastIndex) {
                     add(current)
                     current += step
                 }
-                add(prioritized.lastIndex)
+                add(candidateLastIndex)
             }
         }.distinct()
 
