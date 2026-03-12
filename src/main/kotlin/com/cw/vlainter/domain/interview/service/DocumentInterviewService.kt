@@ -19,6 +19,7 @@ import com.cw.vlainter.domain.interview.entity.DocumentQuestion
 import com.cw.vlainter.domain.interview.entity.DocumentQuestionSet
 import com.cw.vlainter.domain.interview.entity.InterviewMode
 import com.cw.vlainter.domain.interview.entity.InterviewQuestionKind
+import com.cw.vlainter.domain.interview.entity.InterviewLanguage
 import com.cw.vlainter.domain.interview.entity.InterviewSession
 import com.cw.vlainter.domain.interview.entity.InterviewStatus
 import com.cw.vlainter.domain.interview.entity.InterviewTurn
@@ -344,7 +345,8 @@ class DocumentInterviewService(
                         actor = actor,
                         contexts = techContexts,
                         difficulty = request.difficulty,
-                        requestedCount = desiredTechTarget
+                        requestedCount = desiredTechTarget,
+                        language = request.language
                     )
                 }
                 val techTarget = if (resolvedTechCandidates.isNotEmpty()) {
@@ -353,7 +355,13 @@ class DocumentInterviewService(
                     0
                 }
                 val documentTarget = max(1, requestedCount - techTarget)
-                val resolvedDocumentQuestions = generateDocumentQuestions(actor, files, request.difficulty, documentTarget)
+                val resolvedDocumentQuestions = generateDocumentQuestions(
+                    actor = actor,
+                    files = files,
+                    difficulty = request.difficulty,
+                    questionCount = documentTarget,
+                    language = request.language
+                )
                 resolvedTechCandidates to resolvedDocumentQuestions
             }
 
@@ -419,6 +427,7 @@ class DocumentInterviewService(
                                 "includeSelfIntroduction" to request.includeSelfIntroduction,
                                 "difficulty" to request.difficulty?.name,
                                 "difficultyRating" to difficultyToRating(request.difficulty),
+                                "language" to request.language.name,
                                 "categoryId" to primaryCategoryId,
                                 "categoryName" to techMetaSkillNames.joinToString(", "),
                                 "jobName" to techMetaJobName,
@@ -453,6 +462,7 @@ class DocumentInterviewService(
                 status = session.status.name,
                 currentQuestion = toInterviewQuestionResponse(firstTurn),
                 hasNext = queue.size > 1,
+                language = request.language.name,
                 providerUsed = routingSnapshot.providerUsed?.name,
                 fallbackDepth = routingSnapshot.fallbackDepth
             )
@@ -465,7 +475,8 @@ class DocumentInterviewService(
         actor: User,
         files: List<UserFile>,
         difficulty: QuestionDifficulty?,
-        questionCount: Int
+        questionCount: Int,
+        language: InterviewLanguage
     ): List<DocumentQuestion> {
         val allocation = distribute(questionCount, files.size)
         val results = mutableListOf<DocumentQuestion>()
@@ -525,7 +536,8 @@ class DocumentInterviewService(
                     fileTypeLabel = file.fileType.toPromptLabel(),
                     difficulty = difficulty,
                     questionCount = targetCount,
-                    contextSnippets = relaxedValidatedSnippets
+                    contextSnippets = relaxedValidatedSnippets,
+                    language = language
                 )
             }.onFailure { ex ->
                 if (ex is GeminiTransientException) {
@@ -641,6 +653,7 @@ class DocumentInterviewService(
                     sessionId = session.id,
                     status = session.status.name,
                     mode = session.mode.name,
+                    language = meta?.get("language")?.asText()?.takeIf { it.isNotBlank() } ?: InterviewLanguage.KO.name,
                     questionCount = meta?.get("questionCount")?.asInt() ?: max(queueSize, turns.size),
                     difficulty = meta?.get("difficulty")?.asText() ?: turns.firstOrNull()?.difficulty,
                     difficultyRating = meta?.get("difficultyRating")?.asInt()
@@ -692,6 +705,7 @@ class DocumentInterviewService(
             sessionId = latestSession.id,
             status = latestSession.status.name,
             mode = latestSession.mode.name,
+            language = meta?.get("language")?.asText()?.takeIf { it.isNotBlank() } ?: InterviewLanguage.KO.name,
             currentQuestion = toInterviewQuestionResponse(currentTurn),
             questionCount = meta?.get("questionCount")?.asInt() ?: max(queueSize, 1),
             difficulty = meta?.get("difficulty")?.asText(),
@@ -907,7 +921,8 @@ class DocumentInterviewService(
         actor: User,
         contexts: List<InterviewCategoryContextResolver.ResolvedCategoryContext>,
         difficulty: QuestionDifficulty?,
-        requestedCount: Int
+        requestedCount: Int,
+        language: InterviewLanguage
     ): List<QaQuestion> {
         val distinctContexts = contexts.distinctBy { it.category.id }
         if (distinctContexts.isEmpty()) return emptyList()
@@ -936,7 +951,8 @@ class DocumentInterviewService(
             actor = actor,
             contexts = contextsToGenerate,
             difficulty = difficulty,
-            requestedPerSkill = requestedPerSkill
+            requestedPerSkill = requestedPerSkill,
+            language = language
         )
         return (existing + generated).distinctBy { it.id }
     }
@@ -945,7 +961,8 @@ class DocumentInterviewService(
         actor: User,
         contexts: List<InterviewCategoryContextResolver.ResolvedCategoryContext>,
         difficulty: QuestionDifficulty?,
-        requestedPerSkill: Int
+        requestedPerSkill: Int,
+        language: InterviewLanguage
     ): List<QaQuestion> {
         val distinctContexts = contexts.distinctBy { it.category.id }
         if (distinctContexts.isEmpty()) return emptyList()
@@ -956,7 +973,8 @@ class DocumentInterviewService(
                 jobName = jobName,
                 skillNames = distinctContexts.map { it.skillName },
                 difficulty = difficulty,
-                questionCountPerSkill = requestedPerSkill
+                questionCountPerSkill = requestedPerSkill,
+                language = language
             )
         } catch (ex: GeminiTransientException) {
             throw toGeminiOverloadException(ex)
@@ -1174,6 +1192,7 @@ class DocumentInterviewService(
     }
 
     private fun createTurnFromRef(session: InterviewSession, ref: InterviewPracticeService.QuestionRef): InterviewTurn {
+        val language = resolveInterviewLanguage(session.configJson)
         val turn = when (ref.kind) {
             InterviewQuestionKind.TECH -> {
                 val question = questionRepository.findByIdAndDeletedAtIsNull(ref.id)
@@ -1190,7 +1209,11 @@ class DocumentInterviewService(
                         }
                     },
                     question = question,
-                    questionTextSnapshot = question.questionText,
+                    questionTextSnapshot = interviewAiOrchestrator.localizeInterviewText(
+                        question.questionText,
+                        language,
+                        "interview question"
+                    ) ?: question.questionText,
                     categorySnapshot = question.category.name,
                     jobSnapshot = question.jobName ?: question.category.parent?.name?.trim(),
                     skillSnapshot = question.skillName ?: question.category.name.trim(),
@@ -1208,7 +1231,11 @@ class DocumentInterviewService(
                     turnNo = 1,
                     sourceTag = TurnSourceTag.DOC_RAG,
                     documentQuestion = question,
-                    questionTextSnapshot = question.questionText,
+                    questionTextSnapshot = interviewAiOrchestrator.localizeInterviewText(
+                        question.questionText,
+                        language,
+                        "interview question"
+                    ) ?: question.questionText,
                     categorySnapshot = question.questionType,
                     difficulty = question.difficulty,
                     tagsJson = "[]",
@@ -1221,7 +1248,7 @@ class DocumentInterviewService(
                     session = session,
                     turnNo = 1,
                     sourceTag = TurnSourceTag.DOC_RAG,
-                    questionTextSnapshot = INTRO_QUESTION_TEXT,
+                    questionTextSnapshot = interviewAiOrchestrator.localizedIntroQuestion(language),
                     categorySnapshot = INTRO_CATEGORY,
                     tagsJson = "[]"
                 )
@@ -1255,7 +1282,17 @@ class DocumentInterviewService(
         return turn.question == null &&
             turn.documentQuestion == null &&
             turn.categorySnapshot == INTRO_CATEGORY &&
-            turn.questionTextSnapshot == INTRO_QUESTION_TEXT
+            turn.questionTextSnapshot in setOf(
+                INTRO_QUESTION_TEXT,
+                interviewAiOrchestrator.localizedIntroQuestion(InterviewLanguage.EN)
+            )
+    }
+
+    private fun resolveInterviewLanguage(configJson: String?): InterviewLanguage {
+        if (configJson.isNullOrBlank()) return InterviewLanguage.KO
+        val root = runCatching { objectMapper.readTree(configJson) }.getOrNull() ?: return InterviewLanguage.KO
+        val raw = root.path("meta").path("language").asText().trim().uppercase()
+        return runCatching { InterviewLanguage.valueOf(raw) }.getOrDefault(InterviewLanguage.KO)
     }
 
     private fun extractPdfText(file: UserFile): ExtractedDocumentText {

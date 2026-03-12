@@ -14,6 +14,7 @@ import com.cw.vlainter.domain.interview.dto.SubmitInterviewAnswerRequest
 import com.cw.vlainter.domain.interview.dto.SubmitInterviewAnswerResponse
 import com.cw.vlainter.domain.interview.dto.TurnEvaluationResponse
 import com.cw.vlainter.domain.interview.entity.InterviewQuestionKind
+import com.cw.vlainter.domain.interview.entity.InterviewLanguage
 import com.cw.vlainter.domain.interview.entity.InterviewMode
 import com.cw.vlainter.domain.interview.entity.InterviewSession
 import com.cw.vlainter.domain.interview.entity.InterviewStatus
@@ -83,6 +84,9 @@ class InterviewPracticeService(
 ) {
     companion object {
         private const val AI_GENERATED_SET_DESCRIPTION = "카테고리 기반 자동 생성 문답"
+        private val ENGLISH_WORD_REGEX = Regex("""\b[A-Za-z]{2,}\b""")
+        private val ENGLISH_LETTER_REGEX = Regex("""[A-Za-z]""")
+        private val HANGUL_REGEX = Regex("""[가-힣]""")
     }
 
     @Transactional
@@ -156,6 +160,7 @@ class InterviewPracticeService(
                             "questionCount" to questionCount,
                             "difficulty" to request.difficulty?.name,
                             "difficultyRating" to difficultyToRating(request.difficulty),
+                            "language" to request.language.name,
                             "categoryId" to primaryCategory?.id,
                             "categoryName" to resolvedSkillName,
                             "jobName" to resolvedJobName,
@@ -176,6 +181,7 @@ class InterviewPracticeService(
                 status = session.status.name,
                 currentQuestion = toInterviewQuestionResponse(firstTurn),
                 hasNext = questionCount > 1,
+                language = request.language.name,
                 providerUsed = routingSnapshot.providerUsed?.name,
                 fallbackDepth = routingSnapshot.fallbackDepth
             )
@@ -201,6 +207,7 @@ class InterviewPracticeService(
             ?: throw ResponseStatusException(HttpStatus.CONFLICT, "답변할 질문이 없습니다.")
 
         val submittedAnswer = request.answer.trim()
+        assertInterviewAnswerLanguage(session, submittedAnswer)
         turn.userAnswer = submittedAnswer
         turn.answeredAt = OffsetDateTime.now()
         interviewTurnRepository.save(turn)
@@ -247,6 +254,7 @@ class InterviewPracticeService(
             ?: throw ResponseStatusException(HttpStatus.CONFLICT, "답변할 질문이 없습니다.")
 
         val submittedAnswer = request.answer.trim()
+        assertInterviewAnswerLanguage(session, submittedAnswer)
         turn.userAnswer = submittedAnswer
         turn.answeredAt = OffsetDateTime.now()
         interviewTurnRepository.save(turn)
@@ -554,7 +562,8 @@ class InterviewPracticeService(
                 jobName = jobName,
                 skillName = skillName,
                 difficulty = request.difficulty,
-                questionCount = request.questionCount.coerceAtLeast(5)
+                questionCount = request.questionCount.coerceAtLeast(5),
+                language = request.language
             )
         } catch (ex: GeminiTransientException) {
             throw toGeminiOverloadException(ex)
@@ -675,6 +684,7 @@ class InterviewPracticeService(
     }
 
     private fun createTurnFromRef(session: InterviewSession, turnNo: Int, ref: QuestionRef): InterviewTurn {
+        val language = resolveInterviewLanguage(session.configJson)
         val turn = when (ref.kind) {
             InterviewQuestionKind.TECH -> {
                 val question = questionRepository.findByIdAndDeletedAtIsNull(ref.id)
@@ -684,7 +694,11 @@ class InterviewPracticeService(
                     turnNo = turnNo,
                     sourceTag = toTurnSource(question),
                     question = question,
-                    questionTextSnapshot = question.questionText,
+                    questionTextSnapshot = interviewAiOrchestrator.localizeInterviewText(
+                        question.questionText,
+                        language,
+                        "interview question"
+                    ) ?: question.questionText,
                     categorySnapshot = question.category.name,
                     jobSnapshot = question.jobName ?: question.category.parent?.name?.trim(),
                     skillSnapshot = question.skillName ?: question.category.name.trim(),
@@ -702,7 +716,11 @@ class InterviewPracticeService(
                     turnNo = turnNo,
                     sourceTag = TurnSourceTag.DOC_RAG,
                     documentQuestion = question,
-                    questionTextSnapshot = question.questionText,
+                    questionTextSnapshot = interviewAiOrchestrator.localizeInterviewText(
+                        question.questionText,
+                        language,
+                        "interview question"
+                    ) ?: question.questionText,
                     categorySnapshot = question.questionType,
                     difficulty = question.difficulty,
                     tagsJson = "[]",
@@ -917,6 +935,7 @@ class InterviewPracticeService(
             sessionId = session.id,
             status = session.status.name,
             mode = session.mode.name,
+            language = meta?.get("language")?.asText()?.takeIf { it.isNotBlank() } ?: InterviewLanguage.KO.name,
             questionCount = meta?.get("questionCount")?.asInt() ?: max(parsed.queueSize, turns.size),
             difficulty = meta?.get("difficulty")?.asText() ?: turns.firstOrNull()?.difficulty,
             difficultyRating = meta?.get("difficultyRating")?.asInt()
@@ -942,6 +961,7 @@ class InterviewPracticeService(
             sessionId = session.id,
             status = session.status.name,
             mode = session.mode.name,
+            language = meta?.get("language")?.asText()?.takeIf { it.isNotBlank() } ?: InterviewLanguage.KO.name,
             currentQuestion = toInterviewQuestionResponse(currentTurn),
             questionCount = meta?.get("questionCount")?.asInt() ?: max(parsed.queueSize, turns.size),
             difficulty = meta?.get("difficulty")?.asText() ?: turns.firstOrNull()?.difficulty,
@@ -978,6 +998,29 @@ class InterviewPracticeService(
             else -> emptyList()
         }
         return ParsedSessionMeta(meta = meta, queueSize = queueSize, selectedDocuments = selectedDocuments)
+    }
+
+    private fun resolveInterviewLanguage(configJson: String?): InterviewLanguage {
+        if (configJson.isNullOrBlank()) return InterviewLanguage.KO
+        val root = runCatching { objectMapper.readTree(configJson) }.getOrNull() ?: return InterviewLanguage.KO
+        val raw = root.path("meta").path("language").asText().trim().uppercase()
+        return runCatching { InterviewLanguage.valueOf(raw) }.getOrDefault(InterviewLanguage.KO)
+    }
+
+    private fun assertInterviewAnswerLanguage(session: InterviewSession, answer: String) {
+        if (resolveInterviewLanguage(session.configJson) != InterviewLanguage.EN) return
+        val englishLetters = ENGLISH_LETTER_REGEX.findAll(answer).count()
+        val hangulLetters = HANGUL_REGEX.findAll(answer).count()
+        val englishWords = ENGLISH_WORD_REGEX.findAll(answer).count()
+        val looksEnglishEnough = when {
+            englishWords >= 5 && englishLetters >= hangulLetters * 2 -> true
+            englishWords >= 3 && hangulLetters == 0 && englishLetters >= 12 -> true
+            englishWords >= 8 -> true
+            else -> false
+        }
+        if (!looksEnglishEnough) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "영어 면접에서는 영어 답변으로 작성해 주세요.")
+        }
     }
 
     private fun JsonNode.toInterviewHistoryDocumentResponse(): InterviewHistoryDocumentResponse? {

@@ -1,12 +1,14 @@
+@file:Suppress("NonAsciiCharacters")
+
 package com.cw.vlainter.domain.interview.service
 
 import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.entity.DocumentQuestion
+import com.cw.vlainter.domain.interview.entity.InterviewLanguage
 import com.cw.vlainter.domain.interview.entity.InterviewMode
 import com.cw.vlainter.domain.interview.entity.InterviewSession
 import com.cw.vlainter.domain.interview.entity.InterviewStatus
 import com.cw.vlainter.domain.interview.entity.InterviewTurn
-import com.cw.vlainter.domain.interview.entity.InterviewTurnEvaluation
 import com.cw.vlainter.domain.interview.entity.RevealPolicy
 import com.cw.vlainter.domain.interview.entity.TurnSourceTag
 import com.cw.vlainter.domain.interview.repository.InterviewTurnEvaluationRepository
@@ -113,7 +115,38 @@ class InterviewEvaluationServiceTests {
         assertThat(result.model).isEqualTo("heuristic")
     }
 
-    private fun createDocumentTurn(answer: String, referenceAnswer: String?): InterviewTurn {
+    @Test
+    fun `영어 문서 면접 fallback 평가는 영어 피드백과 문장 완성도 기준을 사용한다`() {
+        val turn = createDocumentTurn(
+            answer = "In that project, I owned the performance investigation. I profiled the API response path, found excessive serialization overhead, and changed the cache policy. As a result, the dashboard loaded faster and support complaints decreased.",
+            referenceAnswer = "I would describe the situation, my responsibility, the actions I took, and the measurable outcome.",
+            language = InterviewLanguage.EN
+        )
+
+        given(
+            interviewAiOrchestrator.evaluateDocumentAnswer(
+                questionText = turn.documentQuestion!!.questionText,
+                referenceAnswer = turn.documentQuestion!!.referenceAnswer,
+                evidence = objectMapper.readValue(turn.documentQuestion!!.evidenceJson, Array<String>::class.java).toList(),
+                userAnswer = turn.userAnswer!!,
+                language = InterviewLanguage.EN
+            )
+        ).willReturn(null)
+
+        val result = invokeBuildEvaluation(turn, turn.userAnswer!!)
+
+        assertThat(result.score.toInt()).isGreaterThanOrEqualTo(60)
+        assertThat(result.feedback).doesNotContainPattern("[가-힣]")
+        assertThat(result.bestPractice).doesNotContainPattern("[가-힣]")
+        assertThat(result.bestPractice.lowercase()).containsAnyOf("star", "result", "document")
+        assertThat(result.model).isEqualTo("heuristic")
+    }
+
+    private fun createDocumentTurn(
+        answer: String,
+        referenceAnswer: String?,
+        language: InterviewLanguage = InterviewLanguage.KO
+    ): InterviewTurn {
         val user = User(
             id = 1L,
             email = "tester@vlainter.com",
@@ -128,7 +161,13 @@ class InterviewEvaluationServiceTests {
             mode = InterviewMode.DOC,
             status = InterviewStatus.IN_PROGRESS,
             revealPolicy = RevealPolicy.PER_TURN,
-            configJson = "{}",
+            configJson = objectMapper.writeValueAsString(
+                mapOf(
+                    "meta" to mapOf(
+                        "language" to language.name
+                    )
+                )
+            ),
             startedAt = OffsetDateTime.now(),
             createdAt = OffsetDateTime.now(),
             updatedAt = OffsetDateTime.now()
@@ -139,14 +178,25 @@ class InterviewEvaluationServiceTests {
             userId = 1L,
             documentFileId = 77L,
             questionNo = 1,
-            questionText = "포트폴리오 프로젝트에서 성능 병목을 어떻게 발견하고 개선하셨나요?",
+            questionText = if (language == InterviewLanguage.EN) {
+                "How did you identify and improve the performance bottleneck in your portfolio project?"
+            } else {
+                "포트폴리오 프로젝트에서 성능 병목을 어떻게 발견하고 개선하셨나요?"
+            },
             questionType = "PORTFOLIO_PROJECT",
             referenceAnswer = referenceAnswer,
             evidenceJson = objectMapper.writeValueAsString(
-                listOf(
-                    "포트폴리오에 대시보드 초기 로딩 개선과 API 구조 조정 경험이 기재되어 있음",
-                    "사용자 체감 속도 개선과 관련 문의 감소를 언급함"
-                )
+                if (language == InterviewLanguage.EN) {
+                    listOf(
+                        "The portfolio describes improving dashboard startup latency and restructuring the API response.",
+                        "It also mentions faster perceived speed and fewer support complaints."
+                    )
+                } else {
+                    listOf(
+                        "포트폴리오에 대시보드 초기 로딩 개선과 API 구조 조정 경험이 기재되어 있음",
+                        "사용자 체감 속도 개선과 관련 문의 감소를 언급함"
+                    )
+                }
             )
         )
         return InterviewTurn(
@@ -156,7 +206,7 @@ class InterviewEvaluationServiceTests {
             sourceTag = TurnSourceTag.DOC_RAG,
             documentQuestion = documentQuestion,
             questionTextSnapshot = documentQuestion.questionText,
-            categorySnapshot = "문서 기반 모의면접",
+            categorySnapshot = if (language == InterviewLanguage.EN) "Document-based mock interview" else "문서 기반 모의면접",
             userAnswer = answer,
             answeredAt = OffsetDateTime.now()
         )

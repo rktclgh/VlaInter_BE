@@ -1,5 +1,8 @@
+@file:Suppress("NonAsciiCharacters")
+
 package com.cw.vlainter.domain.interview.ai
 
+import com.cw.vlainter.domain.interview.entity.InterviewLanguage
 import com.cw.vlainter.global.config.properties.AiProperties
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.assertj.core.api.Assertions.assertThat
@@ -102,5 +105,76 @@ class InterviewAiOrchestratorTests {
         assertThat(generated).hasSize(1)
         assertThat(capturedPrompt).contains("STAR형 모범답안")
         assertThat(capturedPrompt).contains("상황/과제/행동/결과가 자연스럽게 드러나야 함")
+    }
+
+    @Test
+    fun `영어 문서 답변 평가 프롬프트는 영어 응답과 grammar 기준을 명시한다`() {
+        var capturedPrompt = ""
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+            capturedPrompt = invocation.getArgument(0)
+            LlmGenerationResult(
+                model = "gemini",
+                modelVersion = "v1",
+                text = """
+                    {
+                      "score": 79,
+                      "feedback": "The answer is relevant.",
+                      "bestPractice": "Make the result more specific.",
+                      "rubric": {
+                        "coverage": 80,
+                        "accuracy": 76,
+                        "communication": 81
+                      },
+                      "evidence": ["Relevant", "Needs clearer result"]
+                    }
+                """.trimIndent()
+            )
+        }
+
+        orchestrator.evaluateDocumentAnswer(
+            questionText = "How did you diagnose and improve the performance bottleneck in your project?",
+            referenceAnswer = "I would explain the situation, my role, the actions I took, and the measurable result.",
+            evidence = listOf("The portfolio mentions reducing dashboard latency and restructuring the API response."),
+            userAnswer = "I traced the bottleneck with profiling and changed the cache strategy.",
+            language = InterviewLanguage.EN
+        )
+
+        assertThat(capturedPrompt).contains("feedback, bestPractice, and evidence must be written in English.")
+        assertThat(capturedPrompt).contains("grammar, sentence completeness, clarity, and natural professional English quality")
+        assertThat(capturedPrompt).contains("document-based interview evaluator")
+    }
+
+    @Test
+    fun `영어 기술 질문 생성 프롬프트는 질문과 모범답안을 영어로 요구한다`() {
+        var capturedPrompt = ""
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+            capturedPrompt = invocation.getArgument(0)
+            LlmGenerationResult(
+                model = "gemini",
+                modelVersion = "v1",
+                text = """
+                    {
+                      "questions": [
+                        {
+                          "questionText": "How would you explain the trade-off between consistency and availability in Redis caching?",
+                          "canonicalAnswer": "I would first define the trade-off, then explain the practical impact on cache design and invalidation.",
+                          "tags": ["redis", "cache"]
+                        }
+                      ]
+                    }
+                """.trimIndent()
+            )
+        }
+
+        orchestrator.generateTechQuestions(
+            jobName = "Backend Engineer",
+            skillName = "Redis",
+            difficulty = null,
+            questionCount = 1,
+            language = InterviewLanguage.EN
+        )
+
+        assertThat(capturedPrompt).contains("Generate realistic technical interview questions and reference answers in English.")
+        assertThat(capturedPrompt).contains("questionText와 canonicalAnswer는 모두 English로 작성할 것")
     }
 }

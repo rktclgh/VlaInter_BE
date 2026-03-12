@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.interview.ai
 
 import com.cw.vlainter.domain.interview.entity.QaQuestion
+import com.cw.vlainter.domain.interview.entity.InterviewLanguage
 import com.cw.vlainter.domain.interview.entity.QuestionDifficulty
 import com.cw.vlainter.global.config.properties.AiProperties
 import com.fasterxml.jackson.databind.JsonNode
@@ -18,10 +19,10 @@ class InterviewAiOrchestrator(
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    fun evaluateTechAnswer(question: QaQuestion?, userAnswer: String): AiTurnEvaluation? {
+    fun evaluateTechAnswer(question: QaQuestion?, userAnswer: String, language: InterviewLanguage = InterviewLanguage.KO): AiTurnEvaluation? {
         if (userAnswer.isBlank()) return null
 
-        val prompt = buildEvaluationPrompt(question, userAnswer)
+        val prompt = buildEvaluationPrompt(question, userAnswer, language)
         return runCatching {
             val generated = llmProviderRouter.generateJson(prompt)
             val parsed = parseEvaluationJson(generated.text)
@@ -37,7 +38,8 @@ class InterviewAiOrchestrator(
         fileTypeLabel: String,
         difficulty: QuestionDifficulty?,
         questionCount: Int,
-        contextSnippets: List<String>
+        contextSnippets: List<String>,
+        language: InterviewLanguage = InterviewLanguage.KO
     ): List<GeneratedDocumentQuestion> {
         require(questionCount > 0) { "questionCount must be positive." }
         val temperatures = listOf(0.40, 0.50, 0.60, 0.70, 0.80)
@@ -49,7 +51,7 @@ class InterviewAiOrchestrator(
         while (collected.size < questionCount && round < maxRounds) {
             val remaining = questionCount - collected.size
             val temperature = temperatures[minOf(round, temperatures.lastIndex)]
-            val prompt = buildDocumentQuestionPrompt(fileTypeLabel, difficulty, remaining, contextSnippets)
+            val prompt = buildDocumentQuestionPrompt(fileTypeLabel, difficulty, remaining, contextSnippets, language)
             try {
                 val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
                 val parsed = parseGeneratedDocumentQuestions(generated.text, fileTypeLabel)
@@ -95,7 +97,8 @@ class InterviewAiOrchestrator(
         jobName: String,
         skillName: String,
         difficulty: QuestionDifficulty?,
-        questionCount: Int
+        questionCount: Int,
+        language: InterviewLanguage = InterviewLanguage.KO
     ): List<GeneratedTechQuestion> {
         require(questionCount > 0) { "questionCount must be positive." }
         val labels = CategoryLabels(
@@ -115,7 +118,8 @@ class InterviewAiOrchestrator(
                 jobName = labels.jobLabel,
                 skillName = labels.skillLabel,
                 difficulty = difficulty,
-                questionCount = remaining
+                questionCount = remaining,
+                language = language
             )
             try {
                 val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
@@ -162,7 +166,8 @@ class InterviewAiOrchestrator(
         jobName: String,
         skillNames: List<String>,
         difficulty: QuestionDifficulty?,
-        questionCountPerSkill: Int
+        questionCountPerSkill: Int,
+        language: InterviewLanguage = InterviewLanguage.KO
     ): List<GeneratedSkillTechQuestion> {
         require(questionCountPerSkill > 0) { "questionCountPerSkill must be positive." }
         val normalizedSkills = skillNames
@@ -179,7 +184,8 @@ class InterviewAiOrchestrator(
                 jobName = jobName.trim().ifBlank { "직무" },
                 skillNames = normalizedSkills,
                 difficulty = difficulty,
-                questionCountPerSkill = questionCountPerSkill
+                questionCountPerSkill = questionCountPerSkill,
+                language = language
             )
             try {
                 val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
@@ -221,22 +227,27 @@ class InterviewAiOrchestrator(
         questionText: String,
         referenceAnswer: String?,
         evidence: List<String>,
-        userAnswer: String
+        userAnswer: String,
+        language: InterviewLanguage = InterviewLanguage.KO
     ): AiTurnEvaluation? {
         if (userAnswer.isBlank()) return null
 
+        val localizedQuestion = localizeInterviewText(questionText, language, "interview question")
+        val localizedReferenceAnswer = localizeInterviewText(referenceAnswer, language, "reference answer")
+        val localizedEvidence = evidence.map { localizeInterviewText(it, language, "document evidence") }
+
         val prompt = """
-            당신은 문서 기반 모의면접 평가관입니다.
-            아래 입력을 바탕으로 한국어 JSON만 출력하세요.
+            ${evaluationSystemRole(language, "document-based interview evaluator")}
+            ${jsonLanguageInstruction(language)}
 
             [질문]
-            $questionText
+            $localizedQuestion
 
             [STAR형 참고 답안]
-            ${referenceAnswer?.takeIf { it.isNotBlank() } ?: "(참고 답안 없음)"}
+            ${localizedReferenceAnswer?.takeIf { it.isNotBlank() } ?: emptyLocalizedPlaceholder(language, "reference answer")}
 
             [근거 포인트]
-            ${if (evidence.isEmpty()) "(근거 없음)" else evidence.joinToString("\n- ", prefix = "- ")}
+            ${if (localizedEvidence.isEmpty()) emptyLocalizedPlaceholder(language, "evidence") else localizedEvidence.joinToString("\n- ", prefix = "- ")}
 
             [사용자 답변]
             $userAnswer
@@ -264,6 +275,7 @@ class InterviewAiOrchestrator(
             - communication은 답변 구조, 전달력, 면접 답변다운 정리 정도를 평가
             - 답변이 문서 맥락과 명확히 어긋나거나 주장 근거가 부족하면 낮은 점수를 부여
             - bestPractice에는 빠진 STAR 요소(Situation, Task, Action, Result)와 보강할 근거를 구체적으로 적을 것
+            ${englishCommunicationRule(language)}
         """.trimIndent()
 
         return runCatching {
@@ -277,15 +289,15 @@ class InterviewAiOrchestrator(
         }
     }
 
-    fun evaluateIntroductionAnswer(userAnswer: String): AiTurnEvaluation? {
+    fun evaluateIntroductionAnswer(userAnswer: String, language: InterviewLanguage = InterviewLanguage.KO): AiTurnEvaluation? {
         if (userAnswer.isBlank()) return null
 
         val prompt = """
-            당신은 실전 모의면접의 첫 자기소개 답변을 평가하는 면접관입니다.
-            아래 사용자의 자기소개 답변을 읽고 한국어 JSON만 출력하세요.
+            ${evaluationSystemRole(language, "interviewer evaluating the first self-introduction answer")}
+            ${jsonLanguageInstruction(language)}
 
             [질문]
-            자기소개 부탁드리겠습니다.
+            ${localizedIntroQuestion(language)}
 
             [사용자 답변]
             $userAnswer
@@ -308,6 +320,7 @@ class InterviewAiOrchestrator(
             - 경력/역할/강점/지원 맥락이 드러나는지 본다
             - 너무 길거나 핵심이 흐리면 감점한다
             - 존댓말, 전달력, 구조적 답변 여부를 함께 평가한다
+            ${englishCommunicationRule(language)}
         """.trimIndent()
 
         return runCatching {
@@ -347,16 +360,20 @@ class InterviewAiOrchestrator(
         }
     }
 
-    private fun buildEvaluationPrompt(question: QaQuestion?, userAnswer: String): String {
-        val questionText = question?.questionText.orEmpty()
-        val canonicalAnswer = question?.canonicalAnswer?.takeIf { it.isNotBlank() } ?: "(모범답안 없음)"
+    private fun buildEvaluationPrompt(question: QaQuestion?, userAnswer: String, language: InterviewLanguage): String {
+        val questionText = localizeInterviewText(question?.questionText.orEmpty(), language, "interview question")
+        val canonicalAnswer = localizeInterviewText(
+            question?.canonicalAnswer?.takeIf { it.isNotBlank() },
+            language,
+            "reference answer"
+        ) ?: emptyLocalizedPlaceholder(language, "reference answer")
         val category = question?.category?.name ?: "(카테고리 없음)"
         val difficulty = question?.difficulty?.name ?: "(난이도 없음)"
         val tags = question?.tagsJson ?: "[]"
 
         return """
-            당신은 기술면접 평가관입니다.
-            아래 입력을 기반으로 한국어로 엄격한 JSON만 출력하세요.
+            ${evaluationSystemRole(language, "technical interview evaluator")}
+            ${jsonLanguageInstruction(language)}
 
             [질문]
             $questionText
@@ -389,6 +406,7 @@ class InterviewAiOrchestrator(
             - 반드시 JSON 객체만 반환 (코드블록 금지)
             - 점수는 관대하지 않게, 근거 중심으로 산정
             - 사용자 답변이 질문과 무관하면 낮은 점수 부여
+            ${englishCommunicationRule(language)}
         """.trimIndent()
     }
 
@@ -396,16 +414,17 @@ class InterviewAiOrchestrator(
         fileTypeLabel: String,
         difficulty: QuestionDifficulty?,
         questionCount: Int,
-        contextSnippets: List<String>
+        contextSnippets: List<String>,
+        language: InterviewLanguage
     ): String {
         val joinedContext = contextSnippets
             .filter { it.isNotBlank() }
             .joinToString("\n\n") { snippet -> "[문서 발췌]\n$snippet" }
 
         return """
-            당신은 채용 면접관입니다.
-            아래 문서 발췌를 기반으로 지원자에게 물을 개인화 면접 질문을 생성하세요.
-            질문은 반드시 면접관의 말투로 작성하세요.
+            ${generationSystemRole(language, "hiring interviewer")}
+            Generate personalized interview questions from the document snippets below.
+            Questions and reference answers must be written in ${language.displayLanguageName()}.
 
             [문서 유형]
             $fileTypeLabel
@@ -437,6 +456,7 @@ class InterviewAiOrchestrator(
             - OCR 오류처럼 보이는 깨진 문자열, 무의미한 영문 대문자 나열, 문맥이 없는 잡음은 근거로 사용하지 말 것
             - 말이 안 되는 발췌는 건너뛰고, 의미가 분명한 다른 발췌를 선택할 것
             - 질문에 문서 발췌를 그대로 길게 인용하지 말고 자연스러운 면접 문장으로 바꿀 것
+            - 모든 questionText, referenceAnswer, evidence는 ${language.displayLanguageName()}로 작성할 것
             - 반드시 JSON만 출력
         """.trimIndent()
     }
@@ -445,7 +465,8 @@ class InterviewAiOrchestrator(
         jobName: String,
         skillName: String,
         difficulty: QuestionDifficulty?,
-        questionCount: Int
+        questionCount: Int,
+        language: InterviewLanguage
     ): String {
         val difficultyGuide = when (difficulty ?: QuestionDifficulty.MEDIUM) {
             QuestionDifficulty.EASY -> "기본 개념, 핵심 구성요소, 대표 사용 사례 중심으로 묻습니다."
@@ -453,8 +474,8 @@ class InterviewAiOrchestrator(
             QuestionDifficulty.HARD -> "복합적인 문제 해결, 대안 비교, 의사결정 근거를 깊게 묻습니다."
         }
         return """
-            당신은 기술면접 질문 출제관입니다.
-            아래 직무와 기술을 기준으로 실전형 기술면접 질문과 모범답안을 생성하세요.
+            ${generationSystemRole(language, "technical interview question author")}
+            Generate realistic technical interview questions and reference answers in ${language.displayLanguageName()}.
 
             [직무]
             $jobName
@@ -489,6 +510,7 @@ class InterviewAiOrchestrator(
             - 자연스러운 한국어 면접 문장으로 작성할 것
             - 너무 포괄적인 질문, 어느 기술에도 통할 법한 질문, 기술명이 빠진 질문은 금지
             - 모범답안은 실제 면접에서 답하는 문장으로 4~8문장 작성하고, 핵심 근거와 실무 포인트를 포함할 것
+            - questionText와 canonicalAnswer는 모두 ${language.displayLanguageName()}로 작성할 것
             - 반드시 JSON만 출력
         """.trimIndent()
     }
@@ -497,7 +519,8 @@ class InterviewAiOrchestrator(
         jobName: String,
         skillNames: List<String>,
         difficulty: QuestionDifficulty?,
-        questionCountPerSkill: Int
+        questionCountPerSkill: Int,
+        language: InterviewLanguage
     ): String {
         val difficultyGuide = when (difficulty ?: QuestionDifficulty.MEDIUM) {
             QuestionDifficulty.EASY -> "기본 개념, 핵심 구성요소, 대표 사용 사례 중심으로 묻습니다."
@@ -506,8 +529,8 @@ class InterviewAiOrchestrator(
         }
         val skillList = skillNames.joinToString("\n") { "- $it" }
         return """
-            당신은 기술면접 질문 출제관입니다.
-            아래 직무와 여러 기술 카테고리를 기준으로 실전형 기술면접 질문과 모범답안을 생성하세요.
+            ${generationSystemRole(language, "technical interview question author")}
+            Generate realistic technical interview questions and reference answers in ${language.displayLanguageName()}.
 
             [직무]
             $jobName
@@ -546,6 +569,7 @@ class InterviewAiOrchestrator(
             - 자연스러운 한국어 면접 문장으로 작성할 것
             - 너무 포괄적인 질문, 어느 기술에도 통할 법한 질문, 기술명이 빠진 질문은 금지
             - 모범답안은 실제 면접에서 답하는 문장으로 4~8문장 작성하고 핵심 근거와 실무 포인트를 포함할 것
+            - questionText와 canonicalAnswer는 모두 ${language.displayLanguageName()}로 작성할 것
             - 반드시 JSON만 출력
         """.trimIndent()
     }
@@ -729,7 +753,13 @@ class InterviewAiOrchestrator(
             "전반적으로",
             "보통",
             "대체로",
-            "대부분"
+            "대부분",
+            "in general",
+            "generally",
+            "overall",
+            "broadly speaking",
+            "for any technology",
+            "most cases"
         )
         if (banned.any { lowered.contains(it) }) return false
         val tokens = questionText
@@ -738,7 +768,10 @@ class InterviewAiOrchestrator(
         if (tokens.size < 4) return false
         val domainHints = listOf(
             "프로젝트", "서비스", "사용자", "구현", "설계", "개선", "경험", "선택", "이유",
-            "협업", "성능", "트러블슈팅", "문제", "해결", "운영", "개발", "아키텍처"
+            "협업", "성능", "트러블슈팅", "문제", "해결", "운영", "개발", "아키텍처",
+            "project", "service", "user", "implementation", "design", "improve", "experience",
+            "decision", "reason", "collaboration", "performance", "troubleshooting", "problem",
+            "solution", "operation", "development", "architecture", "result", "outcome"
         )
         if (domainHints.none { lowered.contains(it) }) return false
         if (!questionText.trim().endsWith("?")) return false
@@ -797,8 +830,104 @@ class InterviewAiOrchestrator(
         return trimmed.startsWith("질문 의도") ||
             trimmed.startsWith("좋은 답변은") ||
             trimmed.startsWith("핵심 개념") ||
+            trimmed.startsWith("Question intent") ||
+            trimmed.startsWith("A strong answer") ||
+            trimmed.startsWith("Key points") ||
             trimmed.contains("답변해") ||
             trimmed.contains("설명해야")
+    }
+
+    fun localizeInterviewText(
+        text: String?,
+        language: InterviewLanguage,
+        contentType: String
+    ): String? {
+        val source = text?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        if (language == InterviewLanguage.KO) return source
+        if (looksMostlyEnglish(source)) return source
+
+        val prompt = """
+            You are a localization assistant for interview sessions.
+            Translate the following $contentType into natural, professional English.
+            Preserve technical terms, product names, numbers, and factual meaning.
+            Return JSON only.
+
+            {
+              "text": "translated text"
+            }
+
+            [source]
+            $source
+        """.trimIndent()
+
+        return runCatching {
+            val generated = llmProviderRouter.generateJson(prompt, temperature = 0.2)
+            objectMapper.readTree(generated.text)["text"]?.asText()?.trim().takeIf { !it.isNullOrBlank() } ?: source
+        }.onFailure { ex ->
+            logger.warn("인터뷰 텍스트 현지화 실패(language={}, type={}): {}", language, contentType, ex.message)
+        }.getOrDefault(source)
+    }
+
+    fun localizedIntroQuestion(language: InterviewLanguage): String {
+        return when (language) {
+            InterviewLanguage.KO -> "자기소개 부탁드리겠습니다."
+            InterviewLanguage.EN -> "Please introduce yourself."
+        }
+    }
+
+    private fun evaluationSystemRole(language: InterviewLanguage, englishRole: String): String {
+        return when (language) {
+            InterviewLanguage.KO -> "당신은 면접 답변을 평가하는 면접관입니다."
+            InterviewLanguage.EN -> "You are an $englishRole."
+        }
+    }
+
+    private fun generationSystemRole(language: InterviewLanguage, englishRole: String): String {
+        return when (language) {
+            InterviewLanguage.KO -> "당신은 면접 질문을 생성하는 면접관입니다."
+            InterviewLanguage.EN -> "You are a $englishRole."
+        }
+    }
+
+    private fun jsonLanguageInstruction(language: InterviewLanguage): String {
+        return when (language) {
+            InterviewLanguage.KO -> "아래 입력을 바탕으로 한국어 JSON만 출력하세요."
+            InterviewLanguage.EN -> "Read the input below and return JSON only. feedback, bestPractice, and evidence must be written in English."
+        }
+    }
+
+    private fun englishCommunicationRule(language: InterviewLanguage): String {
+        return when (language) {
+            InterviewLanguage.KO -> ""
+            InterviewLanguage.EN -> "- communication 점수에는 grammar, sentence completeness, clarity, and natural professional English quality를 반영할 것"
+        }
+    }
+
+    private fun emptyLocalizedPlaceholder(language: InterviewLanguage, contentType: String): String {
+        return when (language) {
+            InterviewLanguage.KO -> when (contentType) {
+                "reference answer" -> "(참고 답안 없음)"
+                "evidence" -> "(근거 없음)"
+                else -> "(없음)"
+            }
+            InterviewLanguage.EN -> when (contentType) {
+                "reference answer" -> "(no reference answer)"
+                "evidence" -> "(no evidence)"
+                else -> "(empty)"
+            }
+        }
+    }
+
+    private fun InterviewLanguage.displayLanguageName(): String = when (this) {
+        InterviewLanguage.KO -> "Korean"
+        InterviewLanguage.EN -> "English"
+    }
+
+    private fun looksMostlyEnglish(text: String): Boolean {
+        val letters = text.filter { it.isLetter() }
+        if (letters.isEmpty()) return false
+        val asciiLetters = letters.count { it.code in 65..90 || it.code in 97..122 }
+        return asciiLetters >= letters.length * 0.7
     }
 
     private fun normalizeTechTags(tags: List<String>, labels: CategoryLabels): List<String> {
