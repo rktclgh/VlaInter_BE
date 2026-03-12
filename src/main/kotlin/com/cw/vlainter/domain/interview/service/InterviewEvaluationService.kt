@@ -1,9 +1,11 @@
 package com.cw.vlainter.domain.interview.service
 
+import com.cw.vlainter.domain.interview.ai.BatchTurnEvaluationInput
 import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.dto.TurnEvaluationResponse
 import com.cw.vlainter.domain.interview.entity.InterviewTurn
 import com.cw.vlainter.domain.interview.entity.InterviewTurnEvaluation
+import com.cw.vlainter.domain.interview.entity.InterviewLanguage
 import com.cw.vlainter.domain.interview.entity.TurnSourceTag
 import com.cw.vlainter.domain.interview.entity.TurnEvaluationStatus
 import com.cw.vlainter.domain.interview.repository.InterviewTurnEvaluationRepository
@@ -38,6 +40,25 @@ class InterviewEvaluationService(
     companion object {
         const val INTRO_CATEGORY = INTERVIEW_INTRO_CATEGORY
         const val INTRO_QUESTION_TEXT = INTERVIEW_INTRO_QUESTION_TEXT
+        val NUMBER_REGEX = Regex("""\d""")
+        val DOCUMENT_CONTEXT_SIGNALS = setOf("상황", "배경", "당시", "문제", "이슈", "프로젝트", "서비스", "요구사항")
+        val DOCUMENT_TASK_SIGNALS = setOf("역할", "담당", "책임", "목표", "과제", "요구", "목적")
+        val DOCUMENT_ACTION_SIGNALS = setOf("제가", "저는", "구현", "설계", "개선", "도입", "분석", "해결", "최적화", "리팩토링", "협업", "검증", "작성", "적용", "정리")
+        val DOCUMENT_RESULT_SIGNALS = setOf("결과", "성과", "개선", "향상", "감소", "증가", "단축", "완료", "달성", "안정화", "배포", "출시")
+        val DOCUMENT_REASONING_SIGNALS = setOf("이유", "근거", "왜냐", "그래서", "이를 위해", "때문에", "검증", "비교", "판단", "트레이드오프")
+        val DOCUMENT_CONTEXT_SIGNALS_EN = setOf("situation", "background", "at the time", "problem", "issue", "project", "service", "requirement")
+        val DOCUMENT_TASK_SIGNALS_EN = setOf("role", "responsibility", "goal", "task", "objective", "ownership")
+        val DOCUMENT_ACTION_SIGNALS_EN = setOf("implemented", "designed", "improved", "introduced", "analyzed", "resolved", "optimized", "refactored", "collaborated", "validated", "built", "led")
+        val DOCUMENT_RESULT_SIGNALS_EN = setOf("result", "outcome", "improved", "reduced", "increased", "shortened", "completed", "achieved", "stabilized", "launched")
+        val DOCUMENT_REASONING_SIGNALS_EN = setOf("because", "therefore", "so that", "in order to", "reason", "evidence", "validated", "compared", "trade-off")
+        val MOTIVATION_SIGNALS = setOf("지원", "동기", "가치", "가치관", "중요", "이유", "관심", "기준", "태도", "관점", "포부")
+        val FUTURE_PLAN_SIGNALS = setOf(
+            "하겠습니다", "하고자", "적용", "실천", "기여", "앞으로", "입사 후", "향후",
+            "will", "would", "plan to", "apply", "contribute", "going forward"
+        )
+        val ENGLISH_WORD_REGEX = Regex("""\b[A-Za-z]{2,}\b""")
+        val ENGLISH_LETTER_REGEX = Regex("""[A-Za-z]""")
+        val HANGUL_REGEX = Regex("""[가-힣]""")
     }
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -61,43 +82,7 @@ class InterviewEvaluationService(
                     buildEvaluation(turn, answer)
                 }
 
-                val candidate = existing?.apply {
-                    totalScore = evaluation.score
-                    feedback = evaluation.feedback
-                    bestPractice = evaluation.bestPractice
-                    rubricScoresJson = evaluation.rubricScoresJson
-                    evidenceJson = evaluation.evidenceJson
-                    model = evaluation.model
-                    modelVersion = evaluation.modelVersion
-                } ?: InterviewTurnEvaluation(
-                    turn = turn,
-                    totalScore = evaluation.score,
-                    feedback = evaluation.feedback,
-                    bestPractice = evaluation.bestPractice,
-                    rubricScoresJson = evaluation.rubricScoresJson,
-                    evidenceJson = evaluation.evidenceJson,
-                    model = evaluation.model,
-                    modelVersion = evaluation.modelVersion
-                )
-
-                val saved = saveTurnEvaluationWithConflictRecovery(turn.id, candidate)
-                turn.evaluationStatus = TurnEvaluationStatus.DONE
-
-                if (turn.question != null && shouldStoreHistory(turn.session.configJson) && !userQuestionAttemptRepository.existsByTurn_Id(turn.id)) {
-                    userQuestionAttemptRepository.save(
-                        UserQuestionAttempt(
-                            user = turn.session.user,
-                            question = turn.question,
-                            session = turn.session,
-                            turn = turn,
-                            answerText = answer,
-                            totalScore = evaluation.score,
-                            feedbackSummary = evaluation.feedback
-                        )
-                    )
-                }
-
-                saved.toResponse()
+                persistEvaluation(turn, answer, evaluation).toResponse()
             }
         } finally {
             if (!lock.hasQueuedThreads()) {
@@ -128,15 +113,157 @@ class InterviewEvaluationService(
 
     @Transactional
     fun evaluateOutstandingTurnsSync(sessionId: Long) {
-        interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(sessionId)
+        val pendingTurns = interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(sessionId)
             .filter { it.answeredAt != null && it.evaluationStatus != TurnEvaluationStatus.DONE }
-            .forEach { selfProvider.getObject().evaluateTurnSync(it.id) }
+        if (pendingTurns.isEmpty()) return
+        if (pendingTurns.size == 1) {
+            selfProvider.getObject().evaluateTurnSync(pendingTurns.first().id)
+            return
+        }
+
+        val batchEvaluations = userGeminiApiKeyService.withUserApiKey(pendingTurns.first().session.user.id) {
+            buildBatchEvaluations(pendingTurns)
+        }
+        pendingTurns.forEach { turn ->
+            val answer = turn.userAnswer?.trim().orEmpty()
+            val evaluation = batchEvaluations[turn.id]
+            if (evaluation != null) {
+                persistEvaluation(turn, answer, evaluation)
+            } else {
+                selfProvider.getObject().evaluateTurnSync(turn.id)
+            }
+        }
+    }
+
+    private fun persistEvaluation(
+        turn: InterviewTurn,
+        answer: String,
+        evaluation: EvaluationResult
+    ): InterviewTurnEvaluation {
+        val existing = interviewTurnEvaluationRepository.findByTurn_Id(turn.id)
+        val candidate = existing?.apply {
+            totalScore = evaluation.score
+            feedback = evaluation.feedback
+            bestPractice = evaluation.bestPractice
+            rubricScoresJson = evaluation.rubricScoresJson
+            evidenceJson = evaluation.evidenceJson
+            model = evaluation.model
+            modelVersion = evaluation.modelVersion
+        } ?: InterviewTurnEvaluation(
+            turn = turn,
+            totalScore = evaluation.score,
+            feedback = evaluation.feedback,
+            bestPractice = evaluation.bestPractice,
+            rubricScoresJson = evaluation.rubricScoresJson,
+            evidenceJson = evaluation.evidenceJson,
+            model = evaluation.model,
+            modelVersion = evaluation.modelVersion
+        )
+
+        val saved = saveTurnEvaluationWithConflictRecovery(turn.id, candidate)
+        turn.evaluationStatus = TurnEvaluationStatus.DONE
+
+        if (turn.question != null && shouldStoreHistory(turn.session.configJson) && !userQuestionAttemptRepository.existsByTurn_Id(turn.id)) {
+            userQuestionAttemptRepository.save(
+                UserQuestionAttempt(
+                    user = turn.session.user,
+                    question = turn.question,
+                    session = turn.session,
+                    turn = turn,
+                    answerText = answer,
+                    totalScore = evaluation.score,
+                    feedbackSummary = evaluation.feedback
+                )
+            )
+        }
+
+        return saved
+    }
+
+    private fun buildBatchEvaluations(turns: List<InterviewTurn>): Map<Long, EvaluationResult> {
+        val responseLanguage = InterviewLanguage.KO
+        val prepared = turns.mapNotNull { turn ->
+            val answer = turn.userAnswer?.trim().orEmpty()
+            answer.takeIf { it.isNotBlank() }?.let { prepareBatchEvaluationInput(turn, it) }
+        }
+        if (prepared.isEmpty()) return emptyMap()
+
+        val aiResults = interviewAiOrchestrator.evaluateTurnsBatch(
+            items = prepared.map { it.input },
+            responseLanguage = responseLanguage
+        )
+        return prepared.mapNotNull { item ->
+            aiResults[item.turn.id.toString()]?.let { ai ->
+                item.turn.id to EvaluationResult(
+                    score = ai.score,
+                    feedback = ai.feedback,
+                    bestPractice = if (item.userGeneratedQuestion) "" else ai.bestPractice.ifBlank { item.resolvedAnswer.guideText.orEmpty() },
+                    modelAnswer = item.resolvedAnswer.modelAnswer,
+                    rubricScoresJson = ai.rubricScoresJson,
+                    evidenceJson = ai.evidenceJson,
+                    model = ai.model,
+                    modelVersion = ai.modelVersion
+                )
+            }
+        }.toMap()
+    }
+
+    private fun prepareBatchEvaluationInput(
+        turn: InterviewTurn,
+        answer: String
+    ): PreparedBatchEvaluation {
+        val sessionLanguage = resolveInterviewLanguage(turn)
+        val userGeneratedQuestion = turn.sourceTag == TurnSourceTag.USER
+        val turnContext = parseTurnRagContext(objectMapper, turn.ragContextJson)
+        val localizedQuestionText = turnContext.localizedQuestionTextFor(sessionLanguage) ?: turn.questionTextSnapshot
+        val localizedModelAnswer = turnContext.localizedModelAnswerFor(sessionLanguage)
+            ?: turn.question?.canonicalAnswer
+            ?: turn.documentQuestion?.referenceAnswer
+        val localizedEvidence = turnContext.localizedEvidenceFor(sessionLanguage)
+        val documentQuestion = turn.documentQuestion
+        val resolvedAnswer = resolveAnswerContent(
+            rawModelAnswer = localizedModelAnswer,
+            rawGuideText = null
+        )
+        val evidence = when {
+            localizedEvidence.isNotEmpty() -> localizedEvidence
+            documentQuestion != null -> parseJsonArray(documentQuestion.evidenceJson)
+            else -> emptyList()
+        }
+        val kind = when {
+            isIntroductionTurn(turn) -> "INTRO"
+            turn.question != null -> "TECH"
+            else -> "DOCUMENT"
+        }
+        return PreparedBatchEvaluation(
+            turn = turn,
+            userGeneratedQuestion = userGeneratedQuestion,
+            resolvedAnswer = resolvedAnswer,
+            input = BatchTurnEvaluationInput(
+                key = turn.id.toString(),
+                kind = kind,
+                answerLanguage = sessionLanguage.name,
+                questionText = localizedQuestionText,
+                questionType = documentQuestion?.questionType,
+                referenceAnswer = resolvedAnswer.modelAnswer,
+                evidence = evidence,
+                userAnswer = answer
+            )
+        )
     }
 
     private fun buildEvaluation(turn: InterviewTurn, answer: String): EvaluationResult {
+        val sessionLanguage = resolveInterviewLanguage(turn)
+        val responseLanguage = InterviewLanguage.KO
         val userGeneratedQuestion = turn.sourceTag == TurnSourceTag.USER
+        val turnContext = parseTurnRagContext(objectMapper, turn.ragContextJson)
+        val localizedQuestionText = turnContext.localizedQuestionTextFor(sessionLanguage) ?: turn.questionTextSnapshot
+        val localizedModelAnswer = turnContext.localizedModelAnswerFor(sessionLanguage)
+            ?: turn.question?.canonicalAnswer
+            ?: turn.documentQuestion?.referenceAnswer
+        val localizedEvidence = turnContext.localizedEvidenceFor(sessionLanguage)
         val resolvedAnswer = resolveAnswerContent(
-            rawModelAnswer = turn.question?.canonicalAnswer ?: turn.documentQuestion?.referenceAnswer,
+            rawModelAnswer = localizedModelAnswer,
             rawGuideText = null
         )
 
@@ -157,15 +284,25 @@ class InterviewEvaluationService(
         val question = turn.question
         val documentQuestion = turn.documentQuestion
         val aiEvaluation = if (isIntroductionTurn(turn)) {
-            interviewAiOrchestrator.evaluateIntroductionAnswer(answer)
+            interviewAiOrchestrator.evaluateIntroductionAnswer(answer, sessionLanguage, responseLanguage)
         } else if (question != null) {
-            interviewAiOrchestrator.evaluateTechAnswer(question, answer)
+            interviewAiOrchestrator.evaluateTechAnswer(
+                question = question,
+                userAnswer = answer,
+                language = sessionLanguage,
+                responseLanguage = responseLanguage,
+                questionTextOverride = localizedQuestionText,
+                canonicalAnswerOverride = resolvedAnswer.modelAnswer
+            )
         } else if (documentQuestion != null) {
             interviewAiOrchestrator.evaluateDocumentAnswer(
-                questionText = documentQuestion.questionText,
-                referenceAnswer = documentQuestion.referenceAnswer,
-                evidence = parseJsonArray(documentQuestion.evidenceJson),
-                userAnswer = answer
+                questionText = localizedQuestionText,
+                questionType = documentQuestion.questionType,
+                referenceAnswer = resolvedAnswer.modelAnswer,
+                evidence = if (localizedEvidence.isNotEmpty()) localizedEvidence else parseJsonArray(documentQuestion.evidenceJson),
+                userAnswer = answer,
+                language = sessionLanguage,
+                responseLanguage = responseLanguage
             )
         } else {
             null
@@ -183,9 +320,35 @@ class InterviewEvaluationService(
             )
         }
 
+        if (documentQuestion != null) {
+            return buildDocumentHeuristicEvaluation(
+                questionText = localizedQuestionText,
+                questionType = documentQuestion.questionType,
+                referenceAnswer = resolvedAnswer.modelAnswer,
+                evidence = if (localizedEvidence.isNotEmpty()) localizedEvidence else parseJsonArray(documentQuestion.evidenceJson),
+                answer = answer,
+                userGeneratedQuestion = userGeneratedQuestion,
+                resolvedAnswer = resolvedAnswer,
+                answerLanguage = sessionLanguage,
+                responseLanguage = responseLanguage
+            )
+        }
+
         val canonical = resolvedAnswer.modelAnswer.orEmpty()
+        val questionText = localizedQuestionText
         val score = if (isLowEffortAnswer(answer)) {
             BigDecimal.ZERO.setScale(2)
+        } else if (sessionLanguage == InterviewLanguage.EN && (canonical.isBlank() || !looksMostlyEnglish(canonical))) {
+            val answerTokens = tokenize(answer)
+            val questionTokens = tokenize(questionText)
+            val overlap = if (questionTokens.isEmpty()) 0.0 else answerTokens.intersect(questionTokens).size.toDouble() / questionTokens.size
+            val communication = englishCommunicationHeuristic(answer)
+            val numeric = (
+                20 +
+                    (overlap * 45) +
+                    (communication * 0.35)
+                ).coerceIn(0.0, 100.0)
+            BigDecimal(numeric).setScale(2, RoundingMode.HALF_UP)
         } else if (canonical.isBlank()) {
             val lenScore = min(70, max(5, answer.length / 8))
             BigDecimal(lenScore).setScale(2)
@@ -215,11 +378,358 @@ class InterviewEvaluationService(
         )
     }
 
+    private fun buildDocumentHeuristicEvaluation(
+        questionText: String,
+        questionType: String?,
+        referenceAnswer: String?,
+        evidence: List<String>,
+        answer: String,
+        userGeneratedQuestion: Boolean,
+        resolvedAnswer: ResolvedAnswerContent,
+        answerLanguage: InterviewLanguage,
+        responseLanguage: InterviewLanguage
+    ): EvaluationResult {
+        val starRecommended = questionTypeRequiresStar(questionType)
+        val koreanResponse = responseLanguage == InterviewLanguage.KO
+        if (isLowEffortAnswer(answer)) {
+            return EvaluationResult(
+                score = BigDecimal.ZERO.setScale(2),
+                feedback = if (!koreanResponse) {
+                    if (starRecommended) {
+                        "Your answer does not yet show the core experience or your own actions clearly enough. Rebuild it around the experience described in your document."
+                    } else {
+                        "Your answer does not yet explain your motivation, judgment criteria, or practical plan clearly enough. Rebuild it around the point described in your document."
+                    }
+                } else {
+                    if (starRecommended) {
+                        "질문 의도에 맞는 핵심 경험과 본인의 행동이 거의 드러나지 않았습니다. 문서에 적은 경험을 기준으로 다시 답변해 보세요."
+                    } else {
+                        "질문 의도에 맞는 동기, 판단 기준, 실제 적용 계획이 거의 드러나지 않았습니다. 문서에 적은 맥락을 기준으로 다시 답변해 보세요."
+                    }
+                },
+                bestPractice = if (userGeneratedQuestion) "" else if (!koreanResponse) {
+                    if (starRecommended) {
+                        "Reorganize the answer in STAR order so the situation, responsibility, actions, and result are each explicit."
+                    } else {
+                        "State your motivation or principle first, then connect it to a concrete reason and how you would apply it in practice."
+                    }
+                } else {
+                    if (starRecommended) {
+                        "질문의 의도에 맞춰 당시 상황, 맡은 역할, 실제 행동, 결과를 STAR 순서로 다시 정리해 보세요."
+                    } else {
+                        "질문 의도에 맞춰 지원 동기나 판단 기준을 먼저 말하고, 그 근거와 실제 적용 계획을 함께 정리해 보세요."
+                    }
+                },
+                modelAnswer = resolvedAnswer.modelAnswer,
+                rubricScoresJson = """{"coverage":0,"accuracy":0,"communication":0}""",
+                evidenceJson = objectMapper.writeValueAsString(listOf("low_effort_answer")),
+                model = "heuristic",
+                modelVersion = "document-v2"
+            )
+        }
+
+        val answerTokens = tokenize(answer)
+        val questionTokens = tokenize(questionText)
+        val evidenceTokens = evidence.flatMap { tokenize(it) }.toSet()
+        val softBenchmarkTokens = extractDocumentSoftBenchmarkTokens(referenceAnswer, evidence)
+        val contextSignalsSet = if (answerLanguage == InterviewLanguage.EN) DOCUMENT_CONTEXT_SIGNALS_EN else DOCUMENT_CONTEXT_SIGNALS
+        val taskSignalsSet = if (answerLanguage == InterviewLanguage.EN) DOCUMENT_TASK_SIGNALS_EN else DOCUMENT_TASK_SIGNALS
+        val actionSignalsSet = if (answerLanguage == InterviewLanguage.EN) DOCUMENT_ACTION_SIGNALS_EN else DOCUMENT_ACTION_SIGNALS
+        val resultSignalsSet = if (answerLanguage == InterviewLanguage.EN) DOCUMENT_RESULT_SIGNALS_EN else DOCUMENT_RESULT_SIGNALS
+        val reasoningSignalsSet = if (answerLanguage == InterviewLanguage.EN) DOCUMENT_REASONING_SIGNALS_EN else DOCUMENT_REASONING_SIGNALS
+
+        val intentHits = answerTokens.intersect(questionTokens).size
+        val evidenceHits = answerTokens.intersect(evidenceTokens).size
+        val benchmarkHits = answerTokens.intersect(softBenchmarkTokens.toSet()).size
+        val contextSignals = countSignalMatches(answer, contextSignalsSet)
+        val taskSignals = countSignalMatches(answer, taskSignalsSet)
+        val actionSignals = countSignalMatches(answer, actionSignalsSet)
+        val resultSignals = countSignalMatches(answer, resultSignalsSet)
+        val hasNumber = NUMBER_REGEX.containsMatchIn(answer)
+        val hasReasoning = reasoningSignalsSet.any { answer.contains(it, ignoreCase = true) }
+        val hasFuturePlan = FUTURE_PLAN_SIGNALS.any { answer.contains(it, ignoreCase = true) }
+        val hasMotivationSignal = MOTIVATION_SIGNALS.any { answer.contains(it, ignoreCase = true) }
+        val sentenceCount = answer.split(Regex("[.!?。]|\\n"))
+            .map { it.trim() }
+            .count { it.isNotBlank() }
+
+        val intentScore = (
+            25 +
+                cappedProduct(intentHits, 12, 35) +
+                cappedProduct(evidenceHits, 6, 20) +
+                (if (answer.length >= 80) 10 else 0) +
+                (if (actionSignals > 0) 10 else 0)
+            ).coerceIn(0, 100)
+
+        val starScore = (
+            cappedProduct(contextSignals, 12, 25) +
+                cappedProduct(taskSignals, 10, 20) +
+                cappedProduct(actionSignals, 12, 30) +
+                min(25, cappedProduct(resultSignals, 12, 25) + (if (hasNumber) 8 else 0))
+            ).coerceIn(0, 100)
+
+        val motivationScore = (
+            25 +
+                cappedProduct(intentHits, 10, 25) +
+                cappedProduct(evidenceHits, 6, 20) +
+                (if (hasReasoning) 15 else 0) +
+                (if (hasMotivationSignal) 15 else 0) +
+                (if (hasFuturePlan) 15 else 0)
+            ).coerceIn(0, 100)
+
+        val coverageScore = if (starRecommended) {
+            (intentScore * 0.6 + starScore * 0.4).toInt().coerceIn(0, 100)
+        } else {
+            (intentScore * 0.7 + motivationScore * 0.3).toInt().coerceIn(0, 100)
+        }
+
+        val accuracyScore = (
+            20 +
+                cappedProduct(evidenceHits, 7, 25) +
+                cappedProduct(benchmarkHits, 4, 15) +
+                (if (hasNumber) 15 else 0) +
+                (if (hasReasoning) 15 else 0) +
+                (if (answer.length >= 120) 10 else 0)
+            ).coerceIn(0, 100)
+
+        val communicationScore = if (answerLanguage == InterviewLanguage.EN) {
+            englishCommunicationHeuristic(answer).toInt().coerceIn(0, 100)
+        } else {
+            (
+                25 +
+                    cappedProduct(sentenceCount, 6, 20) +
+                    (if (answer.length in 80..600) 20 else 8) +
+                    (if (answer.contains("\n") || sentenceCount >= 3) 15 else 5) +
+                    (if (answer.trim().endsWith(".") || answer.trim().endsWith("다") || answer.trim().endsWith("요")) 10 else 0)
+                ).coerceIn(0, 100)
+        }
+
+        val totalScore = BigDecimal(
+            (
+                coverageScore * 0.45 +
+                    accuracyScore * 0.35 +
+                    communicationScore * 0.20
+                ).coerceIn(0.0, 100.0)
+        ).setScale(2, RoundingMode.HALF_UP)
+
+        val missingStarParts = buildList {
+            if (contextSignals == 0) add(if (!koreanResponse) "Situation" else "상황")
+            if (taskSignals == 0) add(if (!koreanResponse) "Task/Role" else "과제/역할")
+            if (actionSignals == 0) add(if (!koreanResponse) "Action" else "행동")
+            if (resultSignals == 0 && !hasNumber) add(if (!koreanResponse) "Result" else "결과")
+        }
+        val missingMotivationParts = buildList {
+            if (!hasMotivationSignal) add(if (!koreanResponse) "motivation or principle" else "동기/판단 기준")
+            if (!hasReasoning) add(if (!koreanResponse) "supporting reason" else "근거 설명")
+            if (!hasFuturePlan) add(if (!koreanResponse) "practical application plan" else "실행 계획")
+        }
+        val missingKeywords = softBenchmarkTokens
+            .filterNot { it in answerTokens }
+            .distinct()
+            .take(3)
+        val evidenceNotes = buildList {
+            add(
+                if (!koreanResponse) {
+                    "Question-intent keyword coverage: $intentHits"
+                } else {
+                    "질문 핵심 키워드 반영 ${intentHits}건"
+                }
+            )
+            add(
+                if (!koreanResponse) {
+                    "Document evidence coverage: $evidenceHits"
+                } else {
+                    "문서 근거 포인트 반영 ${evidenceHits}건"
+                }
+            )
+            if (starRecommended && missingStarParts.isNotEmpty()) {
+                add(
+                    if (!koreanResponse) {
+                        "Missing STAR elements: ${missingStarParts.joinToString(", ")}"
+                    } else {
+                        "STAR 누락 요소: ${missingStarParts.joinToString(", ")}"
+                    }
+                )
+            }
+            if (!starRecommended && missingMotivationParts.isNotEmpty()) {
+                add(
+                    if (!koreanResponse) {
+                        "Missing motivation components: ${missingMotivationParts.joinToString(", ")}"
+                    } else {
+                        "동기형 답변 보강 요소: ${missingMotivationParts.joinToString(", ")}"
+                    }
+                )
+            }
+            if (starRecommended && !hasNumber) {
+                add(if (!koreanResponse) "Missing measurable result evidence" else "수치/결과 근거 부족")
+            }
+        }
+
+        val feedback = buildString {
+            append(
+                when {
+                    coverageScore >= 80 -> if (!koreanResponse) "Your answer is largely aligned with the question intent." else "질문 의도에는 대체로 잘 맞게 답했습니다."
+                    coverageScore >= 60 && starRecommended -> if (!koreanResponse) "The relevant experience is visible, but the answer still needs a sharper focus." else "질문 의도와 관련된 경험은 보이지만, 핵심 초점이 조금 더 선명해야 합니다."
+                    coverageScore >= 60 -> if (!koreanResponse) "Your motivation and reasoning are visible, but the answer still needs a sharper focus." else "질문 의도와 관련된 동기와 이유는 보이지만, 핵심 초점이 조금 더 선명해야 합니다."
+                    starRecommended -> if (!koreanResponse) "The answer focus does not align tightly enough with the core experience the question is asking for." else "질문이 묻는 핵심 경험과 답변 초점이 충분히 맞물리지 않았습니다."
+                    else -> if (!koreanResponse) "The answer focus does not align tightly enough with the motivation or judgment point the question is asking for." else "질문이 묻는 동기나 판단 기준과 답변 초점이 충분히 맞물리지 않았습니다."
+                }
+            )
+            append(' ')
+            append(
+                when {
+                    starRecommended && starScore >= 75 -> if (!koreanResponse) "The flow of situation, role, action, and result is fairly natural." else "상황, 역할, 행동, 결과 흐름도 비교적 자연스럽게 드러납니다."
+                    starRecommended && starScore >= 50 -> if (!koreanResponse) "Some STAR structure is present, but missing pieces still reduce persuasiveness." else "STAR 흐름은 일부 보이지만, 빠진 요소가 있어 설득력이 다소 약합니다."
+                    starRecommended -> if (!koreanResponse) "The STAR structure is weak, so the context and your contribution are not yet clear enough for an interview answer." else "STAR 구조가 약해 면접 답변으로 들었을 때 경험의 맥락과 본인 기여도가 충분히 드러나지 않습니다."
+                    motivationScore >= 75 -> if (!koreanResponse) "Your motivation, judgment criteria, and practical application are connected fairly clearly." else "동기, 판단 기준, 실제 적용 계획의 연결도 비교적 분명합니다."
+                    motivationScore >= 50 -> if (!koreanResponse) "Your motivation is visible, but the reasoning or practical application still feels thin." else "동기 자체는 보이지만, 이유나 실제 적용 계획은 조금 더 구체화할 필요가 있습니다."
+                    else -> if (!koreanResponse) "The answer mentions an intention, but the concrete reasoning and practical application are still too vague." else "의도나 포부는 보이지만, 구체적 근거와 실제 적용 계획은 아직 모호합니다."
+                }
+            )
+            append(' ')
+            append(
+                when {
+                    accuracyScore >= 75 -> if (!koreanResponse) "The technical explanation and supporting evidence are reasonably convincing." else "기술적 설명과 근거도 비교적 설득력 있습니다."
+                    accuracyScore >= 55 -> if (!koreanResponse) "The technical explanation is understandable, but the reasoning and outcome evidence need reinforcement." else "기술적 설명은 가능하지만, 선택 이유나 성과 근거를 더 보강할 필요가 있습니다."
+                    else -> if (!koreanResponse) "The answer lacks enough reasoning, validation, or result evidence to feel fully credible." else "기술 선택 이유, 검증 근거, 성과 설명이 부족해 답변의 신뢰도가 떨어집니다."
+                }
+            )
+        }
+
+        val bestPractice = if (userGeneratedQuestion) {
+            ""
+        } else {
+            buildString {
+                if (starRecommended && missingStarParts.isNotEmpty()) {
+                    append(
+                        if (!koreanResponse) {
+                            "In your next answer, make ${missingStarParts.joinToString(", ")} more explicit so the STAR flow feels complete. "
+                        } else {
+                            "다음 답변에서는 ${missingStarParts.joinToString(", ")} 요소를 더 분명히 넣어 STAR 흐름을 완성해 보세요. "
+                        }
+                    )
+                } else if (starRecommended) {
+                    append(
+                        if (!koreanResponse) {
+                            "The overall flow is acceptable, so tighten the link between your actions and results to improve impact. "
+                        } else {
+                            "현재 답변 흐름은 나쁘지 않으니, 행동과 결과를 더 압축적으로 연결해 전달력을 높여 보세요. "
+                        }
+                    )
+                } else if (missingMotivationParts.isNotEmpty()) {
+                    append(
+                        if (!koreanResponse) {
+                            "In your next answer, make ${missingMotivationParts.joinToString(", ")} more explicit so your motivation and practical fit are easier to trust. "
+                        } else {
+                            "다음 답변에서는 ${missingMotivationParts.joinToString(", ")}를 더 분명히 넣어 동기와 실제 적합성을 설득력 있게 보여 주세요. "
+                        }
+                    )
+                } else {
+                    append(
+                        if (!koreanResponse) {
+                            "The overall flow is acceptable, so tighten the link between your motivation, reason, and practical application. "
+                        } else {
+                            "현재 답변 흐름은 나쁘지 않으니, 동기와 이유, 실제 적용 계획의 연결을 조금 더 압축적으로 정리해 보세요. "
+                        }
+                    )
+                }
+                if (missingKeywords.isNotEmpty()) {
+                    append(
+                        if (!koreanResponse) {
+                            "Adding concrete document-specific details such as ${missingKeywords.joinToString(", ")} will make the link to the question much clearer. "
+                        } else {
+                            "${missingKeywords.joinToString(", ")} 같은 문서 맥락의 구체 요소를 넣으면 질문과의 연결성이 더 선명해집니다. "
+                        }
+                    )
+                }
+                if (starRecommended && !hasNumber) {
+                    append(
+                        if (!koreanResponse) {
+                            "If possible, add measurable evidence such as metrics, user impact, performance changes, or a concrete outcome."
+                        } else {
+                            "가능하면 수치, 사용자 영향, 성능 변화, 완료 결과처럼 확인 가능한 근거를 함께 제시하세요."
+                        }
+                    )
+                } else if (!hasReasoning) {
+                    append(
+                        if (!koreanResponse) {
+                            "When you describe the result, also explain why you made that decision."
+                        } else {
+                            "결과를 말할 때는 왜 그런 선택을 했는지 판단 근거도 같이 설명해 주세요."
+                        }
+                    )
+                } else {
+                    append(
+                        if (!koreanResponse) {
+                            if (starRecommended) {
+                                "Emphasize the part you personally decided and executed more directly and more concisely."
+                            } else {
+                                "Tie the principle you mentioned to one concrete example or execution plan more directly."
+                            }
+                        } else {
+                            if (starRecommended) {
+                                "특히 본인이 직접 판단하고 실행한 부분을 더 짧고 선명하게 강조하면 좋습니다."
+                            } else {
+                                "언급한 기준이나 가치관을 실제 예시나 실행 계획과 더 직접적으로 연결해 보세요."
+                            }
+                        }
+                    )
+                }
+            }.trim()
+        }
+
+        return EvaluationResult(
+            score = totalScore,
+            feedback = feedback,
+            bestPractice = bestPractice,
+            modelAnswer = resolvedAnswer.modelAnswer,
+            rubricScoresJson = objectMapper.writeValueAsString(
+                mapOf(
+                    "coverage" to coverageScore,
+                    "accuracy" to accuracyScore,
+                    "communication" to communicationScore
+                )
+            ),
+            evidenceJson = objectMapper.writeValueAsString(evidenceNotes),
+            model = "heuristic",
+            modelVersion = "document-v2"
+        )
+    }
+
+    private fun questionTypeRequiresStar(questionType: String?): Boolean {
+        return questionType?.trim()?.uppercase() !in setOf(
+            "INTRODUCE_MOTIVATION",
+            "INTRODUCE_VALUE",
+            "INTRODUCE_FUTURE_PLAN"
+        )
+    }
+
     private fun tokenize(text: String): Set<String> {
         return text.lowercase()
             .split(Regex("[^a-zA-Z0-9가-힣]+"))
             .filter { it.length >= 2 }
             .toSet()
+    }
+
+    private fun countSignalMatches(answer: String, signals: Set<String>): Int {
+        return signals.count { answer.contains(it, ignoreCase = true) }
+    }
+
+    private fun cappedProduct(count: Int, multiplier: Int, cap: Int): Int {
+        return min(cap.toLong(), count.toLong() * multiplier.toLong()).toInt()
+    }
+
+    private fun extractDocumentSoftBenchmarkTokens(referenceAnswer: String?, evidence: List<String>): List<String> {
+        val stopwords = setOf(
+            "질문", "답변", "경험", "프로젝트", "서비스", "사용자", "당시", "이후", "정도",
+            "통해", "관련", "기반", "설명", "대한", "문서", "면접", "저는", "제가", "그리고"
+        )
+        return buildList {
+            addAll(tokenize(referenceAnswer.orEmpty()))
+            evidence.forEach { addAll(tokenize(it)) }
+        }.filterNot { it in stopwords }
+            .distinct()
+            .take(8)
     }
 
     private fun isLowEffortAnswer(answer: String): Boolean {
@@ -231,8 +741,44 @@ class InterviewEvaluationService(
             "기억이 안납니다",
             "생각이 안납니다",
             "잘 모르겠어요",
-            "모르겠습니다"
+            "모르겠습니다",
+            "i don't know",
+            "not sure",
+            "i am not sure",
+            "no idea"
         )
+    }
+
+    private fun resolveInterviewLanguage(turn: InterviewTurn): InterviewLanguage {
+        val rawConfig = turn.session.configJson
+        if (rawConfig.isBlank()) return InterviewLanguage.KO
+        val root = runCatching { objectMapper.readTree(rawConfig) }.getOrNull() ?: return InterviewLanguage.KO
+        val raw = root.path("meta").path("language").asText().trim().uppercase()
+        return runCatching { InterviewLanguage.valueOf(raw) }.getOrDefault(InterviewLanguage.KO)
+    }
+
+    private fun englishCommunicationHeuristic(answer: String): Double {
+        val sentenceCount = answer.split(Regex("[.!?\\n]"))
+            .map { it.trim() }
+            .count { it.isNotBlank() }
+        val englishWords = ENGLISH_WORD_REGEX.findAll(answer).count()
+        val englishLetters = ENGLISH_LETTER_REGEX.findAll(answer).count()
+        val hangulLetters = HANGUL_REGEX.findAll(answer).count()
+        val punctuationEnding = answer.trim().lastOrNull()?.let { it == '.' || it == '!' || it == '?' } == true
+        return (
+            20 +
+                cappedProduct(sentenceCount, 7, 25) +
+                min(20, englishWords) +
+                (if (englishLetters >= hangulLetters * 2) 15 else 4) +
+                (if (punctuationEnding) 10 else 3) +
+                (if (answer.length in 60..800) 10 else 4)
+            ).coerceIn(0, 100).toDouble()
+    }
+
+    private fun looksMostlyEnglish(text: String): Boolean {
+        val englishLetters = ENGLISH_LETTER_REGEX.findAll(text).count()
+        val hangulLetters = HANGUL_REGEX.findAll(text).count()
+        return englishLetters >= max(8, hangulLetters * 2)
     }
 
     private fun parseJsonArray(raw: String?): List<String> {
@@ -245,12 +791,19 @@ class InterviewEvaluationService(
         return turn.question == null &&
             turn.documentQuestion == null &&
             turn.categorySnapshot == INTRO_CATEGORY &&
-            turn.questionTextSnapshot == INTRO_QUESTION_TEXT
+            turn.questionTextSnapshot in setOf(
+                INTRO_QUESTION_TEXT,
+                interviewAiOrchestrator.localizedIntroQuestion(InterviewLanguage.EN)
+            )
     }
 
     private fun InterviewTurnEvaluation.toResponse(): TurnEvaluationResponse {
+        val sessionLanguage = resolveInterviewLanguage(turn)
+        val turnContext = parseTurnRagContext(objectMapper, turn.ragContextJson)
         val resolved = resolveAnswerContent(
-            rawModelAnswer = turn.question?.canonicalAnswer ?: turn.documentQuestion?.referenceAnswer,
+            rawModelAnswer = turnContext.localizedModelAnswerFor(sessionLanguage)
+                ?: turn.question?.canonicalAnswer
+                ?: turn.documentQuestion?.referenceAnswer,
             rawGuideText = bestPractice
         )
         return TurnEvaluationResponse(
@@ -289,5 +842,12 @@ class InterviewEvaluationService(
         val evidenceJson: String = "[]",
         val model: String? = null,
         val modelVersion: String? = null
+    )
+
+    private data class PreparedBatchEvaluation(
+        val turn: InterviewTurn,
+        val userGeneratedQuestion: Boolean,
+        val resolvedAnswer: ResolvedAnswerContent,
+        val input: BatchTurnEvaluationInput
     )
 }

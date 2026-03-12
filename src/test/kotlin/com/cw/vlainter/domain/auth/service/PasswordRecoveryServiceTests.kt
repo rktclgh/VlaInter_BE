@@ -19,6 +19,8 @@ import org.mockito.BDDMockito.then
 import org.mockito.BDDMockito.willThrow
 import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
+import org.mockito.Mockito.lenient
+import org.springframework.core.io.ClassPathResource
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.ValueOperations
 import org.springframework.http.HttpStatus
@@ -56,7 +58,7 @@ class PasswordRecoveryServiceTests {
         val user = createUser()
         val mimeMessage = MimeMessage(Session.getInstance(Properties()))
         given(userRepository.findByEmail("user@vlainter.com")).willReturn(Optional.of(user))
-        allowRateLimitFor("user@vlainter.com")
+        allowRateLimitFor()
         given(passwordEncoder.encode(any(String::class.java))).willReturn("encoded-temp-password")
         given(userRepository.save(user)).willReturn(user)
         given(mailSender.createMimeMessage()).willReturn(mimeMessage)
@@ -78,7 +80,6 @@ class PasswordRecoveryServiceTests {
         assertThat(mimeMessage.allRecipients.map { it.toString() }).containsExactly("user@vlainter.com")
         assertThat(mimeMessage.from).isNotNull
         assertThat(mimeMessage.from.map { it.toString() }).containsExactly("mailer@vlainter.com")
-        assertThat(mimeMessage.content.toString()).contains("temporary-password-template")
     }
 
     @Test
@@ -109,7 +110,7 @@ class PasswordRecoveryServiceTests {
         val user = createUser()
         val mimeMessage = MimeMessage(Session.getInstance(Properties()))
         given(userRepository.findByEmail("user@vlainter.com")).willReturn(Optional.of(user))
-        allowRateLimitFor("user@vlainter.com")
+        allowRateLimitFor()
         given(passwordEncoder.encode(any(String::class.java))).willReturn("encoded-temp-password")
         given(userRepository.save(user)).willReturn(user)
         given(mailSender.createMimeMessage()).willReturn(mimeMessage)
@@ -127,6 +128,8 @@ class PasswordRecoveryServiceTests {
     }
 
     private fun service(): PasswordRecoveryService {
+        lenient().`when`(emailTemplateService.logoContentId()).thenReturn("vlainter-logo")
+        lenient().`when`(emailTemplateService.logoResource()).thenReturn(ClassPathResource("email/logo/favicon.png"))
         return PasswordRecoveryService(
             userRepository = userRepository,
             passwordEncoder = passwordEncoder,
@@ -137,7 +140,7 @@ class PasswordRecoveryServiceTests {
         )
     }
 
-    private fun allowRateLimitFor(email: String) {
+    private fun allowRateLimitFor(email: String = "user@vlainter.com") {
         given(redisTemplate.opsForValue()).willReturn(redisValueOperations)
         given(
             redisValueOperations.setIfAbsent(

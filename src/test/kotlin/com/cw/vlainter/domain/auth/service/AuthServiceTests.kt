@@ -1,12 +1,15 @@
 package com.cw.vlainter.domain.auth.service
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
+import com.cw.vlainter.domain.auth.dto.SignupRequest
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.domain.user.service.UserLifecycleEmailService
 import com.cw.vlainter.global.security.JwtTokenProvider
 import com.cw.vlainter.global.security.LoginSessionStore
+import com.cw.vlainter.global.security.RefreshTokenRotationResult
 import com.cw.vlainter.global.security.RedirectUriValidator
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -46,6 +49,9 @@ class AuthServiceTests {
     @Mock
     private lateinit var authAccessAuditService: AuthAccessAuditService
 
+    @Mock
+    private lateinit var userLifecycleEmailService: UserLifecycleEmailService
+
     private fun authService(): AuthService = AuthService(
         userRepository = userRepository,
         passwordEncoder = passwordEncoder,
@@ -53,7 +59,8 @@ class AuthServiceTests {
         loginSessionStore = loginSessionStore,
         authAccessAuditService = authAccessAuditService,
         redirectUriValidator = redirectUriValidator,
-        emailVerificationService = emailVerificationService
+        emailVerificationService = emailVerificationService,
+        userLifecycleEmailService = userLifecycleEmailService
     )
 
     @Test
@@ -114,7 +121,7 @@ class AuthServiceTests {
     @Test
     fun `login fails when email does not exist`() {
         val request = LoginRequest(email = "missing@vlainter.com", password = "Password123!")
-        given(userRepository.findByEmail(request.email)).willReturn(Optional.empty())
+        given(userRepository.findByEmail(request.email)).willReturn(Optional.empty(), Optional.empty())
 
         assertUnauthorized { authService().login(request) }
         verifyNoInteractions(passwordEncoder, jwtTokenProvider, loginSessionStore, redirectUriValidator)
@@ -174,16 +181,52 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `refresh does not delete session when token does not match stored session`() {
+    fun `refresh does not delete session when previous token is retried within grace window`() {
         val refreshToken = "refresh-token"
+        val user = createUser()
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(1L)
         given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
-        given(loginSessionStore.validateRefreshToken("sid-1", 1L, refreshToken)).willReturn(false)
+        given(userRepository.findById(1L)).willReturn(Optional.of(user))
+        given(jwtTokenProvider.createAccessToken(user.id, user.email, "sid-1", user.role)).willReturn("new-access-token")
+        given(jwtTokenProvider.createRefreshToken(user.id, "sid-1")).willReturn("new-refresh-token")
+        given(
+            loginSessionStore.rotateRefreshTokenAtomically(
+                "sid-1",
+                1L,
+                refreshToken,
+                "new-refresh-token",
+                java.time.Duration.ofSeconds(5)
+            )
+        ).willReturn(RefreshTokenRotationResult.PREVIOUS_TOKEN_WITHIN_GRACE)
 
         assertUnauthorized { authService().refresh(refreshToken) }
-        then(loginSessionStore).should().validateRefreshToken("sid-1", 1L, refreshToken)
-        then(loginSessionStore).shouldHaveNoMoreInteractions()
+        then(loginSessionStore).should().rotateRefreshTokenAtomically("sid-1", 1L, refreshToken, "new-refresh-token", java.time.Duration.ofSeconds(5))
+    }
+
+    @Test
+    fun `refresh deletes session when token hash mismatches outside grace window`() {
+        val refreshToken = "refresh-token"
+        val user = createUser()
+        given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
+        given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(1L)
+        given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
+        given(userRepository.findById(1L)).willReturn(Optional.of(user))
+        given(jwtTokenProvider.createAccessToken(user.id, user.email, "sid-1", user.role)).willReturn("new-access-token")
+        given(jwtTokenProvider.createRefreshToken(user.id, "sid-1")).willReturn("new-refresh-token")
+        given(
+            loginSessionStore.rotateRefreshTokenAtomically(
+                "sid-1",
+                1L,
+                refreshToken,
+                "new-refresh-token",
+                java.time.Duration.ofSeconds(5)
+            )
+        ).willReturn(RefreshTokenRotationResult.HASH_MISMATCH)
+
+        assertUnauthorized { authService().refresh(refreshToken) }
+        then(loginSessionStore).should().rotateRefreshTokenAtomically("sid-1", 1L, refreshToken, "new-refresh-token", java.time.Duration.ofSeconds(5))
+        then(loginSessionStore).should().delete("sid-1")
     }
 
     @Test
@@ -192,11 +235,9 @@ class AuthServiceTests {
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(1L)
         given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
-        given(loginSessionStore.validateRefreshToken("sid-1", 1L, refreshToken)).willReturn(true)
         given(userRepository.findById(1L)).willReturn(Optional.empty())
 
         assertUnauthorized { authService().refresh(refreshToken) }
-        then(loginSessionStore).should().validateRefreshToken("sid-1", 1L, refreshToken)
         then(loginSessionStore).shouldHaveNoMoreInteractions()
     }
 
@@ -208,11 +249,9 @@ class AuthServiceTests {
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(blockedUser.id)
         given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
-        given(loginSessionStore.validateRefreshToken("sid-1", blockedUser.id, refreshToken)).willReturn(true)
         given(userRepository.findById(blockedUser.id)).willReturn(Optional.of(blockedUser))
 
         assertForbidden { authService().refresh(refreshToken) }
-        then(loginSessionStore).should().validateRefreshToken("sid-1", blockedUser.id, refreshToken)
         then(loginSessionStore).shouldHaveNoMoreInteractions()
     }
 
@@ -224,16 +263,67 @@ class AuthServiceTests {
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(user.id)
         given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
-        given(loginSessionStore.validateRefreshToken("sid-1", user.id, refreshToken)).willReturn(true)
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
         given(jwtTokenProvider.createAccessToken(user.id, user.email, "sid-1", user.role)).willReturn("new-access-token")
         given(jwtTokenProvider.createRefreshToken(user.id, "sid-1")).willReturn("new-refresh-token")
+        given(
+            loginSessionStore.rotateRefreshTokenAtomically(
+                "sid-1",
+                user.id,
+                refreshToken,
+                "new-refresh-token",
+                java.time.Duration.ofSeconds(5)
+            )
+        ).willReturn(RefreshTokenRotationResult.ROTATED)
 
         val tokenPair = authService().refresh(refreshToken)
 
         assertThat(tokenPair.accessToken).isEqualTo("new-access-token")
         assertThat(tokenPair.refreshToken).isEqualTo("new-refresh-token")
-        then(loginSessionStore).should().rotateRefreshToken("sid-1", "new-refresh-token")
+        then(loginSessionStore).should().rotateRefreshTokenAtomically("sid-1", user.id, refreshToken, "new-refresh-token", java.time.Duration.ofSeconds(5))
+    }
+
+    @Test
+    fun `signup sends welcome email for email signup`() {
+        val request = SignupRequest(
+            email = "new@vlainter.com",
+            password = "Password123!",
+            name = "New User"
+        )
+        val savedUser = createUser(email = request.email, name = request.name)
+
+        given(userRepository.findByEmail(request.email)).willReturn(Optional.empty(), Optional.empty())
+        given(passwordEncoder.encode(request.password)).willReturn("encoded-password")
+        given(userRepository.save(org.mockito.ArgumentMatchers.any(User::class.java))).willReturn(savedUser)
+
+        val result = authService().signup(request)
+
+        assertThat(result.email).isEqualTo(request.email)
+        then(emailVerificationService).should().consumeVerifiedEmail(request.email)
+        then(userLifecycleEmailService).should().sendWelcomeEmail(savedUser.email, savedUser.name, "이메일")
+    }
+
+    @Test
+    fun `social signup sends welcome email only for new user`() {
+        given(userRepository.findByEmail("social@vlainter.com")).willReturn(Optional.empty())
+        given(passwordEncoder.encode(org.mockito.ArgumentMatchers.anyString())).willReturn("encoded-social-password")
+        given(userRepository.save(org.mockito.ArgumentMatchers.any(User::class.java)))
+            .willReturn(createUser(email = "social@vlainter.com", name = "Social User"))
+        given(redirectUriValidator.validate(null)).willReturn(null)
+        given(
+            jwtTokenProvider.createAccessToken(
+                anyLongMatcher(),
+                anyStringMatcher(),
+                anyStringMatcher(),
+                eqUserRoleMatcher(UserRole.USER)
+            )
+        ).willReturn("access-token")
+        given(jwtTokenProvider.createRefreshToken(anyLongMatcher(), anyStringMatcher())).willReturn("refresh-token")
+
+        val result = authService().loginOrSignupWithEmail("social@vlainter.com", "Social User", null)
+
+        assertThat(result.email).isEqualTo("social@vlainter.com")
+        then(userLifecycleEmailService).should().sendWelcomeEmail("social@vlainter.com", "Social User", "카카오")
     }
 
     @Test

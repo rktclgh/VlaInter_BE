@@ -160,13 +160,18 @@ class EmailVerificationService(
     private fun sendEmail(email: String, code: String) {
         val html = emailTemplateService.buildVerificationCodeEmail(code, emailVerificationProperties.codeExpSeconds)
         val message = mailSender.createMimeMessage()
-        val helper = MimeMessageHelper(message, StandardCharsets.UTF_8.name())
+        val helper = MimeMessageHelper(message, true, StandardCharsets.UTF_8.name())
         if (senderEmail.isNotBlank()) {
             helper.setFrom(senderEmail)
         }
         helper.setTo(email)
         helper.setSubject("[VlaInter] 이메일 인증 코드")
         helper.setText(html, true)
+        helper.addInline(
+            emailTemplateService.logoContentId(),
+            emailTemplateService.logoResource(),
+            "image/png"
+        )
 
         mailSender.send(message)
     }

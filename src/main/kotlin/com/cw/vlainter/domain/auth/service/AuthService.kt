@@ -6,8 +6,10 @@ import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.domain.user.service.UserLifecycleEmailService
 import com.cw.vlainter.global.security.JwtTokenProvider
 import com.cw.vlainter.global.security.LoginSessionStore
+import com.cw.vlainter.global.security.RefreshTokenRotationResult
 import com.cw.vlainter.global.security.RedirectUriValidator
 import org.slf4j.LoggerFactory
 import org.springframework.dao.DataIntegrityViolationException
@@ -15,6 +17,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import org.springframework.web.server.ResponseStatusException
+import java.time.Duration
 import java.util.UUID
 
 /**
@@ -33,10 +36,12 @@ class AuthService(
     private val loginSessionStore: LoginSessionStore,
     private val authAccessAuditService: AuthAccessAuditService,
     private val redirectUriValidator: RedirectUriValidator,
-    private val emailVerificationService: EmailVerificationService
+    private val emailVerificationService: EmailVerificationService,
+    private val userLifecycleEmailService: UserLifecycleEmailService
 ) {
     private val logger = LoggerFactory.getLogger(AuthService::class.java)
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
+    private val refreshReuseGraceWindow = Duration.ofSeconds(5)
 
     /**
      * 로그인 처리.
@@ -65,23 +70,35 @@ class AuthService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이메일 정보가 유효하지 않습니다.")
         }
 
-        val existingUser = userRepository.findByEmail(normalizedEmail)
-        val user = existingUser.orElseGet {
+        val existingUser = userRepository.findByEmail(normalizedEmail).orElse(null)
+        val user = existingUser ?: run {
             val resolvedName = resolveSocialName(nameHint, normalizedEmail)
-            val createdUser = userRepository.save(
-                User(
-                    email = normalizedEmail,
-                    password = passwordEncoder.encode(generateSocialRandomPassword()),
-                    name = resolvedName,
-                    status = UserStatus.ACTIVE,
-                    role = UserRole.USER
+            try {
+                val createdUser = userRepository.save(
+                    User(
+                        email = normalizedEmail,
+                        password = passwordEncoder.encode(generateSocialRandomPassword()),
+                        name = resolvedName,
+                        status = UserStatus.ACTIVE,
+                        role = UserRole.USER
+                    )
                 )
-            )
-            logger.info("Auth social signup created new user userId={} email={}", createdUser.id, createdUser.email)
-            createdUser
+                userLifecycleEmailService.sendWelcomeEmail(
+                    email = createdUser.email,
+                    userName = createdUser.name,
+                    signupChannel = "카카오"
+                )
+                logger.info("Auth social signup created new user userId={} email={}", createdUser.id, createdUser.email)
+                createdUser
+            } catch (_: DataIntegrityViolationException) {
+                val reusedUser = userRepository.findByEmail(normalizedEmail)
+                    .orElseThrow { ResponseStatusException(HttpStatus.CONFLICT, "이미 가입된 이메일입니다.") }
+                logger.info("Auth social login reused existing user after concurrent signup userId={} email={}", reusedUser.id, reusedUser.email)
+                reusedUser
+            }
         }
 
-        if (existingUser.isPresent) {
+        if (existingUser != null) {
             logger.info("Auth social login matched existing user userId={} email={}", user.id, user.email)
         }
 
@@ -153,7 +170,13 @@ class AuthService(
             role = UserRole.USER
         )
         return try {
-            userRepository.save(user)
+            val saved = userRepository.save(user)
+            userLifecycleEmailService.sendWelcomeEmail(
+                email = saved.email,
+                userName = saved.name,
+                signupChannel = "이메일"
+            )
+            saved
         } catch (_: DataIntegrityViolationException) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "이미 가입된 이메일입니다.")
         }
@@ -173,17 +196,28 @@ class AuthService(
 
         val userId = jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)
         val sessionId = jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)
-        val validSession = loginSessionStore.validateRefreshToken(sessionId, userId, refreshToken)
-        if (!validSession) {
-            throw refreshUnauthorizedException()
-        }
-
         val user = userRepository.findById(userId).orElseThrow { unauthorizedException() }
         validateUserForLogin(user)
 
         val newAccessToken = jwtTokenProvider.createAccessToken(user.id, user.email, sessionId, user.role)
         val newRefreshToken = jwtTokenProvider.createRefreshToken(user.id, sessionId)
-        loginSessionStore.rotateRefreshToken(sessionId, newRefreshToken)
+        when (
+            loginSessionStore.rotateRefreshTokenAtomically(
+                sessionId = sessionId,
+                userId = userId,
+                currentRefreshToken = refreshToken,
+                nextRefreshToken = newRefreshToken,
+                graceWindow = refreshReuseGraceWindow
+            )
+        ) {
+            RefreshTokenRotationResult.ROTATED -> Unit
+            RefreshTokenRotationResult.PREVIOUS_TOKEN_WITHIN_GRACE -> throw refreshUnauthorizedException()
+            RefreshTokenRotationResult.HASH_MISMATCH -> {
+                loginSessionStore.delete(sessionId)
+                throw refreshUnauthorizedException()
+            }
+            RefreshTokenRotationResult.SESSION_NOT_FOUND -> throw refreshUnauthorizedException()
+        }
 
         return TokenPair(newAccessToken, newRefreshToken)
     }

@@ -1,7 +1,6 @@
 package com.cw.vlainter.domain.user.repository
 
 import com.cw.vlainter.domain.user.entity.User
-import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import jakarta.persistence.LockModeType
 import org.springframework.data.domain.Page
@@ -42,20 +41,6 @@ interface UserRepository : JpaRepository<User, Long> {
     @Query("update User u set u.point = u.point + :delta where u.id = :userId and (u.point + :delta) >= 0")
     fun addPointIfNotNegative(@Param("userId") userId: Long, @Param("delta") delta: Long): Int
 
-    @Query(
-        """
-        select u
-        from User u
-        where u.role = :role
-          and u.status <> :excludedStatus
-          and trim(u.email) <> ''
-        order by u.id asc
-        """
-    )
-    fun findReportRecipients(
-        @Param("role") role: UserRole = UserRole.ADMIN,
-        @Param("excludedStatus") excludedStatus: UserStatus = UserStatus.DELETED
-    ): List<User>
     fun countByStatusNot(status: UserStatus): Long
 
     @Query(

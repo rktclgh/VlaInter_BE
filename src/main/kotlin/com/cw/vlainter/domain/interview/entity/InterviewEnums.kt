@@ -21,6 +21,10 @@ enum class QuestionSourceTag {
     SYSTEM, USER
 }
 
+enum class InterviewLanguage {
+    KO, EN
+}
+
 enum class InterviewMode {
     DOC, TECH, MIXED, QUESTION_SET_PRACTICE
 }
@@ -38,6 +42,7 @@ enum class TurnSourceTag {
     SYSTEM, USER, DOC_RAG, INTRO
 }
 
+@Suppress("unused")
 enum class TurnEvaluationStatus {
     PENDING, DONE, FAILED
 }
