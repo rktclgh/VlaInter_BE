@@ -77,10 +77,10 @@ class KakaoAuthService(
         }.getOrElse { ex ->
             if (ex is RestClientResponseException) {
                 logger.warn(
-                    "Kakao token exchange failed status={} body={} redirectUri={} hasClientSecret={}",
+                    "Kakao token exchange failed status={} body={} redirectUriHash={} hasClientSecret={}",
                     ex.statusCode.value(),
                     ex.responseBodyAsString.limitForLog(),
-                    redirectUri,
+                    AuthLogSanitizer.hash(redirectUri),
                     kakaoProperties.clientSecret.isNotBlank()
                 )
                 throw ResponseStatusException(

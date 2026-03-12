@@ -2,12 +2,14 @@ package com.cw.vlainter.domain.auth.controller
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
 import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
+import com.cw.vlainter.domain.auth.service.AuthRateLimitService
 import com.cw.vlainter.domain.auth.service.AuthService
 import com.cw.vlainter.domain.auth.service.AuthProviderType
 import com.cw.vlainter.domain.auth.service.KakaoAuthService
 import com.cw.vlainter.domain.auth.service.LoginResult
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.global.security.AuthCookieManager
+import com.cw.vlainter.global.security.ClientIpResolver
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -17,6 +19,7 @@ import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.BDDMockito.given
 import org.mockito.BDDMockito.then
 import org.mockito.Mock
+import org.mockito.Mockito.inOrder
 import org.mockito.Mockito.timeout
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.junit.jupiter.MockitoExtension
@@ -30,6 +33,8 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPat
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import org.springframework.web.server.ResponseStatusException
+import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
 
 @ExtendWith(MockitoExtension::class)
 class AuthControllerTests {
@@ -46,11 +51,24 @@ class AuthControllerTests {
     @Mock
     private lateinit var authAccessAuditService: AuthAccessAuditService
 
+    @Mock
+    private lateinit var authRateLimitService: AuthRateLimitService
+
     private lateinit var mockMvc: MockMvc
+    private val clientIpResolver = ClientIpResolver("127.0.0.1/32,::1/128")
+    private val directExecutor = Executor { runnable -> runnable.run() }
 
     @BeforeEach
     fun setUp() {
-        val controller = AuthController(authService, kakaoAuthService, authCookieManager, authAccessAuditService)
+        val controller = AuthController(
+            authService,
+            kakaoAuthService,
+            authCookieManager,
+            authAccessAuditService,
+            authRateLimitService,
+            clientIpResolver,
+            directExecutor
+        )
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build()
     }
 
@@ -76,7 +94,6 @@ class AuthControllerTests {
         val refreshCookie = ResponseCookie.from("vlainter_rt", "refresh-token").httpOnly(true).path("/").build()
         val clearAccessCookie = ResponseCookie.from("vlainter_at", "").httpOnly(true).path("/").maxAge(0).build()
         val clearRefreshCookie = ResponseCookie.from("vlainter_rt", "").httpOnly(true).path("/").maxAge(0).build()
-
         given(authService.login(request)).willReturn(loginResult)
         given(authCookieManager.createAccessTokenCookie("access-token")).willReturn(accessCookie)
         given(authCookieManager.createRefreshTokenCookie("refresh-token")).willReturn(refreshCookie)
@@ -103,7 +120,9 @@ class AuthControllerTests {
         assertTrue(setCookies.any { it.startsWith("vlainter_at=access-token") })
         assertTrue(setCookies.any { it.startsWith("vlainter_rt=refresh-token") })
 
-        then(authService).should().login(request)
+        val successOrder = inOrder(authRateLimitService, authService)
+        successOrder.verify(authRateLimitService).checkLoginAttempt(request.email, "127.0.0.1")
+        successOrder.verify(authService).login(request)
         then(authCookieManager).should().createAccessTokenCookie("access-token")
         then(authCookieManager).should().createRefreshTokenCookie("refresh-token")
         then(authAccessAuditService).should(timeout(1000)).recordLogin(
@@ -125,7 +144,7 @@ class AuthControllerTests {
         )
             .andExpect(status().isBadRequest)
 
-        verifyNoInteractions(authService, authCookieManager)
+        verifyNoInteractions(authService, authCookieManager, authRateLimitService)
     }
 
     @Test
@@ -141,7 +160,55 @@ class AuthControllerTests {
         )
             .andExpect(status().isUnauthorized)
 
-        then(authService).should().login(request)
+        val failureOrder = inOrder(authRateLimitService, authService)
+        failureOrder.verify(authRateLimitService).checkLoginAttempt(request.email, "127.0.0.1")
+        failureOrder.verify(authService).login(request)
         verifyNoInteractions(authCookieManager, authAccessAuditService)
+    }
+
+    @Test
+    fun `login still succeeds when audit executor rejects submission`() {
+        val rejectingExecutor = Executor { throw RejectedExecutionException("queue full") }
+        val controller = AuthController(
+            authService,
+            kakaoAuthService,
+            authCookieManager,
+            authAccessAuditService,
+            authRateLimitService,
+            clientIpResolver,
+            rejectingExecutor
+        )
+        val localMockMvc = MockMvcBuilders.standaloneSetup(controller).build()
+        val request = LoginRequest(email = "tester@vlainter.com", password = "Password123!")
+        val loginResult = LoginResult(
+            userId = 1L,
+            email = request.email,
+            name = "Tester",
+            role = UserRole.USER,
+            accessToken = "access-token",
+            refreshToken = "refresh-token",
+            redirectUri = null,
+            sessionId = "session-1",
+            authProvider = AuthProviderType.EMAIL
+        )
+        val accessCookie = ResponseCookie.from("vlainter_at", "access-token").httpOnly(true).path("/").build()
+        val refreshCookie = ResponseCookie.from("vlainter_rt", "refresh-token").httpOnly(true).path("/").build()
+        val clearAccessCookie = ResponseCookie.from("vlainter_at", "").httpOnly(true).path("/").maxAge(0).build()
+        val clearRefreshCookie = ResponseCookie.from("vlainter_rt", "").httpOnly(true).path("/").maxAge(0).build()
+
+        given(authService.login(request)).willReturn(loginResult)
+        given(authCookieManager.createAccessTokenCookie("access-token")).willReturn(accessCookie)
+        given(authCookieManager.createRefreshTokenCookie("refresh-token")).willReturn(refreshCookie)
+        given(authCookieManager.clearAccessTokenCookie()).willReturn(clearAccessCookie)
+        given(authCookieManager.clearRefreshTokenCookie()).willReturn(clearRefreshCookie)
+
+        localMockMvc.perform(
+            post("/api/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jacksonObjectMapper().writeValueAsString(request))
+        )
+            .andExpect(status().isOk)
+
+        then(authAccessAuditService).shouldHaveNoInteractions()
     }
 }
