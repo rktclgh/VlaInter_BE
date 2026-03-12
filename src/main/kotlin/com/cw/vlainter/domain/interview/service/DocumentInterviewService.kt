@@ -56,6 +56,10 @@ import com.cw.vlainter.global.config.properties.S3Properties
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.apache.poi.xslf.usermodel.XMLSlideShow
+import org.apache.poi.xslf.usermodel.XSLFTable
+import org.apache.poi.xslf.usermodel.XSLFTextShape
+import org.apache.poi.xwpf.usermodel.XWPFDocument
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.rendering.PDFRenderer
 import org.apache.pdfbox.text.PDFTextStripper
@@ -218,7 +222,7 @@ class DocumentInterviewService(
         val firstEmbedding = embeddings.first()
         job.status = DocumentIngestionStatus.READY
         job.errorMessage = null
-        job.parserName = "pdfbox"
+        job.parserName = parserNameForExtractionMethod(extractionMethod)
         job.embeddingModel = firstEmbedding.model
         job.embeddingVersion = firstEmbedding.modelVersion
         job.chunkCount = embeddings.size
@@ -248,7 +252,7 @@ class DocumentInterviewService(
         val file = loadOwnedInterviewDocument(job.userId, job.documentFileId)
 
         try {
-            val extracted = extractPdfText(file)
+            val extracted = extractDocumentText(file)
             val text = extracted.text
             val chunks = splitIntoChunks(text)
             if (chunks.isEmpty()) {
@@ -1477,7 +1481,7 @@ class DocumentInterviewService(
         return runCatching { InterviewLanguage.valueOf(raw) }.getOrDefault(InterviewLanguage.KO)
     }
 
-    private fun extractPdfText(file: UserFile): ExtractedDocumentText {
+    private fun extractDocumentText(file: UserFile): ExtractedDocumentText {
         if (s3Properties.bucket.isBlank()) {
             throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "S3 버킷 설정이 누락되었습니다.")
         }
@@ -1492,6 +1496,15 @@ class DocumentInterviewService(
                 throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "문서 파일을 불러오지 못했습니다.")
             }
 
+        return when (resolveDocumentFormat(file)) {
+            "pdf" -> extractPdfText(bytes)
+            "docx" -> extractDocxText(bytes)
+            "pptx" -> extractPptxText(bytes)
+            else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않는 문서 형식입니다.")
+        }
+    }
+
+    private fun extractPdfText(bytes: ByteArray): ExtractedDocumentText {
         return PDDocument.load(ByteArrayInputStream(bytes)).use { document ->
             val pdfText = normalizeText(PDFTextStripper().getText(document))
             if (!ocrProperties.enabled || pdfText.length >= ocrProperties.fallbackMinTextLength) {
@@ -1510,6 +1523,79 @@ class DocumentInterviewService(
                 ocrLanguages = ocrResult.languages
             )
         }
+    }
+
+    private fun extractDocxText(bytes: ByteArray): ExtractedDocumentText {
+        val text = XWPFDocument(ByteArrayInputStream(bytes)).use { document ->
+            buildString {
+                document.paragraphs
+                    .mapNotNull { it.text?.trim()?.takeIf(String::isNotBlank) }
+                    .forEach { appendLine(it) }
+                document.tables.forEach { table ->
+                    table.rows.forEach { row ->
+                        row.tableCells
+                            .mapNotNull { it.text?.trim()?.takeIf(String::isNotBlank) }
+                            .forEach { appendLine(it) }
+                    }
+                }
+            }
+        }
+
+        return ExtractedDocumentText(
+            text = normalizeText(text),
+            method = "DOCX_POI",
+            ocrLanguages = null
+        )
+    }
+
+    private fun extractPptxText(bytes: ByteArray): ExtractedDocumentText {
+        val text = XMLSlideShow(ByteArrayInputStream(bytes)).use { slideShow ->
+            buildString {
+                slideShow.slides.forEach { slide ->
+                    slide.shapes.forEach { shape ->
+                        when (shape) {
+                            is XSLFTextShape -> {
+                                val shapeText = shape.text?.trim()
+                                if (!shapeText.isNullOrBlank()) appendLine(shapeText)
+                            }
+                            is XSLFTable -> {
+                                shape.rows.forEach { row ->
+                                    row.cells
+                                        .mapNotNull { it.text?.trim()?.takeIf(String::isNotBlank) }
+                                        .forEach { appendLine(it) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return ExtractedDocumentText(
+            text = normalizeText(text),
+            method = "PPTX_POI",
+            ocrLanguages = null
+        )
+    }
+
+    private fun resolveDocumentFormat(file: UserFile): String {
+        val fromName = file.originalFileName.substringAfterLast('.', "").trim().lowercase()
+        if (fromName.isNotBlank()) return fromName
+
+        return when (file.contentType?.trim()?.lowercase()) {
+            "application/pdf" -> "pdf"
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> "docx"
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation" -> "pptx"
+            else -> ""
+        }
+    }
+
+    private fun parserNameForExtractionMethod(extractionMethod: String): String = when (extractionMethod) {
+        "PDFBOX" -> "pdfbox"
+        "OCR_TESSERACT" -> "tesseract"
+        "DOCX_POI" -> "poi-xwpf"
+        "PPTX_POI" -> "poi-xslf"
+        else -> "unknown"
     }
 
     private fun sanitizePromptSnippet(text: String): String =

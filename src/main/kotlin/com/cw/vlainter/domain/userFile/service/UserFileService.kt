@@ -46,6 +46,13 @@ class UserFileService(
     private companion object {
         val ALLOWED_PROFILE_IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "webp")
         val ALLOWED_PROFILE_IMAGE_CONTENT_TYPES = setOf("image/png", "image/jpeg", "image/webp")
+        val ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS = setOf("pdf", "docx", "pptx")
+        val ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES = setOf(
+            "application/pdf",
+            "application/octet-stream",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
         const val MAX_DOCUMENT_FILES_PER_TYPE = 5L
     }
 
@@ -217,10 +224,13 @@ class UserFileService(
         val extension = lowerName.substringAfterLast('.', "")
 
         if (fileType == FileType.RESUME || fileType == FileType.INTRODUCE || fileType == FileType.PORTFOLIO) {
-            val extensionValid = extension == "pdf"
-            val contentTypeValid = contentType.isBlank() || contentType == "application/pdf"
+            val extensionValid = extension in ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS
+            val contentTypeValid = contentType.isBlank() || contentType in ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES
             if (!extensionValid || !contentTypeValid) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이력서/자기소개서/포트폴리오는 PDF 파일만 업로드할 수 있습니다.")
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "이력서/자기소개서/포트폴리오는 PDF, DOCX, PPTX 파일만 업로드할 수 있습니다."
+                )
             }
         }
 
