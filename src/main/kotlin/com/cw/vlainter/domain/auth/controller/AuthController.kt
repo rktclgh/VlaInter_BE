@@ -12,6 +12,7 @@ import com.cw.vlainter.domain.auth.service.KakaoAuthService
 import com.cw.vlainter.domain.auth.service.LoginResult
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.cw.vlainter.global.security.AuthCookieManager
+import com.cw.vlainter.global.security.ClientIpResolver
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
@@ -52,7 +53,7 @@ class AuthController(
         servletRequest: HttpServletRequest
     ): ResponseEntity<Map<String, Any>> {
         val email = request.email.trim().lowercase()
-        val clientIp = extractClientIp(servletRequest)
+        val clientIp = ClientIpResolver.resolve(servletRequest)
         authRateLimitService.checkSignupAttempt(email, clientIp)
         logger.info(
             "Auth signup attempt emailHash={} nameLength={} passwordLength={} ipHash={}",
@@ -119,7 +120,7 @@ class AuthController(
         servletRequest: HttpServletRequest
     ): ResponseEntity<LoginResponse> {
         val email = request.email.trim().lowercase()
-        val clientIp = extractClientIp(servletRequest)
+        val clientIp = ClientIpResolver.resolve(servletRequest)
         authRateLimitService.checkLoginAttempt(email, clientIp)
         logger.info(
             "Auth login attempt emailHash={} hasRedirectUri={} passwordLength={} ipHash={}",
@@ -168,7 +169,7 @@ class AuthController(
         response: HttpServletResponse,
         servletRequest: HttpServletRequest
     ): ResponseEntity<LoginResponse> {
-        val clientIp = extractClientIp(servletRequest)
+        val clientIp = ClientIpResolver.resolve(servletRequest)
         authRateLimitService.checkKakaoLoginAttempt(clientIp)
         logger.info(
             "Auth kakao login attempt hasRedirectUri={} hasClientId={} ipHash={}",
@@ -210,14 +211,6 @@ class AuthController(
             )
             throw ex
         }
-    }
-
-    private fun extractClientIp(request: HttpServletRequest): String {
-        val forwarded = request.getHeader("X-Forwarded-For")
-        if (!forwarded.isNullOrBlank()) {
-            return forwarded.split(",").first().trim()
-        }
-        return request.remoteAddr ?: "unknown"
     }
 
     private fun recordLoginAuditAsync(result: LoginResult, clientIp: String, userAgent: String?) {

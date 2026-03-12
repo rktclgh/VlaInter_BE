@@ -2,6 +2,7 @@ package com.cw.vlainter.global.config
 
 import com.cw.vlainter.domain.interview.ai.AiRoutingContextClearingFilter
 import com.cw.vlainter.global.config.properties.CorsProperties
+import com.cw.vlainter.global.security.SuspiciousRequestBlockingFilter
 import com.cw.vlainter.global.security.JwtAuthenticationFilter
 import com.cw.vlainter.global.security.RestAccessDeniedHandler
 import com.cw.vlainter.global.security.RestAuthenticationEntryPoint
@@ -30,6 +31,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource
 @Configuration
 @EnableWebSecurity
 class SecurityConfig(
+    private val suspiciousRequestBlockingFilter: SuspiciousRequestBlockingFilter,
     private val aiRoutingContextClearingFilter: AiRoutingContextClearingFilter,
     private val jwtAuthenticationFilter: JwtAuthenticationFilter,
     private val corsProperties: CorsProperties,
@@ -74,6 +76,7 @@ class SecurityConfig(
                     .requestMatchers("/api/**").authenticated()
                     .anyRequest().denyAll()
             }
+            .addFilterBefore(suspiciousRequestBlockingFilter, UsernamePasswordAuthenticationFilter::class.java)
             .addFilterBefore(aiRoutingContextClearingFilter, UsernamePasswordAuthenticationFilter::class.java)
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
 
