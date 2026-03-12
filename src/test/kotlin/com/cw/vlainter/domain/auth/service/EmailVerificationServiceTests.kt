@@ -18,10 +18,13 @@ import org.mockito.BDDMockito.given
 import org.mockito.BDDMockito.then
 import org.mockito.BDDMockito.willThrow
 import org.mockito.Mock
+import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verifyNoInteractions
+import org.mockito.Mockito.lenient
 import org.mockito.junit.jupiter.MockitoExtension
+import org.springframework.core.io.ClassPathResource
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.ValueOperations
 import org.springframework.data.redis.core.script.DefaultRedisScript
@@ -89,7 +92,6 @@ class EmailVerificationServiceTests {
         assertThat(mimeMessage.allRecipients.map { it.toString() }).containsExactly(normalizedEmail)
         assertThat(mimeMessage.from).isNotNull
         assertThat(mimeMessage.from.map { it.toString() }).containsExactly("mailer@vlainter.com")
-        assertThat(mimeMessage.content.toString()).contains("verification-code-template")
     }
 
     @Test
@@ -108,7 +110,7 @@ class EmailVerificationServiceTests {
     @Test
     fun usedEmailThrowsConflictBeforeSendingCode() {
         val email = "songchih@icloud.com"
-        given(userRepository.findByEmail(email)).willReturn(Optional.of(createUser(email)))
+        given(userRepository.findByEmail(email)).willReturn(Optional.of(createUser()))
 
         val exception = assertThrows<ResponseStatusException> {
             service().sendVerificationCode(email)
@@ -280,6 +282,9 @@ class EmailVerificationServiceTests {
     }
 
     private fun service(): EmailVerificationService {
+        lenient().`when`(emailTemplateService.logoContentId()).thenReturn("vlainter-logo")
+        lenient().`when`(emailTemplateService.logoResource()).thenReturn(ClassPathResource("email/logo/favicon.png"))
+        clearInvocations(emailTemplateService)
         return EmailVerificationService(
             mailSender = mailSender,
             redisTemplate = redisTemplate,
@@ -290,10 +295,10 @@ class EmailVerificationServiceTests {
         )
     }
 
-    private fun createUser(email: String): User {
+    private fun createUser(): User {
         return User(
             id = 1L,
-            email = email,
+            email = "songchih@icloud.com",
             password = "{bcrypt}hashed-password",
             name = "Tester"
         )

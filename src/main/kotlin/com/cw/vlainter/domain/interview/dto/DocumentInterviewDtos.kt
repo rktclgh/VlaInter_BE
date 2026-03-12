@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.interview.dto
 
 import com.cw.vlainter.domain.interview.entity.DocumentIngestionStatus
+import com.cw.vlainter.domain.interview.entity.InterviewLanguage
 import com.cw.vlainter.domain.interview.entity.QuestionDifficulty
 import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
@@ -41,6 +42,7 @@ data class StartMockInterviewRequest(
     val skillNames: List<String> = emptyList(),
     val jobName: String? = null,
     val difficulty: QuestionDifficulty? = null,
+    val language: InterviewLanguage = InterviewLanguage.KO,
     val includeSelfIntroduction: Boolean = false,
     @field:Min(value = 5, message = "questionCount는 5 이상이어야 합니다.")
     @field:Max(value = 20, message = "questionCount는 20 이하여야 합니다.")

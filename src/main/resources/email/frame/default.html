@@ -22,7 +22,16 @@
         }
         .logo {
             text-align: center;
-            margin-bottom: 24px;
+            margin-bottom: 18px;
+        }
+        .logo-image {
+            display: block;
+            width: 64px;
+            height: 64px;
+            margin: 0 auto 14px auto;
+            border-radius: 16px;
+            box-shadow: 0 6px 18px rgba(59, 130, 246, 0.18);
+            background: #ffffff;
         }
         h2 {
             color: #1f2937;
@@ -34,62 +43,6 @@
         .brand {
             color: #3b82f6;
             font-weight: 700;
-        }
-        .message-box {
-            margin: 24px 0;
-            padding: 20px;
-            border-radius: 12px;
-            background: linear-gradient(135deg, #f8fafc, #f1f5f9);
-            border: 1px solid #e2e8f0;
-        }
-        .message-box p {
-            font-size: 15px;
-            color: #475569;
-            text-align: center;
-            margin: 0;
-            line-height: 1.6;
-        }
-        .highlight {
-            color: #3b82f6;
-        }
-        .code-highlight {
-            color: #dc2626;
-            font-size: 18px;
-        }
-        .verification-code {
-            font-size: 32px;
-            font-weight: 700;
-            color: #3b82f6;
-            letter-spacing: 8px;
-            background: #f8fafc;
-            border: 2px solid #e2e8f0;
-            border-radius: 12px;
-            text-align: center;
-            margin: 20px 0 24px 0;
-            padding: 24px 16px;
-            font-family: "Courier New", monospace;
-        }
-        .warning-box {
-            background: #fef2f2;
-            border: 1px solid #fecaca;
-            border-radius: 8px;
-            padding: 16px;
-            margin: 20px 0;
-        }
-        .warning-box ul {
-            font-size: 13px;
-            color: #4b5563;
-            margin: 0;
-            line-height: 1.5;
-            padding-left: 20px;
-        }
-        .warning-box li {
-            margin-bottom: 6px;
-        }
-        .contact-link {
-            color: #3b82f6;
-            text-decoration: none;
-            font-weight: 500;
         }
         .footer {
             margin-top: 32px;
@@ -106,6 +59,7 @@
 <body>
 <div class="container">
     <div class="logo">
+        <img src="{{logo_src}}" alt="{{service_name}} logo" class="logo-image" />
         <h2><span class="brand">{{service_name}}</span> {{mail_title}}</h2>
     </div>
     {{content}}

@@ -15,6 +15,7 @@ class EmailTemplateService {
         val model = mapOf(
             "mail_title" to "이메일 인증 코드",
             "service_name" to "VlaInter",
+            "logo_src" to "cid:$LOGO_CONTENT_ID",
             "verification_code" to code,
             "expires_in_seconds" to expiresInSeconds.toString(),
             "contact_email" to CONTACT_EMAIL,
@@ -28,12 +29,40 @@ class EmailTemplateService {
         val model = mapOf(
             "mail_title" to "임시 비밀번호",
             "service_name" to "VlaInter",
+            "logo_src" to "cid:$LOGO_CONTENT_ID",
             "temporary_password" to temporaryPassword,
             "contact_email" to CONTACT_EMAIL,
             "footer_year" to Year.now().value.toString(),
             "footer_description" to "AI 면접 트레이닝 플랫폼"
         )
         return TemporaryPasswordTemplate().render(model)
+    }
+
+    fun buildWelcomeEmail(userName: String, signupChannel: String): String {
+        val model = mapOf(
+            "mail_title" to "회원가입을 환영합니다",
+            "service_name" to "VlaInter",
+            "logo_src" to "cid:$LOGO_CONTENT_ID",
+            "user_name" to userName,
+            "signup_channel" to signupChannel,
+            "contact_email" to CONTACT_EMAIL,
+            "footer_year" to Year.now().value.toString(),
+            "footer_description" to "AI 면접 트레이닝 플랫폼"
+        )
+        return WelcomeTemplate().render(model)
+    }
+
+    fun buildAccountDeletionEmail(userName: String): String {
+        val model = mapOf(
+            "mail_title" to "회원 탈퇴가 완료되었습니다",
+            "service_name" to "VlaInter",
+            "logo_src" to "cid:$LOGO_CONTENT_ID",
+            "user_name" to userName,
+            "contact_email" to CONTACT_EMAIL,
+            "footer_year" to Year.now().value.toString(),
+            "footer_description" to "AI 면접 트레이닝 플랫폼"
+        )
+        return AccountDeletionTemplate().render(model)
     }
 
     private abstract inner class BaseTemplate {
@@ -74,7 +103,20 @@ class EmailTemplateService {
         override fun contentPath(): String = "email/content/auth/temporary-password.html"
     }
 
+    private inner class WelcomeTemplate : BaseTemplate() {
+        override fun contentPath(): String = "email/content/auth/welcome.html"
+    }
+
+    private inner class AccountDeletionTemplate : BaseTemplate() {
+        override fun contentPath(): String = "email/content/auth/account-deletion.html"
+    }
+
+    fun logoResource(): ClassPathResource = ClassPathResource("email/logo/favicon.png")
+
+    fun logoContentId(): String = LOGO_CONTENT_ID
+
     companion object {
         private const val CONTACT_EMAIL = "info@vlainter.online"
+        private const val LOGO_CONTENT_ID = "vlainter-logo"
     }
 }

@@ -37,7 +37,8 @@ class UserService(
     private val passwordEncoder: PasswordEncoder,
     private val loginSessionStore: LoginSessionStore,
     private val userGeminiApiKeyService: UserGeminiApiKeyService,
-    private val authAccessAuditService: AuthAccessAuditService
+    private val authAccessAuditService: AuthAccessAuditService,
+    private val userLifecycleEmailService: UserLifecycleEmailService
 ) {
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
 
@@ -97,9 +98,12 @@ class UserService(
             .orElseThrow { unauthorizedException() }
         ensureActiveUser(user.status)
 
+        val originalEmail = user.email
+        val originalName = user.name
         markUserSoftDeleted(user)
         userRepository.save(user)
         loginSessionStore.deleteAllByUserId(user.id)
+        userLifecycleEmailService.sendAccountDeletionEmail(originalEmail, originalName)
     }
 
     @Transactional(readOnly = true)
