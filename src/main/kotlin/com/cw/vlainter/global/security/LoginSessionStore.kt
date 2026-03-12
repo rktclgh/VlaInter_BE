@@ -35,6 +35,8 @@ class LoginSessionStore(
             mapOf(
                 "userId" to userId.toString(),
                 "refreshHash" to hash(refreshToken),
+                "previousRefreshHash" to "",
+                "rotatedAtEpochMs" to "0",
                 "status" to "ACTIVE"
             )
         )
@@ -56,19 +58,56 @@ class LoginSessionStore(
      * Refresh 요청 시 세션/사용자/토큰 해시 일치 여부를 검증한다.
      */
     fun validateRefreshToken(sessionId: String, userId: Long, refreshToken: String): Boolean {
+        return inspectRefreshToken(sessionId, userId, refreshToken, Duration.ZERO) == RefreshTokenValidationResult.CURRENT_TOKEN
+    }
+
+    fun inspectRefreshToken(
+        sessionId: String,
+        userId: Long,
+        refreshToken: String,
+        graceWindow: Duration
+    ): RefreshTokenValidationResult {
         val values = redisTemplate.opsForHash<String, String>().entries(key(sessionId))
-        if (values.isEmpty()) return false
-        if (values["status"] != "ACTIVE") return false
-        if (values["userId"]?.toLongOrNull() != userId) return false
-        return values["refreshHash"] == hash(refreshToken)
+        if (values.isEmpty()) return RefreshTokenValidationResult.SESSION_NOT_FOUND
+        if (values["status"] != "ACTIVE") return RefreshTokenValidationResult.SESSION_NOT_FOUND
+        if (values["userId"]?.toLongOrNull() != userId) return RefreshTokenValidationResult.SESSION_NOT_FOUND
+
+        val tokenHash = hash(refreshToken)
+        if (values["refreshHash"] == tokenHash) {
+            return RefreshTokenValidationResult.CURRENT_TOKEN
+        }
+
+        val previousHash = values["previousRefreshHash"]
+        if (previousHash != tokenHash) {
+            return RefreshTokenValidationResult.HASH_MISMATCH
+        }
+
+        val rotatedAtEpochMs = values["rotatedAtEpochMs"]?.toLongOrNull()
+            ?: return RefreshTokenValidationResult.HASH_MISMATCH
+        val elapsedMillis = System.currentTimeMillis() - rotatedAtEpochMs
+        return if (elapsedMillis in 0..graceWindow.toMillis()) {
+            RefreshTokenValidationResult.PREVIOUS_TOKEN_WITHIN_GRACE
+        } else {
+            RefreshTokenValidationResult.HASH_MISMATCH
+        }
     }
 
     /**
      * Refresh Token 회전 시 새 해시로 교체하고 TTL을 갱신한다.
      */
     fun rotateRefreshToken(sessionId: String, refreshToken: String) {
-        redisTemplate.opsForHash<String, String>().put(key(sessionId), "refreshHash", hash(refreshToken))
-        redisTemplate.expire(key(sessionId), Duration.ofSeconds(jwtProperties.refreshTokenExpSeconds))
+        val sessionKey = key(sessionId)
+        val ops = redisTemplate.opsForHash<String, String>()
+        val currentRefreshHash = ops.get(sessionKey, "refreshHash").orEmpty()
+        ops.putAll(
+            sessionKey,
+            mapOf(
+                "refreshHash" to hash(refreshToken),
+                "previousRefreshHash" to currentRefreshHash,
+                "rotatedAtEpochMs" to System.currentTimeMillis().toString()
+            )
+        )
+        redisTemplate.expire(sessionKey, Duration.ofSeconds(jwtProperties.refreshTokenExpSeconds))
     }
 
     /**
@@ -109,4 +148,11 @@ class LoginSessionStore(
             .digest(token.toByteArray(StandardCharsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) }
     }
+}
+
+enum class RefreshTokenValidationResult {
+    CURRENT_TOKEN,
+    PREVIOUS_TOKEN_WITHIN_GRACE,
+    HASH_MISMATCH,
+    SESSION_NOT_FOUND
 }

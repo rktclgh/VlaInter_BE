@@ -8,6 +8,7 @@ import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.JwtTokenProvider
 import com.cw.vlainter.global.security.LoginSessionStore
+import com.cw.vlainter.global.security.RefreshTokenValidationResult
 import com.cw.vlainter.global.security.RedirectUriValidator
 import org.slf4j.LoggerFactory
 import org.springframework.dao.DataIntegrityViolationException
@@ -15,6 +16,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import org.springframework.web.server.ResponseStatusException
+import java.time.Duration
 import java.util.UUID
 
 /**
@@ -37,6 +39,7 @@ class AuthService(
 ) {
     private val logger = LoggerFactory.getLogger(AuthService::class.java)
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
+    private val refreshReuseGraceWindow = Duration.ofSeconds(5)
 
     /**
      * 로그인 처리.
@@ -173,9 +176,14 @@ class AuthService(
 
         val userId = jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)
         val sessionId = jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)
-        val validSession = loginSessionStore.validateRefreshToken(sessionId, userId, refreshToken)
-        if (!validSession) {
-            throw refreshUnauthorizedException()
+        when (loginSessionStore.inspectRefreshToken(sessionId, userId, refreshToken, refreshReuseGraceWindow)) {
+            RefreshTokenValidationResult.CURRENT_TOKEN -> Unit
+            RefreshTokenValidationResult.PREVIOUS_TOKEN_WITHIN_GRACE -> throw refreshUnauthorizedException()
+            RefreshTokenValidationResult.HASH_MISMATCH -> {
+                loginSessionStore.delete(sessionId)
+                throw refreshUnauthorizedException()
+            }
+            RefreshTokenValidationResult.SESSION_NOT_FOUND -> throw refreshUnauthorizedException()
         }
 
         val user = userRepository.findById(userId).orElseThrow { unauthorizedException() }

@@ -7,6 +7,7 @@ import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.global.security.JwtTokenProvider
 import com.cw.vlainter.global.security.LoginSessionStore
+import com.cw.vlainter.global.security.RefreshTokenValidationResult
 import com.cw.vlainter.global.security.RedirectUriValidator
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -20,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoExtension
 import org.springframework.http.HttpStatus
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.web.server.ResponseStatusException
+import java.time.Duration
 import java.util.Optional
 
 @ExtendWith(MockitoExtension::class)
@@ -174,16 +176,31 @@ class AuthServiceTests {
     }
 
     @Test
-    fun `refresh does not delete session when token does not match stored session`() {
+    fun `refresh does not delete session when previous token is retried within grace window`() {
         val refreshToken = "refresh-token"
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(1L)
         given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
-        given(loginSessionStore.validateRefreshToken("sid-1", 1L, refreshToken)).willReturn(false)
+        given(loginSessionStore.inspectRefreshToken("sid-1", 1L, refreshToken, Duration.ofSeconds(5)))
+            .willReturn(RefreshTokenValidationResult.PREVIOUS_TOKEN_WITHIN_GRACE)
 
         assertUnauthorized { authService().refresh(refreshToken) }
-        then(loginSessionStore).should().validateRefreshToken("sid-1", 1L, refreshToken)
+        then(loginSessionStore).should().inspectRefreshToken("sid-1", 1L, refreshToken, Duration.ofSeconds(5))
         then(loginSessionStore).shouldHaveNoMoreInteractions()
+    }
+
+    @Test
+    fun `refresh deletes session when token hash mismatches outside grace window`() {
+        val refreshToken = "refresh-token"
+        given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
+        given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(1L)
+        given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
+        given(loginSessionStore.inspectRefreshToken("sid-1", 1L, refreshToken, Duration.ofSeconds(5)))
+            .willReturn(RefreshTokenValidationResult.HASH_MISMATCH)
+
+        assertUnauthorized { authService().refresh(refreshToken) }
+        then(loginSessionStore).should().inspectRefreshToken("sid-1", 1L, refreshToken, Duration.ofSeconds(5))
+        then(loginSessionStore).should().delete("sid-1")
     }
 
     @Test
@@ -192,11 +209,12 @@ class AuthServiceTests {
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(1L)
         given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
-        given(loginSessionStore.validateRefreshToken("sid-1", 1L, refreshToken)).willReturn(true)
+        given(loginSessionStore.inspectRefreshToken("sid-1", 1L, refreshToken, Duration.ofSeconds(5)))
+            .willReturn(RefreshTokenValidationResult.CURRENT_TOKEN)
         given(userRepository.findById(1L)).willReturn(Optional.empty())
 
         assertUnauthorized { authService().refresh(refreshToken) }
-        then(loginSessionStore).should().validateRefreshToken("sid-1", 1L, refreshToken)
+        then(loginSessionStore).should().inspectRefreshToken("sid-1", 1L, refreshToken, Duration.ofSeconds(5))
         then(loginSessionStore).shouldHaveNoMoreInteractions()
     }
 
@@ -208,11 +226,12 @@ class AuthServiceTests {
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(blockedUser.id)
         given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
-        given(loginSessionStore.validateRefreshToken("sid-1", blockedUser.id, refreshToken)).willReturn(true)
+        given(loginSessionStore.inspectRefreshToken("sid-1", blockedUser.id, refreshToken, Duration.ofSeconds(5)))
+            .willReturn(RefreshTokenValidationResult.CURRENT_TOKEN)
         given(userRepository.findById(blockedUser.id)).willReturn(Optional.of(blockedUser))
 
         assertForbidden { authService().refresh(refreshToken) }
-        then(loginSessionStore).should().validateRefreshToken("sid-1", blockedUser.id, refreshToken)
+        then(loginSessionStore).should().inspectRefreshToken("sid-1", blockedUser.id, refreshToken, Duration.ofSeconds(5))
         then(loginSessionStore).shouldHaveNoMoreInteractions()
     }
 
@@ -224,7 +243,8 @@ class AuthServiceTests {
         given(jwtTokenProvider.isValidRefreshToken(refreshToken)).willReturn(true)
         given(jwtTokenProvider.extractUserIdFromRefreshToken(refreshToken)).willReturn(user.id)
         given(jwtTokenProvider.extractSessionIdFromRefreshToken(refreshToken)).willReturn("sid-1")
-        given(loginSessionStore.validateRefreshToken("sid-1", user.id, refreshToken)).willReturn(true)
+        given(loginSessionStore.inspectRefreshToken("sid-1", user.id, refreshToken, Duration.ofSeconds(5)))
+            .willReturn(RefreshTokenValidationResult.CURRENT_TOKEN)
         given(userRepository.findById(user.id)).willReturn(Optional.of(user))
         given(jwtTokenProvider.createAccessToken(user.id, user.email, "sid-1", user.role)).willReturn("new-access-token")
         given(jwtTokenProvider.createRefreshToken(user.id, "sid-1")).willReturn("new-refresh-token")
