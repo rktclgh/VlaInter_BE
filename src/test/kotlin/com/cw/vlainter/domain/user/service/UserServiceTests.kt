@@ -51,6 +51,9 @@ class UserServiceTests {
     @Mock
     private lateinit var authAccessAuditService: AuthAccessAuditService
 
+    @Mock
+    private lateinit var userLifecycleEmailService: UserLifecycleEmailService
+
     @Test
     fun updateMyProfileUpdatesName() {
         val user = createUser()
@@ -102,6 +105,7 @@ class UserServiceTests {
         assertThat(user.email).isEqualTo("deletedUser${user.id}@vlainter.online")
         then(userRepository).should().save(user)
         then(loginSessionStore).should().deleteAllByUserId(user.id)
+        then(userLifecycleEmailService).should().sendAccountDeletionEmail("user@vlainter.com", "User Name")
     }
 
     @Test
@@ -368,7 +372,8 @@ class UserServiceTests {
             passwordEncoder = passwordEncoder,
             loginSessionStore = loginSessionStore,
             userGeminiApiKeyService = userGeminiApiKeyService,
-            authAccessAuditService = authAccessAuditService
+            authAccessAuditService = authAccessAuditService,
+            userLifecycleEmailService = userLifecycleEmailService
         )
     }
 

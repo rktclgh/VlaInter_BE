@@ -1,10 +1,12 @@
 package com.cw.vlainter.domain.auth.service
 
 import com.cw.vlainter.domain.auth.dto.LoginRequest
+import com.cw.vlainter.domain.auth.dto.SignupRequest
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.domain.user.service.UserLifecycleEmailService
 import com.cw.vlainter.global.security.JwtTokenProvider
 import com.cw.vlainter.global.security.LoginSessionStore
 import com.cw.vlainter.global.security.RefreshTokenValidationResult
@@ -48,6 +50,9 @@ class AuthServiceTests {
     @Mock
     private lateinit var authAccessAuditService: AuthAccessAuditService
 
+    @Mock
+    private lateinit var userLifecycleEmailService: UserLifecycleEmailService
+
     private fun authService(): AuthService = AuthService(
         userRepository = userRepository,
         passwordEncoder = passwordEncoder,
@@ -55,7 +60,8 @@ class AuthServiceTests {
         loginSessionStore = loginSessionStore,
         authAccessAuditService = authAccessAuditService,
         redirectUriValidator = redirectUriValidator,
-        emailVerificationService = emailVerificationService
+        emailVerificationService = emailVerificationService,
+        userLifecycleEmailService = userLifecycleEmailService
     )
 
     @Test
@@ -116,7 +122,7 @@ class AuthServiceTests {
     @Test
     fun `login fails when email does not exist`() {
         val request = LoginRequest(email = "missing@vlainter.com", password = "Password123!")
-        given(userRepository.findByEmail(request.email)).willReturn(Optional.empty())
+        given(userRepository.findByEmail(request.email)).willReturn(Optional.empty(), Optional.empty())
 
         assertUnauthorized { authService().login(request) }
         verifyNoInteractions(passwordEncoder, jwtTokenProvider, loginSessionStore, redirectUriValidator)
@@ -254,6 +260,49 @@ class AuthServiceTests {
         assertThat(tokenPair.accessToken).isEqualTo("new-access-token")
         assertThat(tokenPair.refreshToken).isEqualTo("new-refresh-token")
         then(loginSessionStore).should().rotateRefreshToken("sid-1", "new-refresh-token")
+    }
+
+    @Test
+    fun `signup sends welcome email for email signup`() {
+        val request = SignupRequest(
+            email = "new@vlainter.com",
+            password = "Password123!",
+            name = "New User"
+        )
+        val savedUser = createUser(email = request.email, name = request.name)
+
+        given(userRepository.findByEmail(request.email)).willReturn(Optional.empty(), Optional.empty())
+        given(passwordEncoder.encode(request.password)).willReturn("encoded-password")
+        given(userRepository.save(org.mockito.ArgumentMatchers.any(User::class.java))).willReturn(savedUser)
+
+        val result = authService().signup(request)
+
+        assertThat(result.email).isEqualTo(request.email)
+        then(emailVerificationService).should().consumeVerifiedEmail(request.email)
+        then(userLifecycleEmailService).should().sendWelcomeEmail(savedUser.email, savedUser.name, "이메일")
+    }
+
+    @Test
+    fun `social signup sends welcome email only for new user`() {
+        given(userRepository.findByEmail("social@vlainter.com")).willReturn(Optional.empty())
+        given(passwordEncoder.encode(org.mockito.ArgumentMatchers.anyString())).willReturn("encoded-social-password")
+        given(userRepository.save(org.mockito.ArgumentMatchers.any(User::class.java)))
+            .willReturn(createUser(email = "social@vlainter.com", name = "Social User"))
+        given(redirectUriValidator.validate(null)).willReturn(null)
+        given(
+            jwtTokenProvider.createAccessToken(
+                anyLongMatcher(),
+                anyStringMatcher(),
+                anyStringMatcher(),
+                eqUserRoleMatcher(UserRole.USER)
+            )
+        ).willReturn("access-token")
+        given(jwtTokenProvider.createRefreshToken(anyLongMatcher(), anyStringMatcher())).willReturn("refresh-token")
+
+        val result = authService().loginOrSignupWithEmail("social@vlainter.com", "Social User", null)
+
+        assertThat(result.email).isEqualTo("social@vlainter.com")
+        then(userLifecycleEmailService).should().sendWelcomeEmail("social@vlainter.com", "Social User", "카카오")
     }
 
     @Test

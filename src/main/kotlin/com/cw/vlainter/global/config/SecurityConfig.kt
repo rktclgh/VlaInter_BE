@@ -124,6 +124,8 @@ class SecurityConfig(
             "/error/**",
             "/assets/**",
             "/favicon.ico",
+            "/favicon.png",
+            "/social-preview.png",
             "/vite.svg",
             "/icon/**"
         )

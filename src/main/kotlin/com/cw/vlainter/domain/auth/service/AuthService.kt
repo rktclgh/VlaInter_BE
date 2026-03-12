@@ -6,6 +6,7 @@ import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
+import com.cw.vlainter.domain.user.service.UserLifecycleEmailService
 import com.cw.vlainter.global.security.JwtTokenProvider
 import com.cw.vlainter.global.security.LoginSessionStore
 import com.cw.vlainter.global.security.RefreshTokenValidationResult
@@ -35,7 +36,8 @@ class AuthService(
     private val loginSessionStore: LoginSessionStore,
     private val authAccessAuditService: AuthAccessAuditService,
     private val redirectUriValidator: RedirectUriValidator,
-    private val emailVerificationService: EmailVerificationService
+    private val emailVerificationService: EmailVerificationService,
+    private val userLifecycleEmailService: UserLifecycleEmailService
 ) {
     private val logger = LoggerFactory.getLogger(AuthService::class.java)
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
@@ -79,6 +81,11 @@ class AuthService(
                     status = UserStatus.ACTIVE,
                     role = UserRole.USER
                 )
+            )
+            userLifecycleEmailService.sendWelcomeEmail(
+                email = createdUser.email,
+                userName = createdUser.name,
+                signupChannel = "카카오"
             )
             logger.info("Auth social signup created new user userId={} email={}", createdUser.id, createdUser.email)
             createdUser
@@ -156,7 +163,13 @@ class AuthService(
             role = UserRole.USER
         )
         return try {
-            userRepository.save(user)
+            val saved = userRepository.save(user)
+            userLifecycleEmailService.sendWelcomeEmail(
+                email = saved.email,
+                userName = saved.name,
+                signupChannel = "이메일"
+            )
+            saved
         } catch (_: DataIntegrityViolationException) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "이미 가입된 이메일입니다.")
         }

@@ -89,13 +89,18 @@ class PasswordRecoveryService(
     private fun sendTemporaryPasswordEmail(email: String, temporaryPassword: String) {
         val html = emailTemplateService.buildTemporaryPasswordEmail(temporaryPassword)
         val message = mailSender.createMimeMessage()
-        val helper = MimeMessageHelper(message, StandardCharsets.UTF_8.name())
+        val helper = MimeMessageHelper(message, true, StandardCharsets.UTF_8.name())
         if (senderEmail.isNotBlank()) {
             helper.setFrom(senderEmail)
         }
         helper.setTo(email)
         helper.setSubject("[VlaInter] 임시 비밀번호")
         helper.setText(html, true)
+        helper.addInline(
+            emailTemplateService.logoContentId(),
+            emailTemplateService.logoResource(),
+            "image/png"
+        )
         mailSender.send(message)
     }
 
