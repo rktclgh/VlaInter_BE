@@ -55,4 +55,20 @@ class DocumentQuestionGenerationPolicyTests {
 
         assertThat(classified.single().kind).isNotEqualTo(DocumentSnippetKind.PROJECT_OR_RESULT)
     }
+
+    @Test
+    fun `이력서 snippet 우선순위는 과목표보다 경력과 수상 경험을 앞세운다`() {
+        val prioritized = DocumentQuestionGenerationPolicy.prioritizeSnippets(
+            fileType = FileType.RESUME,
+            snippets = listOf(
+                "학 사 컴퓨터공학 2023 1 전공 데이터베이스 3 A+ 운영체제 3 A 과목명 취득 학점 성적",
+                "마음AI에서 SW 개발 인턴으로 음성봇 고도화 작업과 백엔드 개발을 담당했습니다.",
+                "AWS 루키 챔피언십에서 Slack 알림 봇을 주제로 OCR 분석과 번역 기능을 접목한 서비스를 제작해 수상했습니다."
+            )
+        )
+
+        assertThat(prioritized.first()).contains("마음AI")
+        assertThat(prioritized[1]).contains("AWS 루키 챔피언십")
+        assertThat(prioritized.last()).contains("과목명")
+    }
 }

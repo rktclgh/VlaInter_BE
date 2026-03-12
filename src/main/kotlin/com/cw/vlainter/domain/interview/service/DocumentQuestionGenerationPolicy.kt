@@ -24,6 +24,21 @@ internal data class ClassifiedPromptSnippet(
 }
 
 internal object DocumentQuestionGenerationPolicy {
+    private val resumeRoleSignals = listOf(
+        "경력", "직무관련 경력", "인턴", "프로젝트", "연구실", "학부연구생", "대외 활동",
+        "수상", "해커톤", "백엔드", "개발", "구현", "설계", "개선", "문제", "해결",
+        "성과", "결과", "지원한 이유", "지원동기", "입사 후", "성장과정", "역경", "기술적 도전",
+        "intern", "project", "award", "hackathon", "backend", "implemented", "designed",
+        "improved", "result", "motivation", "growth", "challenge"
+    )
+    private val resumeNoiseSignals = listOf(
+        "지원자", "휴대폰 번호", "전화 번호", "희망근무지역", "주소", "영문", "인적사항",
+        "학점", "평점", "학번", "취득 학점", "과목명", "성적", "수강연도", "학기", "교양", "전공",
+        "phone", "address", "gpa", "grade", "semester", "course"
+    )
+    private val introduceAspirationSignals = listOf(
+        "지원동기", "포부", "가치관", "계획", "성장", "motivation", "value", "plan"
+    )
     private val aspirationMarkers = listOf(
         "싶", "하고자", "하겠습니다", "가지겠습니다", "희망", "포부", "지원 동기", "지원동기",
         "기여", "성장", "배우", "목표", "관심", "꿈", "되고자", "되겠습니다",
@@ -91,6 +106,10 @@ internal object DocumentQuestionGenerationPolicy {
         FileType.PROFILE_IMAGE -> 2
     }
 
+    fun prioritizeSnippets(fileType: FileType, snippets: List<String>): List<String> {
+        return snippets.sortedByDescending { promptSnippetScore(fileType, it) }
+    }
+
     fun classifySnippets(fileType: FileType, snippets: List<String>): List<ClassifiedPromptSnippet> {
         return snippets.map { snippet ->
             ClassifiedPromptSnippet(
@@ -146,6 +165,30 @@ internal object DocumentQuestionGenerationPolicy {
         FileType.PORTFOLIO -> 1.3
         FileType.RESUME -> 1.0
         FileType.PROFILE_IMAGE -> 0.5
+    }
+
+    private fun promptSnippetScore(fileType: FileType, snippet: String): Int {
+        val lowered = snippet.lowercase()
+        return when (fileType) {
+            FileType.RESUME -> {
+                val signalHits = resumeRoleSignals.count { lowered.contains(it) } * 18
+                val noiseHits = resumeNoiseSignals.count { lowered.contains(it) } * 16
+                val numberBonus = if (Regex("""\d+[%건명배회]""").containsMatchIn(snippet)) 12 else 0
+                val lengthBonus = min(20, snippet.length / 40)
+                signalHits + numberBonus + lengthBonus - noiseHits
+            }
+            FileType.INTRODUCE -> {
+                val signalHits = resumeRoleSignals.count { lowered.contains(it) } * 10
+                val aspirationHits = introduceAspirationSignals.count { lowered.contains(it) } * 14
+                signalHits + aspirationHits + min(16, snippet.length / 50)
+            }
+            FileType.PORTFOLIO -> {
+                val signalHits = resumeRoleSignals.count { lowered.contains(it) } * 15
+                val numberBonus = if (Regex("""\d+[%건명배회]""").containsMatchIn(snippet)) 10 else 0
+                signalHits + numberBonus + min(18, snippet.length / 45)
+            }
+            FileType.PROFILE_IMAGE -> snippet.length / 10
+        }
     }
 
     private fun countMarkerHits(text: String, markers: List<String>): Int {
