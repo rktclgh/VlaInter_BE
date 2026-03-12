@@ -152,6 +152,41 @@ class InterviewAiOrchestratorTests {
     }
 
     @Test
+    fun `문서 질문은 설명해 주세요로 끝나는 한국어 면접 문장도 허용한다`() {
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willReturn(
+            LlmGenerationResult(
+                model = "gemini",
+                modelVersion = "v1",
+                text = """
+                    {
+                      "questions": [
+                        {
+                          "questionText": "JWT 기반 인증을 선택한 이유와 실무 적용 시 장단점을 설명해 주세요.",
+                          "questionType": "RESUME_EXPERIENCE",
+                          "evidenceKind": "ACTUAL_EXPERIENCE",
+                          "referenceAnswer": "프로젝트에서 인증 체계를 빠르게 구축해야 하는 상황이 있었습니다. 당시 저는 서버 API 설계와 인증 로직 구현을 담당했습니다. JWT 기반 인증을 선택한 이유는 세션 방식보다 확장성과 클라이언트 분리 측면에서 유리했기 때문입니다. 실무 적용에서는 토큰 탈취와 무효화 같은 장단점을 함께 고려해 Refresh Token과 Redis 기반 세션 추적을 도입했습니다. 그 결과 인증 상태 관리의 유연성과 보안 통제를 동시에 확보할 수 있었습니다.",
+                          "evidence": [
+                            "JWT, Refresh Token, Redis 기반 인증 구조를 프로젝트에 적용한 경험이 있음"
+                          ]
+                        }
+                      ]
+                    }
+                """.trimIndent()
+            )
+        )
+
+        val generated = orchestrator.generateDocumentQuestions(
+            fileTypeLabel = "RESUME",
+            difficulty = null,
+            questionCount = 1,
+            contextSnippets = listOf("JWT, Refresh Token, Redis 기반 인증 구조를 프로젝트에 적용한 경험이 있다.")
+        )
+
+        assertThat(generated).hasSize(1)
+        assertThat(generated.first().questionText).endsWith("설명해 주세요.")
+    }
+
+    @Test
     fun `영어 문서 답변 평가 프롬프트는 평가 출력은 한국어로 유지하고 영어 문법 기준을 명시한다`() {
         var capturedPrompt = ""
         given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->

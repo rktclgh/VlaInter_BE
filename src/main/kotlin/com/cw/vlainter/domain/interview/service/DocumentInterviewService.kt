@@ -822,7 +822,7 @@ class DocumentInterviewService(
         }
 
         if (results.isNotEmpty()) {
-            return results
+            return DocumentQuestionGenerationPolicy.prioritizeSnippets(file.fileType, results)
                 .map(::sanitizePromptSnippet)
                 .filter { isUsablePromptSnippet(file.fileType, it) }
                 .map { it.take(420) }
@@ -913,9 +913,9 @@ class DocumentInterviewService(
 
         val base = when (fileType) {
             FileType.RESUME -> listOf(
-                "이력서에서 실제로 수행한 역할과 책임이 드러나는 경험",
-                "이력서에서 성과나 개선 결과가 드러나는 경험",
-                "이력서에서 협업, 문제 해결, 의사결정이 드러나는 경험"
+                "이력서에서 직무 관련 경력, 인턴, 프로젝트, 연구실 활동처럼 실제로 수행한 역할과 책임이 드러나는 경험",
+                "이력서에서 성과, 수상, 기술적 문제 해결, 개선 결과가 드러나는 경험",
+                "이력서와 지원서 문항에서 지원 동기, 성장 과정, 어려움 극복, 기술적 도전이 드러나는 경험"
             )
             FileType.PORTFOLIO -> listOf(
                 "포트폴리오에서 프로젝트 역할, 기술 선택, 구현 책임이 드러나는 내용",
@@ -946,21 +946,23 @@ class DocumentInterviewService(
             return chunks.take(min(1, snippetBudget)).map { it.take(500) }
         }
 
+        val prioritized = DocumentQuestionGenerationPolicy.prioritizeSnippets(fileType, normalized)
+
         val indexes = when {
-            normalized.size <= snippetBudget -> normalized.indices.toList()
+            prioritized.size <= snippetBudget -> prioritized.indices.toList()
             else -> buildList {
                 add(0)
-                val step = max(1, normalized.lastIndex / max(1, snippetBudget - 1))
+                val step = max(1, prioritized.lastIndex / max(1, snippetBudget - 1))
                 var current = step
-                while (size < snippetBudget - 1 && current < normalized.lastIndex) {
+                while (size < snippetBudget - 1 && current < prioritized.lastIndex) {
                     add(current)
                     current += step
                 }
-                add(normalized.lastIndex)
+                add(prioritized.lastIndex)
             }
         }.distinct()
 
-        return indexes.map { normalized[it].take(500) }
+        return indexes.map { prioritized[it].take(500) }
     }
 
     private fun resolveTechCandidates(userId: Long, categoryId: Long, difficulty: QuestionDifficulty?) =
