@@ -17,7 +17,36 @@ class InterviewAiOrchestrator(
     private val llmProviderRouter: LlmProviderRouter,
     private val objectMapper: ObjectMapper
 ) {
+    private val interviewQuestionEndings = listOf(
+        "설명해 주세요",
+        "말씀해 주세요",
+        "얘기해 주세요",
+        "이야기해 주세요",
+        "알려 주세요",
+        "공유해 주세요",
+        "정리해 주세요",
+        "설명해주세요",
+        "말씀해주세요",
+        "얘기해주세요",
+        "이야기해주세요",
+        "알려주세요",
+        "공유해주세요",
+        "정리해주세요",
+        "무엇인가요",
+        "왜 그런가요",
+        "어떻게 생각하시나요",
+        "어떻게 보시나요",
+        "해주실 수 있나요",
+        "말해주실 수 있나요",
+        "설명해주실 수 있나요"
+    )
+
     private val logger = LoggerFactory.getLogger(javaClass)
+
+    data class DocumentQuestionValidationResult(
+        val accepted: List<GeneratedDocumentQuestion>,
+        val rejectedReasons: List<String>
+    )
 
     fun evaluateTechAnswer(
         question: QaQuestion?,
@@ -69,8 +98,18 @@ class InterviewAiOrchestrator(
             try {
                 val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
                 val parsed = parseGeneratedDocumentQuestions(generated.text, fileTypeLabel)
-                val validated = validateGeneratedDocumentQuestions(parsed, fileTypeLabel)
-                validated.forEach { item ->
+                val validation = validateGeneratedDocumentQuestions(parsed, fileTypeLabel)
+                if (validation.rejectedReasons.isNotEmpty()) {
+                    logger.info(
+                        "document question validation summary fileType={} round={} accepted={} rejected={} reasons={}",
+                        fileTypeLabel,
+                        round + 1,
+                        validation.accepted.size,
+                        validation.rejectedReasons.size,
+                        summarizeRejectedReasons(validation.rejectedReasons)
+                    )
+                }
+                validation.accepted.forEach { item ->
                     val key = item.questionText.trim().lowercase()
                     if (key.isNotBlank() && !collected.containsKey(key)) {
                         collected[key] = item.copy(questionNo = collected.size + 1)
@@ -697,41 +736,71 @@ class InterviewAiOrchestrator(
     private fun validateGeneratedDocumentQuestions(
         generated: List<GeneratedDocumentQuestion>,
         fileTypeLabel: String
-    ): List<GeneratedDocumentQuestion> {
+    ): DocumentQuestionValidationResult {
         val seen = linkedSetOf<String>()
-        return generated.mapNotNull { item ->
+        val accepted = mutableListOf<GeneratedDocumentQuestion>()
+        val rejectedReasons = mutableListOf<String>()
+        generated.forEach { item ->
             val normalizedQuestionType = normalizeDocumentQuestionType(item.questionType, fileTypeLabel)
             val normalizedEvidenceKind = normalizeEvidenceKind(item.evidenceKind)
             val normalizedQuestion = item.questionText.replace(Regex("\\s+"), " ").trim()
-            if (!isUsableDocumentQuestion(normalizedQuestion, normalizedQuestionType, normalizedEvidenceKind)) return@mapNotNull null
+            if (!isUsableDocumentQuestion(normalizedQuestion, normalizedQuestionType, normalizedEvidenceKind)) {
+                rejectedReasons += "unusable_question"
+                return@forEach
+            }
 
             val fingerprint = normalizedQuestion
                 .lowercase()
                 .replace(Regex("[^a-z0-9가-힣]+"), "")
-            if (!seen.add(fingerprint)) return@mapNotNull null
+            if (!seen.add(fingerprint)) {
+                rejectedReasons += "duplicate_question"
+                return@forEach
+            }
 
-            if (!isAllowedDocumentQuestionType(normalizedQuestionType, fileTypeLabel, normalizedEvidenceKind)) return@mapNotNull null
-            if (!isCompatibleQuestionForEvidenceKind(normalizedQuestion, normalizedQuestionType, normalizedEvidenceKind)) return@mapNotNull null
+            if (!isAllowedDocumentQuestionType(normalizedQuestionType, fileTypeLabel, normalizedEvidenceKind)) {
+                rejectedReasons += "question_type_mismatch"
+                return@forEach
+            }
+            if (!isCompatibleQuestionForEvidenceKind(normalizedQuestion, normalizedQuestionType, normalizedEvidenceKind)) {
+                rejectedReasons += "question_evidence_kind_mismatch"
+                return@forEach
+            }
 
             val normalizedAnswer = item.referenceAnswer
                 ?.replace(Regex("\\s+"), " ")
                 ?.trim()
-                ?.takeIf {
-                    it.isNotBlank() &&
-                        !isGuideLikeModelAnswer(it) &&
-                        isDocumentAnswerLinkedToQuestion(it, normalizedQuestion, normalizedQuestionType) &&
-                        isCompatibleReferenceAnswer(it, normalizedQuestionType, normalizedEvidenceKind)
+                ?: run {
+                    rejectedReasons += "missing_reference_answer"
+                    return@forEach
                 }
-                ?: return@mapNotNull null
+            if (normalizedAnswer.isBlank()) {
+                rejectedReasons += "blank_reference_answer"
+                return@forEach
+            }
+            if (isGuideLikeModelAnswer(normalizedAnswer)) {
+                rejectedReasons += "guide_like_reference_answer"
+                return@forEach
+            }
+            if (!isDocumentAnswerLinkedToQuestion(normalizedAnswer, normalizedQuestion, normalizedQuestionType)) {
+                rejectedReasons += "reference_answer_not_linked"
+                return@forEach
+            }
+            if (!isCompatibleReferenceAnswer(normalizedAnswer, normalizedQuestionType, normalizedEvidenceKind)) {
+                rejectedReasons += "reference_answer_evidence_kind_mismatch"
+                return@forEach
+            }
 
             val normalizedEvidence = item.evidence
                 .map { it.replace(Regex("\\s+"), " ").trim() }
                 .filter { it.length >= 8 }
                 .distinct()
                 .take(4)
-            if (normalizedEvidence.isEmpty()) return@mapNotNull null
+            if (normalizedEvidence.isEmpty()) {
+                rejectedReasons += "empty_evidence"
+                return@forEach
+            }
 
-            item.copy(
+            accepted += item.copy(
                 questionText = normalizedQuestion,
                 questionType = normalizedQuestionType,
                 evidenceKind = normalizedEvidenceKind,
@@ -739,6 +808,18 @@ class InterviewAiOrchestrator(
                 evidence = normalizedEvidence
             )
         }
+        return DocumentQuestionValidationResult(
+            accepted = accepted,
+            rejectedReasons = rejectedReasons
+        )
+    }
+
+    private fun summarizeRejectedReasons(reasons: List<String>): String {
+        return reasons.groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+            .joinToString(", ") { (reason, count) -> "$reason=$count" }
     }
 
     private fun parseGeneratedTechQuestions(raw: String): List<GeneratedTechQuestion> {
@@ -897,8 +978,16 @@ class InterviewAiOrchestrator(
             commonDomainHints
         }
         if (domainHints.none { lowered.contains(it) }) return false
-        if (!questionText.trim().endsWith("?")) return false
+        if (!hasInterviewQuestionEnding(questionText)) return false
         return true
+    }
+
+    private fun hasInterviewQuestionEnding(questionText: String): Boolean {
+        val trimmed = questionText.trim()
+        if (trimmed.endsWith("?")) return true
+
+        val normalized = trimmed.removeSuffix(".").removeSuffix("!").trim()
+        return interviewQuestionEndings.any { normalized.endsWith(it) }
     }
 
     private fun documentQuestionTypeRules(fileTypeKey: String): List<String> {
