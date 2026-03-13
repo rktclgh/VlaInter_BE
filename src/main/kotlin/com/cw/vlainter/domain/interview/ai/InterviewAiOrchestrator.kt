@@ -17,6 +17,22 @@ class InterviewAiOrchestrator(
     private val llmProviderRouter: LlmProviderRouter,
     private val objectMapper: ObjectMapper
 ) {
+    private val commonDomainHints = listOf(
+        "프로젝트", "서비스", "사용자", "구현", "설계", "개선", "경험", "선택", "이유",
+        "협업", "성능", "트러블슈팅", "문제", "해결", "운영", "개발", "아키텍처",
+        "project", "service", "user", "implementation", "design", "improve", "experience",
+        "decision", "reason", "collaboration", "performance", "troubleshooting", "problem",
+        "solution", "operation", "development", "architecture", "result", "outcome"
+    )
+    private val introduceHints = listOf(
+        "지원", "동기", "포부", "가치", "가치관", "기준", "관점", "태도", "실천", "계획", "입사",
+        "motivation", "value", "principle", "mindset", "plan", "goal", "future", "join", "apply"
+    )
+    private val resumeHints = listOf(
+        "경력", "직무", "인턴", "수상", "연구", "강점", "활동", "지원", "성장", "도전",
+        "대외활동", "학부연구생", "실무", "업무", "회사", "지원서",
+        "career", "internship", "award", "strength", "responsibility", "work", "company"
+    )
     private val interviewQuestionEndings = listOf(
         "설명해 주세요",
         "말씀해 주세요",
@@ -40,6 +56,21 @@ class InterviewAiOrchestrator(
         "말해주실 수 있나요",
         "설명해주실 수 있나요"
     )
+    private val duplicateQuestionStopTokens = setOf(
+        "무엇", "무엇인가요", "무엇인가", "어떤", "어떻게", "왜", "이유", "설명", "설명해", "설명해주세요",
+        "설명해주실", "말씀", "말씀해", "말씀해주세요", "말해", "알려", "공유", "정리", "당시", "본인",
+        "해당", "가장", "중점", "부분", "선택", "핵심", "역할", "기여", "프로젝트", "서비스", "기술",
+        "기능", "구현", "무엇인지", "무엇인지요", "생각", "보시나요", "해주실", "수", "있나요",
+        "what", "which", "why", "how", "explain", "describe", "tell", "share", "role", "responsibility",
+        "responsibilities", "contribution", "contributions", "focus", "focused", "reason", "reasons",
+        "choice", "choices", "project", "service", "technical", "implementation"
+    )
+    private val roleIntentHints = setOf("역할", "기여", "담당", "책임", "맡은", "role", "contribution", "responsibility")
+    private val reasonIntentHints = setOf("이유", "왜", "선택", "판단", "기준", "reason", "why", "choice", "decision")
+    private val focusIntentHints = setOf("중점", "우선", "집중", "가장 중요", "focus", "priority", "important")
+    private val resultIntentHints = setOf("성과", "결과", "효과", "개선", "impact", "result", "outcome", "improvement")
+    private val challengeIntentHints = setOf("문제", "난관", "도전", "어려움", "해결", "트러블", "challenge", "problem", "issue", "solve")
+    private val collaborationIntentHints = setOf("협업", "조율", "갈등", "커뮤니케이션", "collaboration", "communication", "conflict")
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -94,11 +125,16 @@ class InterviewAiOrchestrator(
         while (collected.size < questionCount && round < maxRounds) {
             val remaining = questionCount - collected.size
             val temperature = temperatures[minOf(round, temperatures.lastIndex)]
-            val prompt = buildDocumentQuestionPrompt(fileTypeLabel, difficulty, remaining, contextSnippets, language)
+            val candidateCount = documentQuestionCandidateCount(remaining, questionCount)
+            val prompt = buildDocumentQuestionPrompt(fileTypeLabel, difficulty, candidateCount, contextSnippets, language)
             try {
                 val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
                 val parsed = parseGeneratedDocumentQuestions(generated.text, fileTypeLabel)
-                val validation = validateGeneratedDocumentQuestions(parsed, fileTypeLabel)
+                val validation = validateGeneratedDocumentQuestions(
+                    generated = parsed,
+                    fileTypeLabel = fileTypeLabel,
+                    existingAccepted = collected.values.toList()
+                )
                 if (validation.rejectedReasons.isNotEmpty()) {
                     logger.info(
                         "document question validation summary fileType={} round={} accepted={} rejected={} reasons={}",
@@ -136,6 +172,15 @@ class InterviewAiOrchestrator(
         if (collected.size >= questionCount) {
             return collected.values.take(questionCount).toList()
         }
+        if (collected.isNotEmpty() && canReturnPartialDocumentQuestions(lastError)) {
+            logger.info(
+                "document question generation partial success fileType={} requested={} generated={}",
+                fileTypeLabel,
+                questionCount,
+                collected.size
+            )
+            return collected.values.toList()
+        }
         if (lastError is GeminiTransientException) {
             throw lastError
         }
@@ -144,6 +189,23 @@ class InterviewAiOrchestrator(
         throw IllegalStateException(
             "생성된 문서 질문/모범답안이 품질 기준을 충족하지 못했습니다. 잠시 후 다시 시도해 주세요.${cause?.let { " ($it)" } ?: ""}"
         )
+    }
+
+    private fun documentQuestionCandidateCount(remaining: Int, targetCount: Int): Int {
+        return when {
+            remaining >= 3 -> minOf(targetCount + 2, remaining + 2)
+            remaining == 2 -> minOf(targetCount + 1, remaining + 1)
+            else -> remaining + 1
+        }
+    }
+
+    private fun canReturnPartialDocumentQuestions(lastError: Exception?): Boolean {
+        return when (lastError) {
+            null -> true
+            is AiProviderAuthorizationException -> false
+            is GeminiTransientException -> lastError.statusCode == 429 || lastError.statusCode == 503
+            else -> false
+        }
     }
 
     fun generateTechQuestions(
@@ -434,7 +496,7 @@ class InterviewAiOrchestrator(
             - feedback, bestPractice, evidence는 모두 ${responseLanguage.displayLanguageName()}로 작성
             - kind=TECH: 질문 의도 적합성, 기술 정확성, 실무 근거를 중심으로 평가
             - kind=DOCUMENT: 사용자 답변 자체를 중심으로 평가하고 referenceAnswer는 정답 매칭이 아니라 보조 힌트로만 활용
-            - questionType이 INTRODUCE_MOTIVATION, INTRODUCE_VALUE, INTRODUCE_FUTURE_PLAN 인 DOCUMENT 항목은 STAR를 과도하게 강제하지 말고 동기, 판단 기준, 실제 적용 계획, 근거 연결성을 평가
+            - questionType이 INTRODUCE_MOTIVATION, INTRODUCE_VALUE, INTRODUCE_FUTURE_PLAN, RESUME_MOTIVATION, RESUME_VALUE 인 DOCUMENT 항목은 STAR를 과도하게 강제하지 말고 동기, 판단 기준, 실제 적용 계획, 근거 연결성을 평가
             - 그 외 DOCUMENT 항목은 질문 의도와 STAR 흐름(Situation, Task, Action, Result)을 함께 평가
             - kind=INTRO: 자기소개 답변으로서 역할, 강점, 지원 맥락, 전달력을 평가
             - answerLanguage=EN 이면 communication 점수에 grammar, sentence completeness, clarity, and natural professional English quality를 반영
@@ -557,6 +619,7 @@ class InterviewAiOrchestrator(
             add("- 총 ${questionCount}개 질문 생성")
             add("- 질문은 구체적이어야 하며 문서의 내용과 직접 연결되어야 함")
             add("- 각 문서 발췌에는 kind=ACTUAL_EXPERIENCE | PROJECT_OR_RESULT | MOTIVATION_OR_ASPIRATION | VALUE_OR_ATTITUDE 라벨이 붙어 있으므로 반드시 이를 해석해 사용할 것")
+            add("- 질문마다 primary evidence는 가능하면 서로 다른 문서 발췌를 사용하고, 같은 발췌를 재표현한 질문을 여러 개 만들지 말 것")
             add("- questionType은 문서 유형과 발췌 kind에 맞는 값만 사용")
             addAll(documentQuestionTypeRules(normalizedFileType))
             addAll(documentQuestionPatternRules(normalizedFileType))
@@ -586,7 +649,7 @@ class InterviewAiOrchestrator(
               "questions": [
                 {
                   "questionText": "면접 질문",
-                  "questionType": "RESUME_EXPERIENCE | RESUME_RESULT | PORTFOLIO_PROJECT | PORTFOLIO_RESULT | INTRODUCE_MOTIVATION | INTRODUCE_VALUE | INTRODUCE_FUTURE_PLAN | INTRODUCE_EXPERIENCE",
+                  "questionType": "RESUME_EXPERIENCE | RESUME_RESULT | RESUME_MOTIVATION | RESUME_VALUE | PORTFOLIO_PROJECT | PORTFOLIO_RESULT | INTRODUCE_MOTIVATION | INTRODUCE_VALUE | INTRODUCE_FUTURE_PLAN | INTRODUCE_EXPERIENCE",
                   "evidenceKind": "ACTUAL_EXPERIENCE | PROJECT_OR_RESULT | MOTIVATION_OR_ASPIRATION | VALUE_OR_ATTITUDE",
                   "referenceAnswer": "경험/성과형 질문이면 STAR형 예시 답변, 동기/가치관형 질문이면 동기와 실행 계획이 드러나는 예시 답변",
                   "evidence": ["질문의 근거가 된 문서 포인트", "..."]
@@ -735,17 +798,28 @@ class InterviewAiOrchestrator(
 
     private fun validateGeneratedDocumentQuestions(
         generated: List<GeneratedDocumentQuestion>,
-        fileTypeLabel: String
+        fileTypeLabel: String,
+        existingAccepted: List<GeneratedDocumentQuestion> = emptyList()
     ): DocumentQuestionValidationResult {
         val seen = linkedSetOf<String>()
         val accepted = mutableListOf<GeneratedDocumentQuestion>()
         val rejectedReasons = mutableListOf<String>()
         generated.forEach { item ->
-            val normalizedQuestionType = normalizeDocumentQuestionType(item.questionType, fileTypeLabel)
             val normalizedEvidenceKind = normalizeEvidenceKind(item.evidenceKind)
+            val normalizedQuestionType = normalizeDocumentQuestionType(
+                questionType = item.questionType,
+                fileTypeLabel = fileTypeLabel,
+                evidenceKind = normalizedEvidenceKind,
+                questionText = item.questionText
+            )
             val normalizedQuestion = item.questionText.replace(Regex("\\s+"), " ").trim()
-            if (!isUsableDocumentQuestion(normalizedQuestion, normalizedQuestionType, normalizedEvidenceKind)) {
-                rejectedReasons += "unusable_question"
+            val usabilityRejectReason = documentQuestionUsabilityRejectReason(
+                normalizedQuestion,
+                normalizedQuestionType,
+                normalizedEvidenceKind
+            )
+            if (usabilityRejectReason != null) {
+                rejectedReasons += usabilityRejectReason
                 return@forEach
             }
 
@@ -799,6 +873,17 @@ class InterviewAiOrchestrator(
                 rejectedReasons += "empty_evidence"
                 return@forEach
             }
+            if ((existingAccepted + accepted).any {
+                    isSemanticallyDuplicateDocumentQuestion(
+                        existingQuestion = it.questionText,
+                        candidateQuestion = normalizedQuestion,
+                        existingEvidence = it.evidence,
+                        candidateEvidence = normalizedEvidence
+                    )
+                }) {
+                rejectedReasons += "duplicate_question_semantic"
+                return@forEach
+            }
 
             accepted += item.copy(
                 questionText = normalizedQuestion,
@@ -812,6 +897,105 @@ class InterviewAiOrchestrator(
             accepted = accepted,
             rejectedReasons = rejectedReasons
         )
+    }
+
+    private fun isSameEvidenceSource(existing: List<String>, candidate: List<String>): Boolean {
+        val existingPrimary = existing.firstOrNull()?.trim().orEmpty()
+        val candidatePrimary = candidate.firstOrNull()?.trim().orEmpty()
+        if (existingPrimary.isBlank() || candidatePrimary.isBlank()) return false
+
+        val existingTokens = evidenceTokens(existingPrimary)
+        val candidateTokens = evidenceTokens(candidatePrimary)
+        if (existingTokens.isEmpty() || candidateTokens.isEmpty()) return false
+
+        val overlap = flexibleTokenOverlap(existingTokens, candidateTokens)
+        val minTokenSize = minOf(existingTokens.size, candidateTokens.size)
+        if (overlap >= 4 && overlap * 100 >= minTokenSize * 65) return true
+
+        val existingCompact = existingPrimary.lowercase().replace(Regex("[^0-9a-zA-Z가-힣]+"), "")
+        val candidateCompact = candidatePrimary.lowercase().replace(Regex("[^0-9a-zA-Z가-힣]+"), "")
+        val prefixLength = commonPrefixLength(existingCompact, candidateCompact)
+        return prefixLength >= 12 && prefixLength * 100 >= minOf(existingCompact.length, candidateCompact.length) * 30
+    }
+
+    private fun evidenceTokens(text: String): Set<String> {
+        return text.lowercase()
+            .split(Regex("[^0-9a-zA-Z가-힣]+"))
+            .map { it.trim() }
+            .filter { it.length >= 2 }
+            .toSet()
+    }
+
+    private fun isSemanticallyDuplicateDocumentQuestion(
+        existingQuestion: String,
+        candidateQuestion: String,
+        existingEvidence: List<String>,
+        candidateEvidence: List<String>
+    ): Boolean {
+        val existingTopicTokens = documentQuestionTopicTokens(existingQuestion)
+        val candidateTopicTokens = documentQuestionTopicTokens(candidateQuestion)
+        if (existingTopicTokens.isEmpty() || candidateTopicTokens.isEmpty()) return false
+
+        val overlap = flexibleTokenOverlap(existingTopicTokens, candidateTopicTokens)
+        val minTopicSize = minOf(existingTopicTokens.size, candidateTopicTokens.size)
+        val strongTopicOverlap = overlap >= 4 && overlap * 100 >= minTopicSize * 65
+        val sharedLeadNarrative = hasSharedQuestionLead(existingQuestion, candidateQuestion)
+        val sameTopic = isSameEvidenceSource(existingEvidence, candidateEvidence) || strongTopicOverlap || sharedLeadNarrative
+        if (!sameTopic) return false
+
+        val existingIntents = questionIntentSignals(existingQuestion)
+        val candidateIntents = questionIntentSignals(candidateQuestion)
+        if (existingIntents.isEmpty() || candidateIntents.isEmpty()) return false
+
+        return existingIntents.intersect(candidateIntents).isNotEmpty()
+    }
+
+    private fun documentQuestionTopicTokens(text: String): Set<String> {
+        return text.lowercase()
+            .split(Regex("[^0-9a-zA-Z가-힣]+"))
+            .map { it.trim() }
+            .filter { it.length >= 2 }
+            .filterNot { duplicateQuestionStopTokens.contains(it) }
+            .toSet()
+    }
+
+    private fun flexibleTokenOverlap(first: Set<String>, second: Set<String>): Int {
+        return first.count { left ->
+            second.any { right ->
+                left == right || (left.length >= 3 && right.length >= 3 && (left.startsWith(right) || right.startsWith(left)))
+            }
+        }
+    }
+
+    private fun hasSharedQuestionLead(first: String, second: String): Boolean {
+        val firstCompact = first.lowercase().replace(Regex("[^0-9a-zA-Z가-힣]+"), "")
+        val secondCompact = second.lowercase().replace(Regex("[^0-9a-zA-Z가-힣]+"), "")
+        if (firstCompact.length < 18 || secondCompact.length < 18) return false
+
+        val prefixLength = commonPrefixLength(firstCompact, secondCompact)
+        val minLength = minOf(firstCompact.length, secondCompact.length)
+        return prefixLength >= 18 && prefixLength * 100 >= minLength * 35
+    }
+
+    private fun commonPrefixLength(first: String, second: String): Int {
+        val max = minOf(first.length, second.length)
+        var index = 0
+        while (index < max && first[index] == second[index]) {
+            index += 1
+        }
+        return index
+    }
+
+    private fun questionIntentSignals(text: String): Set<String> {
+        val lowered = text.lowercase()
+        val intents = linkedSetOf<String>()
+        if (roleIntentHints.any { lowered.contains(it) }) intents += "ROLE"
+        if (reasonIntentHints.any { lowered.contains(it) }) intents += "REASON"
+        if (focusIntentHints.any { lowered.contains(it) }) intents += "FOCUS"
+        if (resultIntentHints.any { lowered.contains(it) }) intents += "RESULT"
+        if (challengeIntentHints.any { lowered.contains(it) }) intents += "CHALLENGE"
+        if (collaborationIntentHints.any { lowered.contains(it) }) intents += "COLLAB"
+        return intents
     }
 
     private fun summarizeRejectedReasons(reasons: List<String>): String {
@@ -932,11 +1116,14 @@ class InterviewAiOrchestrator(
         }
     }
 
-    private fun isUsableDocumentQuestion(questionText: String, questionType: String, evidenceKind: String): Boolean {
-        if (questionText.isBlank()) return false
+    private fun documentQuestionUsabilityRejectReason(
+        questionText: String,
+        questionType: String,
+        evidenceKind: String
+    ): String? {
+        if (questionText.isBlank()) return "question_blank"
         val introQuestion = questionType.startsWith("INTRODUCE_")
-        if (questionText.length < if (introQuestion) 12 else 16) return false
-        if (Regex("\\b(BACKEND|FRONTEND|SYSTEM_ARCH|EMBEDDED|DEVOPS|DATA|AI|ML|CLOUD|SECURITY)\\b").containsMatchIn(questionText)) return false
+        if (questionText.length < if (introQuestion) 12 else 16) return "question_too_short"
         val lowered = questionText.lowercase()
         val banned = listOf(
             "어떤 기술에도",
@@ -956,30 +1143,21 @@ class InterviewAiOrchestrator(
             "for any technology",
             "most cases"
         )
-        if (banned.any { lowered.contains(it) }) return false
+        if (banned.any { lowered.contains(it) }) return "question_banned_genericity"
         val tokens = questionText
             .split(Regex("[^0-9a-zA-Z가-힣]+"))
             .filter { it.length >= 2 }
-        if (tokens.size < if (introQuestion) 3 else 4) return false
-        val commonDomainHints = listOf(
-            "프로젝트", "서비스", "사용자", "구현", "설계", "개선", "경험", "선택", "이유",
-            "협업", "성능", "트러블슈팅", "문제", "해결", "운영", "개발", "아키텍처",
-            "project", "service", "user", "implementation", "design", "improve", "experience",
-            "decision", "reason", "collaboration", "performance", "troubleshooting", "problem",
-            "solution", "operation", "development", "architecture", "result", "outcome"
-        )
-        val introduceHints = listOf(
-            "지원", "동기", "포부", "가치", "가치관", "기준", "관점", "태도", "실천", "계획", "입사",
-            "motivation", "value", "principle", "mindset", "plan", "goal", "future", "join", "apply"
-        )
-        val domainHints = if (introQuestion || evidenceKind in setOf("MOTIVATION_OR_ASPIRATION", "VALUE_OR_ATTITUDE")) {
-            commonDomainHints + introduceHints
-        } else {
-            commonDomainHints
+        if (tokens.size < if (introQuestion) 3 else 4) return "question_too_few_tokens"
+        val domainHints = when {
+            introQuestion || evidenceKind in setOf("MOTIVATION_OR_ASPIRATION", "VALUE_OR_ATTITUDE") ->
+                commonDomainHints + introduceHints
+            questionType.startsWith("RESUME_") ->
+                commonDomainHints + introduceHints + resumeHints
+            else -> commonDomainHints
         }
-        if (domainHints.none { lowered.contains(it) }) return false
-        if (!hasInterviewQuestionEnding(questionText)) return false
-        return true
+        if (!questionType.startsWith("RESUME_") && domainHints.none { lowered.contains(it) }) return "question_missing_domain_hint"
+        if (!hasInterviewQuestionEnding(questionText)) return "question_missing_interview_ending"
+        return null
     }
 
     private fun hasInterviewQuestionEnding(questionText: String): Boolean {
@@ -987,13 +1165,17 @@ class InterviewAiOrchestrator(
         if (trimmed.endsWith("?")) return true
 
         val normalized = trimmed.removeSuffix(".").removeSuffix("!").trim()
-        return interviewQuestionEndings.any { normalized.endsWith(it) }
+        if (interviewQuestionEndings.any { normalized.endsWith(it) }) return true
+
+        val lowered = normalized.lowercase()
+        return listOf("무엇", "어떤", "왜", "어떻게", "이유", "역할", "기여", "성과", "강점", "경험", "what", "why", "how", "role", "reason")
+            .any { lowered.contains(it) }
     }
 
     private fun documentQuestionTypeRules(fileTypeKey: String): List<String> {
         return when (fileTypeKey) {
             "RESUME" -> listOf(
-                "- RESUME 문서는 questionType으로 RESUME_EXPERIENCE 또는 RESUME_RESULT만 사용",
+                "- RESUME 문서는 questionType으로 RESUME_EXPERIENCE, RESUME_RESULT, RESUME_MOTIVATION, RESUME_VALUE 중 하나만 사용",
                 "- 이력서 발췌가 실제 업무/프로젝트/성과를 말하지 않으면 과거형 경험 검증 질문으로 비약하지 말 것"
             )
             "PORTFOLIO" -> listOf(
@@ -1038,10 +1220,30 @@ class InterviewAiOrchestrator(
         }
     }
 
-    private fun normalizeDocumentQuestionType(questionType: String, fileTypeLabel: String): String {
+    private fun normalizeDocumentQuestionType(
+        questionType: String,
+        fileTypeLabel: String,
+        evidenceKind: String,
+        questionText: String
+    ): String {
         val normalized = questionType.trim().uppercase()
-        if (normalized.isBlank()) return toDocumentQuestionType(fileTypeLabel)
-        return normalized
+        val fileTypeKey = normalizeDocumentFileType(fileTypeLabel)
+        if (fileTypeKey != "RESUME") return normalized
+
+        val lowered = questionText.lowercase()
+        val resultSignals = listOf("성과", "결과", "효과", "개선", "기준", "이유", "선택", "판단", "why", "reason", "result", "impact", "decision")
+        return when {
+            evidenceKind == "MOTIVATION_OR_ASPIRATION" -> "RESUME_MOTIVATION"
+            evidenceKind == "VALUE_OR_ATTITUDE" -> "RESUME_VALUE"
+            normalized.isBlank() -> toDocumentQuestionType(fileTypeLabel)
+            normalized.startsWith("RESUME_") -> normalized
+            normalized == "INTRODUCE_MOTIVATION" || normalized == "INTRODUCE_FUTURE_PLAN" -> "RESUME_MOTIVATION"
+            normalized == "INTRODUCE_VALUE" -> "RESUME_VALUE"
+            normalized.startsWith("PORTFOLIO_") && resultSignals.any { lowered.contains(it) } -> "RESUME_RESULT"
+            normalized.startsWith("PORTFOLIO_") -> "RESUME_EXPERIENCE"
+            resultSignals.any { lowered.contains(it) } -> "RESUME_RESULT"
+            else -> "RESUME_EXPERIENCE"
+        }
     }
 
     private fun normalizeEvidenceKind(evidenceKind: String): String {
@@ -1073,7 +1275,11 @@ class InterviewAiOrchestrator(
                 "ACTUAL_EXPERIENCE", "PROJECT_OR_RESULT" -> questionType in setOf("INTRODUCE_EXPERIENCE", "INTRODUCE_MOTIVATION")
                 else -> false
             }
-            "RESUME" -> questionType in setOf("RESUME_EXPERIENCE", "RESUME_RESULT")
+            "RESUME" -> when (evidenceKind) {
+                "MOTIVATION_OR_ASPIRATION" -> questionType in setOf("RESUME_MOTIVATION", "RESUME_VALUE")
+                "VALUE_OR_ATTITUDE" -> questionType in setOf("RESUME_VALUE", "RESUME_MOTIVATION")
+                else -> questionType in setOf("RESUME_EXPERIENCE", "RESUME_RESULT")
+            }
             "PORTFOLIO" -> questionType in setOf("PORTFOLIO_PROJECT", "PORTFOLIO_RESULT", "PORTFOLIO_DECISION")
             else -> true
         }
@@ -1081,6 +1287,9 @@ class InterviewAiOrchestrator(
 
     private fun isCompatibleQuestionForEvidenceKind(questionText: String, questionType: String, evidenceKind: String): Boolean {
         if (evidenceKind !in setOf("MOTIVATION_OR_ASPIRATION", "VALUE_OR_ATTITUDE")) return true
+        if (questionType in setOf("RESUME_MOTIVATION", "RESUME_VALUE", "INTRODUCE_MOTIVATION", "INTRODUCE_VALUE", "INTRODUCE_FUTURE_PLAN")) {
+            return !looksLikePastExecutionAssumption(questionText)
+        }
         if (questionType.endsWith("_EXPERIENCE") || questionType.endsWith("_PROJECT") || questionType.endsWith("_RESULT") || questionType.endsWith("_DECISION")) {
             return false
         }
@@ -1089,7 +1298,11 @@ class InterviewAiOrchestrator(
 
     private fun isCompatibleReferenceAnswer(referenceAnswer: String, questionType: String, evidenceKind: String): Boolean {
         return if (evidenceKind in setOf("MOTIVATION_OR_ASPIRATION", "VALUE_OR_ATTITUDE")) {
-            !looksLikePastExecutionAssumption(referenceAnswer) && !questionType.endsWith("_EXPERIENCE")
+            !looksLikePastExecutionAssumption(referenceAnswer) &&
+                !questionType.endsWith("_EXPERIENCE") &&
+                !questionType.endsWith("_PROJECT") &&
+                !questionType.endsWith("_DECISION") &&
+                !questionType.endsWith("_RESULT")
         } else {
             true
         }
@@ -1118,7 +1331,13 @@ class InterviewAiOrchestrator(
     private fun documentQuestionTypeRequiresStar(questionType: String?): Boolean {
         val normalized = questionType?.trim()?.uppercase().orEmpty()
         if (normalized.isBlank()) return true
-        return normalized !in setOf("INTRODUCE_MOTIVATION", "INTRODUCE_VALUE", "INTRODUCE_FUTURE_PLAN")
+        return normalized !in setOf(
+            "INTRODUCE_MOTIVATION",
+            "INTRODUCE_VALUE",
+            "INTRODUCE_FUTURE_PLAN",
+            "RESUME_MOTIVATION",
+            "RESUME_VALUE"
+        )
     }
 
     private fun isDocumentAnswerLinkedToQuestion(answer: String, questionText: String, questionType: String): Boolean {
@@ -1134,7 +1353,7 @@ class InterviewAiOrchestrator(
             .toSet()
 
         val overlap = questionTokens.intersect(answerTokens).size
-        if (questionType in setOf("INTRODUCE_MOTIVATION", "INTRODUCE_VALUE", "INTRODUCE_FUTURE_PLAN")) {
+        if (questionType in setOf("INTRODUCE_MOTIVATION", "INTRODUCE_VALUE", "INTRODUCE_FUTURE_PLAN", "RESUME_MOTIVATION", "RESUME_VALUE")) {
             if (overlap >= 1) return true
             val motivationMarkers = listOf("동기", "가치", "기준", "계획", "포부", "motivation", "value", "plan", "goal")
             return motivationMarkers.any { marker ->
