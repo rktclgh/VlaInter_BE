@@ -29,6 +29,7 @@ import com.cw.vlainter.domain.interview.entity.QuestionSetVisibility
 import com.cw.vlainter.domain.interview.entity.QuestionSourceTag
 import com.cw.vlainter.domain.interview.entity.RevealPolicy
 import com.cw.vlainter.domain.interview.entity.SavedQuestion
+import com.cw.vlainter.domain.interview.entity.TechQuestionReusePolicy
 import com.cw.vlainter.domain.interview.entity.TurnSourceTag
 import com.cw.vlainter.domain.interview.ai.AiRoutingContextHolder
 import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
@@ -80,6 +81,7 @@ class InterviewPracticeService(
     private val savedQuestionRepository: SavedQuestionRepository,
     private val userRepository: UserRepository,
     private val userGeminiApiKeyService: UserGeminiApiKeyService,
+    private val adminInterviewSettingsService: AdminInterviewSettingsService,
     private val objectMapper: ObjectMapper,
     private val entityManager: EntityManager
 ) {
@@ -108,7 +110,16 @@ class InterviewPracticeService(
             } else {
                 null
             }
-            var candidates = resolveCandidates(principal, request, categoryContext?.category?.id)
+            val techQuestionReusePolicy = if (request.setId == null) {
+                adminInterviewSettingsService.getTechQuestionReusePolicy()
+            } else {
+                TechQuestionReusePolicy.REUSE_MATCHING
+            }
+            var candidates = if (shouldReuseMatchingQuestions(request, techQuestionReusePolicy)) {
+                resolveCandidates(principal, request, categoryContext?.category?.id)
+            } else {
+                emptyList()
+            }
             if (candidates.isEmpty() && request.setId == null) {
                 categoryContext = categoryContext
                     ?: categoryContextResolver.resolve(
@@ -169,6 +180,7 @@ class InterviewPracticeService(
                             "categoryName" to resolvedSkillName,
                             "jobName" to resolvedJobName,
                             "practiceMode" to practiceMode.name,
+                            "techQuestionReusePolicy" to techQuestionReusePolicy.name,
                             "selectedDocuments" to emptyList<Map<String, Any?>>(),
                             "localizedQueue" to localizedQueue,
                             "providerUsed" to aiRoutingContextHolder.snapshot().providerUsed?.name,
@@ -555,6 +567,14 @@ class InterviewPracticeService(
             val filtered = if (filterCategoryIds.isEmpty()) questions else questions.filter { it.category.id in filterCategoryIds }
             filtered.filter { isAcceptableTechQuestion(it) }
         }
+    }
+
+    private fun shouldReuseMatchingQuestions(
+        request: StartTechInterviewRequest,
+        techQuestionReusePolicy: TechQuestionReusePolicy
+    ): Boolean {
+        if (request.setId != null) return true
+        return techQuestionReusePolicy == TechQuestionReusePolicy.REUSE_MATCHING
     }
 
     private fun generateCategoryQuestions(
