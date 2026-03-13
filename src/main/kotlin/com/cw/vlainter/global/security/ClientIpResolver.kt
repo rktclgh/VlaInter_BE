@@ -8,7 +8,7 @@ import java.net.InetAddress
 
 @Component
 class ClientIpResolver(
-    @Value("\${app.security.trusted-proxies:127.0.0.1/32,::1/128}")
+    @Value("\${app.security.trusted-proxies:127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}")
     trustedProxyRanges: String
 ) {
     private val trustedNetworks = trustedProxyRanges
@@ -20,11 +20,17 @@ class ClientIpResolver(
         if (remoteAddr.isBlank()) return "unknown"
         if (!isTrustedProxy(remoteAddr)) return remoteAddr
 
-        val forwarded = request.getHeader("X-Forwarded-For")
+        return extractHeaderIp(request, "CF-Connecting-IP")
+            ?: extractHeaderIp(request, "X-Real-IP")
+            ?: extractHeaderIp(request, "X-Forwarded-For")
+            ?: remoteAddr
+    }
+
+    private fun extractHeaderIp(request: HttpServletRequest, headerName: String): String? {
+        return request.getHeader(headerName)
             ?.split(",")
             ?.map { it.trim() }
             ?.firstOrNull { it.isNotBlank() && isParsableIp(it) }
-        return forwarded ?: remoteAddr
     }
 
     private fun isTrustedProxy(address: String): Boolean {
