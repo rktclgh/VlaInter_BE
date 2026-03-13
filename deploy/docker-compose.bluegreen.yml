@@ -15,7 +15,7 @@ services:
   app-blue:
     image: ${IMAGE_TAG:-songchih/vlainter-backend:latest}
     container_name: vlainter-app-blue
-    restart: always
+    restart: unless-stopped
     env_file:
       - ../.env
     environment:
@@ -28,7 +28,7 @@ services:
   app-green:
     image: ${IMAGE_TAG:-songchih/vlainter-backend:latest}
     container_name: vlainter-app-green
-    restart: always
+    restart: unless-stopped
     env_file:
       - ../.env
     environment:
