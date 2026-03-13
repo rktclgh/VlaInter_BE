@@ -76,7 +76,8 @@ class ClientIpResolver(
         return value.all { char ->
             char.isDigit() ||
                 char.lowercaseChar() in 'a'..'f' ||
-                char == ':'
+                char == ':' ||
+                char == '.'
         }
     }
 

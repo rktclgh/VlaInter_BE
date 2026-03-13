@@ -102,6 +102,7 @@ class SuspiciousRequestBlockingFilterTests {
         val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
         val request = MockHttpServletRequest("GET", "/.env").apply { remoteAddr = "172.18.0.5" }
         val response = MockHttpServletResponse()
+        given(suspiciousRequestBlockService.isSuspiciousRequest("GET", "/.env")).willReturn(true)
         given(clientIpResolver.resolveDetail(request)).willReturn(
             ClientIpResolver.Resolution("172.18.0.5", ClientIpResolver.Source.TRUSTED_PROXY_FALLBACK, trustedProxy = true)
         )
@@ -109,6 +110,7 @@ class SuspiciousRequestBlockingFilterTests {
         filter.doFilter(request, response, filterChain)
 
         then(filterChain).should().doFilter(request, response)
-        then(suspiciousRequestBlockService).shouldHaveNoInteractions()
+        then(suspiciousRequestBlockService).should().isSuspiciousRequest("GET", "/.env")
+        then(suspiciousRequestBlockService).shouldHaveNoMoreInteractions()
     }
 }

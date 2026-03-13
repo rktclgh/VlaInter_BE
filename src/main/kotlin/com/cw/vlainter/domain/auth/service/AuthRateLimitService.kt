@@ -15,6 +15,7 @@ class AuthRateLimitService(
             reliableClientIp = reliableClientIp,
             key = "auth:login:ip:${AuthLogSanitizer.hash(clientIp)}",
             limit = 20,
+            unreliableLimit = 120,
             window = Duration.ofMinutes(1),
             message = "로그인 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요."
         )
@@ -31,6 +32,7 @@ class AuthRateLimitService(
             reliableClientIp = reliableClientIp,
             key = "auth:signup:ip:${AuthLogSanitizer.hash(clientIp)}",
             limit = 8,
+            unreliableLimit = 40,
             window = Duration.ofMinutes(10),
             message = "회원가입 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요."
         )
@@ -47,6 +49,7 @@ class AuthRateLimitService(
             reliableClientIp = reliableClientIp,
             key = "auth:kakao:ip:${AuthLogSanitizer.hash(clientIp)}",
             limit = 20,
+            unreliableLimit = 60,
             window = Duration.ofMinutes(1),
             message = "카카오 로그인 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요."
         )
@@ -63,10 +66,15 @@ class AuthRateLimitService(
         reliableClientIp: Boolean,
         key: String,
         limit: Long,
+        unreliableLimit: Long,
         window: Duration,
         message: String
     ) {
-        if (!reliableClientIp) return
-        enforceLimit(key, limit, window, message)
+        if (reliableClientIp) {
+            enforceLimit(key, limit, window, message)
+            return
+        }
+
+        enforceLimit("$key:unreliable", unreliableLimit, window, message)
     }
 }

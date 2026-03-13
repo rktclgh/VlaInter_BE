@@ -39,6 +39,17 @@ class ClientIpResolverTests {
     }
 
     @Test
+    fun `accepts ipv4 mapped ipv6 literal from trusted proxy header`() {
+        val resolver = ClientIpResolver("10.0.0.0/8", "X-Internal-Client-IP")
+        val request = MockHttpServletRequest().apply {
+            remoteAddr = "10.0.3.12"
+            addHeader("X-Internal-Client-IP", "::ffff:203.0.113.7")
+        }
+
+        assertEquals("::ffff:203.0.113.7", resolver.resolve(request))
+    }
+
+    @Test
     fun `falls back to remote address when trusted proxy header is absent`() {
         val resolver = ClientIpResolver("192.168.0.0/16", "X-Internal-Client-IP")
         val request = MockHttpServletRequest().apply {

@@ -26,9 +26,19 @@ class SuspiciousRequestBlockingFilter(
     ) {
         val requestMethod = request.method
         val requestUri = request.requestURI
+        val suspiciousRequest = suspiciousRequestBlockService.isSuspiciousRequest(requestMethod, requestUri)
         val resolution = clientIpResolver.resolveDetail(request)
         val clientIp = resolution.clientIp
         if (!resolution.isReliableForSecurity) {
+            if (suspiciousRequest) {
+                auditLogger.warn(
+                    "Skipping suspicious request blocking due to unresolved client IP source={} ipHash={} method={} path={}",
+                    resolution.source,
+                    SensitiveValueSanitizer.hash(clientIp),
+                    requestMethod,
+                    requestUri
+                )
+            }
             filterChain.doFilter(request, response)
             return
         }
@@ -44,7 +54,7 @@ class SuspiciousRequestBlockingFilter(
             return
         }
 
-        if (!suspiciousRequestBlockService.isSuspiciousRequest(requestMethod, requestUri)) {
+        if (!suspiciousRequest) {
             filterChain.doFilter(request, response)
             return
         }
