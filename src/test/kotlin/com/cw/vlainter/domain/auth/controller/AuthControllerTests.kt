@@ -121,7 +121,7 @@ class AuthControllerTests {
         assertTrue(setCookies.any { it.startsWith("vlainter_rt=refresh-token") })
 
         val successOrder = inOrder(authRateLimitService, authService)
-        successOrder.verify(authRateLimitService).checkLoginAttempt(request.email, "127.0.0.1")
+        successOrder.verify(authRateLimitService).checkLoginAttempt(request.email, "127.0.0.1", true)
         successOrder.verify(authService).login(request)
         then(authCookieManager).should().createAccessTokenCookie("access-token")
         then(authCookieManager).should().createRefreshTokenCookie("refresh-token")
@@ -161,7 +161,7 @@ class AuthControllerTests {
             .andExpect(status().isUnauthorized)
 
         val failureOrder = inOrder(authRateLimitService, authService)
-        failureOrder.verify(authRateLimitService).checkLoginAttempt(request.email, "127.0.0.1")
+        failureOrder.verify(authRateLimitService).checkLoginAttempt(request.email, "127.0.0.1", true)
         failureOrder.verify(authService).login(request)
         verifyNoInteractions(authCookieManager, authAccessAuditService)
     }

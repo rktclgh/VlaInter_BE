@@ -10,8 +10,9 @@ import java.time.Duration
 class AuthRateLimitService(
     private val redisWindowCounterService: RedisWindowCounterService
 ) {
-    fun checkLoginAttempt(email: String, clientIp: String) {
-        enforceLimit(
+    fun checkLoginAttempt(email: String, clientIp: String, reliableClientIp: Boolean = true) {
+        enforceIpLimitIfReliable(
+            reliableClientIp = reliableClientIp,
             key = "auth:login:ip:${AuthLogSanitizer.hash(clientIp)}",
             limit = 20,
             window = Duration.ofMinutes(1),
@@ -25,8 +26,9 @@ class AuthRateLimitService(
         )
     }
 
-    fun checkSignupAttempt(email: String, clientIp: String) {
-        enforceLimit(
+    fun checkSignupAttempt(email: String, clientIp: String, reliableClientIp: Boolean = true) {
+        enforceIpLimitIfReliable(
+            reliableClientIp = reliableClientIp,
             key = "auth:signup:ip:${AuthLogSanitizer.hash(clientIp)}",
             limit = 8,
             window = Duration.ofMinutes(10),
@@ -40,8 +42,9 @@ class AuthRateLimitService(
         )
     }
 
-    fun checkKakaoLoginAttempt(clientIp: String) {
-        enforceLimit(
+    fun checkKakaoLoginAttempt(clientIp: String, reliableClientIp: Boolean = true) {
+        enforceIpLimitIfReliable(
+            reliableClientIp = reliableClientIp,
             key = "auth:kakao:ip:${AuthLogSanitizer.hash(clientIp)}",
             limit = 20,
             window = Duration.ofMinutes(1),
@@ -54,5 +57,16 @@ class AuthRateLimitService(
         if (count > limit) {
             throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, message)
         }
+    }
+
+    private fun enforceIpLimitIfReliable(
+        reliableClientIp: Boolean,
+        key: String,
+        limit: Long,
+        window: Duration,
+        message: String
+    ) {
+        if (!reliableClientIp) return
+        enforceLimit(key, limit, window, message)
     }
 }

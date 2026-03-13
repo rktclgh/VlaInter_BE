@@ -31,7 +31,9 @@ class SuspiciousRequestBlockingFilterTests {
         val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
         val request = MockHttpServletRequest("GET", "/.env").apply { remoteAddr = "127.0.0.1" }
         val response = MockHttpServletResponse()
-        given(clientIpResolver.resolve(request)).willReturn("127.0.0.1")
+        given(clientIpResolver.resolveDetail(request)).willReturn(
+            ClientIpResolver.Resolution("127.0.0.1", ClientIpResolver.Source.DIRECT_REMOTE_ADDR, trustedProxy = false)
+        )
         given(suspiciousRequestBlockService.isBlocked("127.0.0.1")).willReturn(true)
 
         filter.doFilter(request, response, filterChain)
@@ -47,7 +49,9 @@ class SuspiciousRequestBlockingFilterTests {
         val request = MockHttpServletRequest("GET", "/.env").apply { remoteAddr = "127.0.0.1" }
         val response = MockHttpServletResponse()
         given(suspiciousRequestBlockService.isSuspiciousRequest("GET", "/.env")).willReturn(true)
-        given(clientIpResolver.resolve(request)).willReturn("127.0.0.1")
+        given(clientIpResolver.resolveDetail(request)).willReturn(
+            ClientIpResolver.Resolution("127.0.0.1", ClientIpResolver.Source.DIRECT_REMOTE_ADDR, trustedProxy = false)
+        )
         given(suspiciousRequestBlockService.isBlocked("127.0.0.1")).willReturn(false)
         given(suspiciousRequestBlockService.recordSuspiciousRequest("127.0.0.1", "GET", "/.env")).willReturn(true)
 
@@ -62,14 +66,16 @@ class SuspiciousRequestBlockingFilterTests {
         val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
         val request = MockHttpServletRequest("GET", "/api/interview/categories").apply { remoteAddr = "127.0.0.1" }
         val response = MockHttpServletResponse()
-        given(clientIpResolver.resolve(request)).willReturn("127.0.0.1")
+        given(clientIpResolver.resolveDetail(request)).willReturn(
+            ClientIpResolver.Resolution("127.0.0.1", ClientIpResolver.Source.DIRECT_REMOTE_ADDR, trustedProxy = false)
+        )
         given(suspiciousRequestBlockService.isBlocked("127.0.0.1")).willReturn(false)
         given(suspiciousRequestBlockService.isSuspiciousRequest("GET", "/api/interview/categories")).willReturn(false)
 
         filter.doFilter(request, response, filterChain)
 
         then(filterChain).should().doFilter(request, response)
-        then(clientIpResolver).should().resolve(request)
+        then(clientIpResolver).should().resolveDetail(request)
         then(suspiciousRequestBlockService).should().isBlocked("127.0.0.1")
         then(suspiciousRequestBlockService).should().isSuspiciousRequest("GET", "/api/interview/categories")
         then(suspiciousRequestBlockService).shouldHaveNoMoreInteractions()
@@ -80,12 +86,29 @@ class SuspiciousRequestBlockingFilterTests {
         val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
         val request = MockHttpServletRequest("GET", "/api/interview/categories").apply { remoteAddr = "127.0.0.1" }
         val response = MockHttpServletResponse()
-        given(clientIpResolver.resolve(request)).willReturn("127.0.0.1")
+        given(clientIpResolver.resolveDetail(request)).willReturn(
+            ClientIpResolver.Resolution("127.0.0.1", ClientIpResolver.Source.DIRECT_REMOTE_ADDR, trustedProxy = false)
+        )
         given(suspiciousRequestBlockService.isBlocked("127.0.0.1")).willReturn(true)
 
         filter.doFilter(request, response, filterChain)
 
         assertEquals(429, response.status)
         then(filterChain).shouldHaveNoInteractions()
+    }
+
+    @Test
+    fun `skips block decisions when trusted proxy client ip is unresolved`() {
+        val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
+        val request = MockHttpServletRequest("GET", "/.env").apply { remoteAddr = "172.18.0.5" }
+        val response = MockHttpServletResponse()
+        given(clientIpResolver.resolveDetail(request)).willReturn(
+            ClientIpResolver.Resolution("172.18.0.5", ClientIpResolver.Source.TRUSTED_PROXY_FALLBACK, trustedProxy = true)
+        )
+
+        filter.doFilter(request, response, filterChain)
+
+        then(filterChain).should().doFilter(request, response)
+        then(suspiciousRequestBlockService).shouldHaveNoInteractions()
     }
 }

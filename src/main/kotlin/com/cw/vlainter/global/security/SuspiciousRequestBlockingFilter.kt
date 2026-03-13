@@ -26,7 +26,13 @@ class SuspiciousRequestBlockingFilter(
     ) {
         val requestMethod = request.method
         val requestUri = request.requestURI
-        val clientIp = clientIpResolver.resolve(request)
+        val resolution = clientIpResolver.resolveDetail(request)
+        val clientIp = resolution.clientIp
+        if (!resolution.isReliableForSecurity) {
+            filterChain.doFilter(request, response)
+            return
+        }
+
         if (suspiciousRequestBlockService.isBlocked(clientIp)) {
             writeBlockedResponse(response, requestUri)
             auditLogger.warn(

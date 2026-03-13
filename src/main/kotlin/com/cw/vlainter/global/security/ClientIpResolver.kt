@@ -17,13 +17,23 @@ class ClientIpResolver(
         .split(",")
         .mapNotNull { parseCidr(it.trim()) }
 
-    fun resolve(request: HttpServletRequest): String {
-        val remoteAddr = request.remoteAddr?.trim().orEmpty()
-        if (remoteAddr.isBlank()) return "unknown"
-        if (!isTrustedProxy(remoteAddr)) return remoteAddr
+    fun resolve(request: HttpServletRequest): String = resolveDetail(request).clientIp
 
-        return extractHeaderIp(request, clientIpHeaderName)
-            ?: remoteAddr
+    fun resolveDetail(request: HttpServletRequest): Resolution {
+        val remoteAddr = request.remoteAddr?.trim().orEmpty()
+        if (remoteAddr.isBlank()) {
+            return Resolution("unknown", Source.UNKNOWN, trustedProxy = false)
+        }
+        if (!isTrustedProxy(remoteAddr)) {
+            return Resolution(remoteAddr, Source.DIRECT_REMOTE_ADDR, trustedProxy = false)
+        }
+
+        val headerIp = extractHeaderIp(request, clientIpHeaderName)
+        if (headerIp != null) {
+            return Resolution(headerIp, Source.TRUSTED_PROXY_HEADER, trustedProxy = true)
+        }
+
+        return Resolution(remoteAddr, Source.TRUSTED_PROXY_FALLBACK, trustedProxy = true)
     }
 
     private fun extractHeaderIp(request: HttpServletRequest, headerName: String): String? {
@@ -41,7 +51,33 @@ class ClientIpResolver(
     private fun isParsableIp(address: String): Boolean = parseInetAddress(address) != null
 
     private fun parseInetAddress(value: String): InetAddress? {
+        if (!looksLikeIpLiteral(value)) return null
         return runCatching { InetAddress.getByName(value) }.getOrNull()
+    }
+
+    private fun looksLikeIpLiteral(value: String): Boolean {
+        val trimmed = value.trim()
+        if (trimmed.isBlank()) return false
+        return looksLikeIpv4Literal(trimmed) || looksLikeIpv6Literal(trimmed)
+    }
+
+    private fun looksLikeIpv4Literal(value: String): Boolean {
+        val octets = value.split(".")
+        if (octets.size != 4) return false
+        return octets.all { octet ->
+            octet.isNotBlank() &&
+                octet.all(Char::isDigit) &&
+                octet.toIntOrNull() in 0..255
+        }
+    }
+
+    private fun looksLikeIpv6Literal(value: String): Boolean {
+        if (!value.contains(':')) return false
+        return value.all { char ->
+            char.isDigit() ||
+                char.lowercaseChar() in 'a'..'f' ||
+                char == ':'
+        }
     }
 
     private fun parseCidr(cidr: String): IpNetwork? {
@@ -72,5 +108,21 @@ class ClientIpResolver(
             val addressValue = BigInteger(1, addressBytes).shiftRight(shift)
             return networkValue == addressValue
         }
+    }
+
+    data class Resolution(
+        val clientIp: String,
+        val source: Source,
+        val trustedProxy: Boolean
+    ) {
+        val isReliableForSecurity: Boolean
+            get() = source == Source.DIRECT_REMOTE_ADDR || source == Source.TRUSTED_PROXY_HEADER
+    }
+
+    enum class Source {
+        DIRECT_REMOTE_ADDR,
+        TRUSTED_PROXY_HEADER,
+        TRUSTED_PROXY_FALLBACK,
+        UNKNOWN
     }
 }

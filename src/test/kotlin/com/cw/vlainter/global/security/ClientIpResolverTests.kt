@@ -49,6 +49,28 @@ class ClientIpResolverTests {
     }
 
     @Test
+    fun `falls back to remote address when trusted proxy header is empty`() {
+        val resolver = ClientIpResolver("192.168.0.0/16", "X-Internal-Client-IP")
+        val request = MockHttpServletRequest().apply {
+            remoteAddr = "192.168.1.20"
+            addHeader("X-Internal-Client-IP", "")
+        }
+
+        assertEquals("192.168.1.20", resolver.resolve(request))
+    }
+
+    @Test
+    fun `falls back to remote address when trusted proxy header contains malformed ip`() {
+        val resolver = ClientIpResolver("192.168.0.0/16", "X-Internal-Client-IP")
+        val request = MockHttpServletRequest().apply {
+            remoteAddr = "192.168.1.20"
+            addHeader("X-Internal-Client-IP", "not-an-ip")
+        }
+
+        assertEquals("192.168.1.20", resolver.resolve(request))
+    }
+
+    @Test
     fun `ignores spoofed headers from untrusted proxy`() {
         val resolver = ClientIpResolver("10.0.0.0/8", "X-Internal-Client-IP")
         val request = MockHttpServletRequest().apply {

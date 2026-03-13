@@ -31,6 +31,14 @@ class AuthRateLimitServiceTests {
     }
 
     @Test
+    fun `login attempt skips ip limit when client ip is not reliable`() {
+        doReturn(1L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:login:email:${AuthLogSanitizer.hash("user@vlainter.com")}", Duration.ofMinutes(1))
+
+        service().checkLoginAttempt("user@vlainter.com", "127.0.0.1", reliableClientIp = false)
+    }
+
+    @Test
     fun `login attempt over email limit returns 429`() {
         doReturn(2L).`when`(redisWindowCounterService)
             .incrementWithWindow("auth:login:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(1))
@@ -67,6 +75,14 @@ class AuthRateLimitServiceTests {
     }
 
     @Test
+    fun `signup attempt skips ip limit when client ip is not reliable`() {
+        doReturn(1L).`when`(redisWindowCounterService)
+            .incrementWithWindow("auth:signup:email:${AuthLogSanitizer.hash("user@vlainter.com")}", Duration.ofMinutes(10))
+
+        service().checkSignupAttempt("user@vlainter.com", "127.0.0.1", reliableClientIp = false)
+    }
+
+    @Test
     fun `signup attempt over ip limit returns 429`() {
         doReturn(9L).`when`(redisWindowCounterService)
             .incrementWithWindow("auth:signup:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(10))
@@ -98,6 +114,11 @@ class AuthRateLimitServiceTests {
             .incrementWithWindow("auth:kakao:ip:${AuthLogSanitizer.hash("127.0.0.1")}", Duration.ofMinutes(1))
 
         service().checkKakaoLoginAttempt("127.0.0.1")
+    }
+
+    @Test
+    fun `kakao login attempt skips ip limit when client ip is not reliable`() {
+        service().checkKakaoLoginAttempt("127.0.0.1", reliableClientIp = false)
     }
 
     @Test
