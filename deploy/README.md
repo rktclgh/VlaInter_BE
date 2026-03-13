@@ -22,3 +22,6 @@
 - 기존 단일 컨테이너 `vlainter-app` 구조에서 처음 넘어올 때는 `proxy`가 `8080`을 잡기 위해 레거시 컨테이너를 정리한다.
 - 이 첫 전환 때만 아주 짧은 포트 바인딩 공백이 생길 수 있다.
 - `app-blue`, `app-green`은 `restart: unless-stopped`로 유지해 비활성 색상이 재부팅 후 자동 기동되지 않도록 한다.
+- `proxy`는 `127.0.0.1:8080`에만 바인딩해 host nginx를 우회한 직접 접근을 막는다.
+- 운영 배포에서는 `TRUSTED_PROXY_CIDRS`를 반드시 설정하고, 앱은 proxy가 주입하는 `X-Internal-Client-IP`만 클라이언트 IP로 신뢰한다.
+- host nginx는 Cloudflare real IP를 복원한 뒤 backend proxy로 넘길 때 `proxy_set_header X-Internal-Client-IP $remote_addr;`를 명시해야 한다.
