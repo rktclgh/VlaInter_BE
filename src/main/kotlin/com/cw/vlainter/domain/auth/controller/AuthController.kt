@@ -60,8 +60,9 @@ class AuthController(
         servletRequest: HttpServletRequest
     ): ResponseEntity<Map<String, Any>> {
         val email = request.email.trim().lowercase()
-        val clientIp = clientIpResolver.resolve(servletRequest)
-        authRateLimitService.checkSignupAttempt(email, clientIp)
+        val clientIpResolution = clientIpResolver.resolveDetail(servletRequest)
+        val clientIp = clientIpResolution.clientIp
+        authRateLimitService.checkSignupAttempt(email, clientIp, clientIpResolution.isReliableForSecurity)
         logger.info(
             "Auth signup attempt emailHash={} nameLength={} passwordLength={} ipHash={}",
             AuthLogSanitizer.hash(email),
@@ -127,8 +128,9 @@ class AuthController(
         servletRequest: HttpServletRequest
     ): ResponseEntity<LoginResponse> {
         val email = request.email.trim().lowercase()
-        val clientIp = clientIpResolver.resolve(servletRequest)
-        authRateLimitService.checkLoginAttempt(email, clientIp)
+        val clientIpResolution = clientIpResolver.resolveDetail(servletRequest)
+        val clientIp = clientIpResolution.clientIp
+        authRateLimitService.checkLoginAttempt(email, clientIp, clientIpResolution.isReliableForSecurity)
         logger.info(
             "Auth login attempt emailHash={} hasRedirectUri={} passwordLength={} ipHash={}",
             AuthLogSanitizer.hash(email),
@@ -176,8 +178,9 @@ class AuthController(
         response: HttpServletResponse,
         servletRequest: HttpServletRequest
     ): ResponseEntity<LoginResponse> {
-        val clientIp = clientIpResolver.resolve(servletRequest)
-        authRateLimitService.checkKakaoLoginAttempt(clientIp)
+        val clientIpResolution = clientIpResolver.resolveDetail(servletRequest)
+        val clientIp = clientIpResolution.clientIp
+        authRateLimitService.checkKakaoLoginAttempt(clientIp, clientIpResolution.isReliableForSecurity)
         logger.info(
             "Auth kakao login attempt hasRedirectUri={} hasClientId={} ipHash={}",
             !request.redirectUri.isNullOrBlank(),
