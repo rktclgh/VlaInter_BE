@@ -65,6 +65,7 @@ class SecurityConfig(
                 var registry = it.requestMatchers(*PUBLIC_API_PATHS).permitAll()
                 registry = registry.requestMatchers("/actuator/health").permitAll()
                 registry = registry.requestMatchers(HttpMethod.GET, "/api/site/patch-notes").permitAll()
+                registry = registry.requestMatchers(HttpMethod.GET, "/api/site/settings").permitAll()
                 if (docsEnabled) {
                     registry = registry.requestMatchers(*PUBLIC_DOCS_PATHS).permitAll()
                 }

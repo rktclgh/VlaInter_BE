@@ -22,13 +22,17 @@ data class AdminPatchNoteResponse(
 data class CreatePatchNoteRequest(
     val title: String,
     val body: String,
-    val sortOrder: Int = 0,
+    val sortOrder: Int? = null,
     val isPublished: Boolean = true
 )
 
 data class UpdatePatchNoteRequest(
     val title: String,
     val body: String,
-    val sortOrder: Int = 0,
+    val sortOrder: Int? = null,
     val isPublished: Boolean = true
+)
+
+data class ReorderPatchNotesRequest(
+    val patchNoteIds: List<Long>
 )

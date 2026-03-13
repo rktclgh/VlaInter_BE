@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.site.controller
 
 import com.cw.vlainter.domain.site.dto.AdminPatchNoteResponse
 import com.cw.vlainter.domain.site.dto.CreatePatchNoteRequest
+import com.cw.vlainter.domain.site.dto.ReorderPatchNotesRequest
 import com.cw.vlainter.domain.site.dto.UpdatePatchNoteRequest
 import com.cw.vlainter.domain.site.service.PatchNoteService
 import com.cw.vlainter.global.security.AuthPrincipal
@@ -43,6 +44,14 @@ class AdminPatchNoteController(
         @RequestBody request: UpdatePatchNoteRequest
     ): ResponseEntity<AdminPatchNoteResponse> {
         return ResponseEntity.ok(patchNoteService.updatePatchNote(principal, patchNoteId, request))
+    }
+
+    @PatchMapping("/reorder")
+    fun reorderPatchNotes(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @RequestBody request: ReorderPatchNotesRequest
+    ): ResponseEntity<List<AdminPatchNoteResponse>> {
+        return ResponseEntity.ok(patchNoteService.reorderPatchNotes(principal, request))
     }
 
     @DeleteMapping("/{patchNoteId}")
