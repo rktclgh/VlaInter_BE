@@ -55,7 +55,7 @@ class AuthControllerTests {
     private lateinit var authRateLimitService: AuthRateLimitService
 
     private lateinit var mockMvc: MockMvc
-    private val clientIpResolver = ClientIpResolver("127.0.0.1/32,::1/128")
+    private val clientIpResolver = ClientIpResolver("127.0.0.1/32,::1/128", "X-Internal-Client-IP")
     private val directExecutor = Executor { runnable -> runnable.run() }
 
     @BeforeEach
