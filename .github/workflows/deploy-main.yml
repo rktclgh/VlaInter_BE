@@ -148,4 +148,12 @@ jobs:
 
           chmod +x deploy/scripts/deploy-bluegreen.sh
           DEPLOY_DIR="$DEPLOY_DIR" IMAGE_TAG="$IMAGE_TAG" DOCKERHUB_USERNAME="$DOCKERHUB_USERNAME" DOCKERHUB_TOKEN="$DOCKERHUB_TOKEN" ./deploy/scripts/deploy-bluegreen.sh
+
+          running_apps="$(docker ps --format '{{.Names}}' | grep -c '^vlainter-app-' || true)"
+          running_apps="$(printf '%s' "$running_apps" | tr -d ' ')"
+          if [ "$running_apps" -ne 1 ]; then
+            echo "[ERROR] 활성 앱 컨테이너가 1개가 아닙니다. running_apps=${running_apps}"
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+            exit 1
+          fi
           EOF
