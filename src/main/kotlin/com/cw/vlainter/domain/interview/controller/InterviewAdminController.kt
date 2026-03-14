@@ -1,13 +1,16 @@
 package com.cw.vlainter.domain.interview.controller
 
 import com.cw.vlainter.domain.interview.dto.AdminQuestionSetSummaryResponse
+import com.cw.vlainter.domain.interview.dto.AdminInterviewSettingsResponse
 import com.cw.vlainter.domain.interview.dto.AdminCategoryResponse
 import com.cw.vlainter.domain.interview.dto.CreateCategoryRequest
 import com.cw.vlainter.domain.interview.dto.MergeCategoryRequest
 import com.cw.vlainter.domain.interview.dto.MoveCategoryRequest
 import com.cw.vlainter.domain.interview.dto.QuestionSetSummaryResponse
+import com.cw.vlainter.domain.interview.dto.UpdateAdminInterviewSettingsRequest
 import com.cw.vlainter.domain.interview.dto.UpdateCategoryRequest
 import com.cw.vlainter.domain.interview.dto.UpdateQuestionSetRequest
+import com.cw.vlainter.domain.interview.service.AdminInterviewSettingsService
 import com.cw.vlainter.domain.interview.service.CategoryAdminService
 import com.cw.vlainter.domain.interview.service.QuestionSetService
 import com.cw.vlainter.global.security.AuthPrincipal
@@ -28,8 +31,24 @@ import org.springframework.web.bind.annotation.RequestParam
 @RequestMapping("/api/admin/interview")
 class InterviewAdminController(
     private val questionSetService: QuestionSetService,
-    private val categoryAdminService: CategoryAdminService
+    private val categoryAdminService: CategoryAdminService,
+    private val adminInterviewSettingsService: AdminInterviewSettingsService
 ) {
+    @GetMapping("/settings")
+    fun getSettings(
+        @AuthenticationPrincipal principal: AuthPrincipal
+    ): ResponseEntity<AdminInterviewSettingsResponse> {
+        return ResponseEntity.ok(adminInterviewSettingsService.getSettings(principal))
+    }
+
+    @PatchMapping("/settings")
+    fun updateSettings(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @Valid @RequestBody request: UpdateAdminInterviewSettingsRequest
+    ): ResponseEntity<AdminInterviewSettingsResponse> {
+        return ResponseEntity.ok(adminInterviewSettingsService.updateSettings(principal, request))
+    }
+
     @GetMapping("/sets")
     fun getAllSets(
         @AuthenticationPrincipal principal: AuthPrincipal,
