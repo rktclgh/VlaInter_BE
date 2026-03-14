@@ -43,13 +43,16 @@ class SiteSettingsService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "버전 라벨을 입력해 주세요.")
         }
         val saved = adminInterviewSettingRepository.findById(LANDING_VERSION_LABEL_KEY)
+            .map {
+                it.settingValue = normalizedLabel
+                it
+            }
             .orElseGet {
                 AdminInterviewSetting(
                     settingKey = LANDING_VERSION_LABEL_KEY,
                     settingValue = normalizedLabel
                 )
             }
-        saved.settingValue = normalizedLabel
         val updated = adminInterviewSettingRepository.save(saved)
         return AdminSiteSettingsResponse(
             landingVersionLabel = updated.settingValue,
@@ -71,6 +74,6 @@ class SiteSettingsService(
 
     companion object {
         const val LANDING_VERSION_LABEL_KEY = "landing_version_label"
-        const val DEFAULT_LANDING_VERSION_LABEL = "v0.4"
+        const val DEFAULT_LANDING_VERSION_LABEL = "v0.5"
     }
 }

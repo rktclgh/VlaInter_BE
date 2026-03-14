@@ -7,6 +7,7 @@ import com.cw.vlainter.domain.interview.entity.TechQuestionReusePolicy
 import com.cw.vlainter.domain.interview.repository.AdminInterviewSettingRepository
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.global.security.AuthPrincipal
+import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -16,6 +17,8 @@ import org.springframework.web.server.ResponseStatusException
 class AdminInterviewSettingsService(
     private val adminInterviewSettingRepository: AdminInterviewSettingRepository
 ) {
+    private val logger = LoggerFactory.getLogger(javaClass)
+
     @Transactional(readOnly = true)
     fun getSettings(principal: AuthPrincipal): AdminInterviewSettingsResponse {
         ensureAdmin(principal)
@@ -33,13 +36,16 @@ class AdminInterviewSettingsService(
     ): AdminInterviewSettingsResponse {
         ensureAdmin(principal)
         val saved = adminInterviewSettingRepository.findById(TECH_QUESTION_REUSE_POLICY_KEY)
+            .map {
+                it.settingValue = request.techQuestionReusePolicy.name
+                it
+            }
             .orElseGet {
                 AdminInterviewSetting(
                     settingKey = TECH_QUESTION_REUSE_POLICY_KEY,
                     settingValue = request.techQuestionReusePolicy.name
                 )
             }
-        saved.settingValue = request.techQuestionReusePolicy.name
         val updated = adminInterviewSettingRepository.save(saved)
         return AdminInterviewSettingsResponse(
             techQuestionReusePolicy = updated.toTechQuestionReusePolicy(),
@@ -55,7 +61,15 @@ class AdminInterviewSettingsService(
 
     private fun AdminInterviewSetting.toTechQuestionReusePolicy(): TechQuestionReusePolicy {
         return runCatching { TechQuestionReusePolicy.valueOf(settingValue) }
-            .getOrDefault(DEFAULT_TECH_QUESTION_REUSE_POLICY)
+            .getOrElse { ex ->
+                logger.warn(
+                    "Unknown tech question reuse policy settingValue={}, fallback={}",
+                    settingValue,
+                    DEFAULT_TECH_QUESTION_REUSE_POLICY,
+                    ex
+                )
+                DEFAULT_TECH_QUESTION_REUSE_POLICY
+            }
     }
 
     private fun ensureAdmin(principal: AuthPrincipal) {

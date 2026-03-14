@@ -4,6 +4,7 @@ import com.cw.vlainter.domain.site.dto.AdminSiteSettingsResponse
 import com.cw.vlainter.domain.site.dto.UpdateAdminSiteSettingsRequest
 import com.cw.vlainter.domain.site.service.SiteSettingsService
 import com.cw.vlainter.global.security.AuthPrincipal
+import jakarta.validation.Valid
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.GetMapping
@@ -27,7 +28,7 @@ class AdminSiteSettingsController(
     @PatchMapping
     fun updateAdminSettings(
         @AuthenticationPrincipal principal: AuthPrincipal,
-        @RequestBody request: UpdateAdminSiteSettingsRequest
+        @Valid @RequestBody request: UpdateAdminSiteSettingsRequest
     ): ResponseEntity<AdminSiteSettingsResponse> {
         return ResponseEntity.ok(siteSettingsService.updateAdminSettings(principal, request))
     }

@@ -69,9 +69,12 @@ class PatchNoteService(
     @Transactional
     fun reorderPatchNotes(principal: AuthPrincipal, request: ReorderPatchNotesRequest): List<AdminPatchNoteResponse> {
         ensureAdmin(principal)
-        val requestedIds = request.patchNoteIds.distinct()
+        val requestedIds = request.patchNoteIds
         if (requestedIds.isEmpty()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "정렬할 패치노트가 없습니다.")
+        }
+        if (requestedIds.size != requestedIds.toSet().size) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "중복된 패치노트 ID가 있습니다.")
         }
         val allPatchNotes = patchNoteRepository.findAllByOrderBySortOrderAscCreatedAtDesc()
         val allIds = allPatchNotes.map { it.id }

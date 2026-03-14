@@ -6,6 +6,7 @@ import com.cw.vlainter.domain.site.dto.ReorderPatchNotesRequest
 import com.cw.vlainter.domain.site.dto.UpdatePatchNoteRequest
 import com.cw.vlainter.domain.site.service.PatchNoteService
 import com.cw.vlainter.global.security.AuthPrincipal
+import jakarta.validation.Valid
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.DeleteMapping
@@ -32,7 +33,7 @@ class AdminPatchNoteController(
     @PostMapping
     fun createPatchNote(
         @AuthenticationPrincipal principal: AuthPrincipal,
-        @RequestBody request: CreatePatchNoteRequest
+        @Valid @RequestBody request: CreatePatchNoteRequest
     ): ResponseEntity<AdminPatchNoteResponse> {
         return ResponseEntity.ok(patchNoteService.createPatchNote(principal, request))
     }
@@ -41,7 +42,7 @@ class AdminPatchNoteController(
     fun updatePatchNote(
         @AuthenticationPrincipal principal: AuthPrincipal,
         @PathVariable patchNoteId: Long,
-        @RequestBody request: UpdatePatchNoteRequest
+        @Valid @RequestBody request: UpdatePatchNoteRequest
     ): ResponseEntity<AdminPatchNoteResponse> {
         return ResponseEntity.ok(patchNoteService.updatePatchNote(principal, patchNoteId, request))
     }
@@ -49,7 +50,7 @@ class AdminPatchNoteController(
     @PatchMapping("/reorder")
     fun reorderPatchNotes(
         @AuthenticationPrincipal principal: AuthPrincipal,
-        @RequestBody request: ReorderPatchNotesRequest
+        @Valid @RequestBody request: ReorderPatchNotesRequest
     ): ResponseEntity<List<AdminPatchNoteResponse>> {
         return ResponseEntity.ok(patchNoteService.reorderPatchNotes(principal, request))
     }

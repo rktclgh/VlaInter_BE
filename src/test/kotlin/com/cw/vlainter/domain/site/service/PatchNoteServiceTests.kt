@@ -117,6 +117,19 @@ class PatchNoteServiceTests {
         then(patchNoteRepository).should().delete(existing)
     }
 
+    @Test
+    fun `패치노트 reorder 요청에 중복 ID가 있으면 거부한다`() {
+        val exception = assertThrows(ResponseStatusException::class.java) {
+            service().reorderPatchNotes(
+                adminPrincipal(),
+                com.cw.vlainter.domain.site.dto.ReorderPatchNotesRequest(listOf(1L, 1L, 2L))
+            )
+        }
+
+        assertThat(exception.statusCode.value()).isEqualTo(400)
+        assertThat(exception.reason).isEqualTo("중복된 패치노트 ID가 있습니다.")
+    }
+
     private fun service(): PatchNoteService = PatchNoteService(patchNoteRepository)
 
     @Suppress("UNCHECKED_CAST")

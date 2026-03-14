@@ -145,13 +145,7 @@ class InterviewPracticeServiceTests {
             request.difficulty,
             request.sourceTag
         )
-        then(interviewAiOrchestrator).should(never()).generateTechQuestions(
-            "백엔드개발자",
-            "Spring",
-            QuestionDifficulty.MEDIUM,
-            5,
-            InterviewLanguage.KO
-        )
+        then(interviewAiOrchestrator).shouldHaveNoInteractions()
     }
 
     @Test
@@ -290,6 +284,73 @@ class InterviewPracticeServiceTests {
             5,
             InterviewLanguage.KO
         )
+    }
+
+    @Test
+    fun `무조건 생성 정책이어도 기술 선택값이 없으면 기존 후보를 재사용한다`() {
+        val user = createUser()
+        val category = createCategory()
+        val question = createQuestion(id = 303L, category = category, text = "기존 질문을 그대로 재사용하는 흐름을 검증합니다.")
+        val request = StartTechInterviewRequest(
+            categoryId = null,
+            jobName = null,
+            skillName = null,
+            difficulty = QuestionDifficulty.MEDIUM,
+            questionCount = 1
+        )
+
+        given(userRepository.findById(1L)).willReturn(Optional.of(user))
+        given(adminInterviewSettingsService.getTechQuestionReusePolicy()).willReturn(TechQuestionReusePolicy.ALWAYS_GENERATE)
+        given(
+            questionRepository.findCandidatesForUser(
+                user.id,
+                com.cw.vlainter.domain.interview.entity.QuestionSetStatus.ACTIVE,
+                QuestionSetVisibility.GLOBAL,
+                request.difficulty,
+                request.sourceTag
+            )
+        ).willReturn(listOf(question))
+        given(questionRepository.findByIdAndDeletedAtIsNull(question.id)).willReturn(question)
+        given(interviewSessionRepository.save(any(InterviewSession::class.java))).willAnswer { invocation ->
+            val source = invocation.getArgument<InterviewSession>(0)
+            InterviewSession(
+                id = 503L,
+                user = source.user,
+                mode = source.mode,
+                status = source.status,
+                questionSet = source.questionSet,
+                revealPolicy = source.revealPolicy,
+                configJson = source.configJson
+            )
+        }
+        given(interviewTurnRepository.save(any(InterviewTurn::class.java))).willAnswer { invocation ->
+            val source = invocation.getArgument<InterviewTurn>(0)
+            InterviewTurn(
+                id = 903L,
+                session = source.session,
+                turnNo = source.turnNo,
+                sourceTag = source.sourceTag,
+                question = source.question,
+                documentQuestion = source.documentQuestion,
+                questionTextSnapshot = source.questionTextSnapshot,
+                categorySnapshot = source.categorySnapshot,
+                jobSnapshot = source.jobSnapshot,
+                skillSnapshot = source.skillSnapshot,
+                category = source.category,
+                difficulty = source.difficulty,
+                tagsJson = source.tagsJson,
+                ragContextJson = source.ragContextJson
+            )
+        }
+        given(questionSetItemRepository.existsInAiGeneratedSetByQuestionId(question.id)).willReturn(false)
+
+        val result = service().startTechInterview(
+            principal = AuthPrincipal(1L, "user@vlainter.com", "S", UserRole.USER),
+            request = request
+        )
+
+        assertThat(result.currentQuestion.questionId).isEqualTo(question.id)
+        then(interviewAiOrchestrator).shouldHaveNoInteractions()
     }
 
     private fun service() = InterviewPracticeService(

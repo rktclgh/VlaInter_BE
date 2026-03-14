@@ -574,7 +574,14 @@ class InterviewPracticeService(
         techQuestionReusePolicy: TechQuestionReusePolicy
     ): Boolean {
         if (request.setId != null) return true
+        if (!hasExplicitTechSelection(request)) return true
         return techQuestionReusePolicy == TechQuestionReusePolicy.REUSE_MATCHING
+    }
+
+    private fun hasExplicitTechSelection(request: StartTechInterviewRequest): Boolean {
+        return request.categoryId != null ||
+            !request.jobName.isNullOrBlank() ||
+            !request.skillName.isNullOrBlank()
     }
 
     private fun generateCategoryQuestions(
