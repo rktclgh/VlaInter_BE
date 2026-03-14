@@ -34,7 +34,7 @@ class PatchNoteService(
     @Transactional
     fun createPatchNote(principal: AuthPrincipal, request: CreatePatchNoteRequest): AdminPatchNoteResponse {
         ensureAdmin(principal)
-        val nextSortOrder = request.sortOrder ?: ((patchNoteRepository.findAllByOrderBySortOrderAscCreatedAtDesc().firstOrNull()?.sortOrder ?: 0) - 10)
+        val nextSortOrder = request.sortOrder ?: ((patchNoteRepository.findFirstByOrderBySortOrderAscCreatedAtDesc()?.sortOrder ?: 0) - 10)
         val saved = patchNoteRepository.save(
             PatchNote(
                 title = request.title.trim().ifBlank {
@@ -70,10 +70,11 @@ class PatchNoteService(
     fun reorderPatchNotes(principal: AuthPrincipal, request: ReorderPatchNotesRequest): List<AdminPatchNoteResponse> {
         ensureAdmin(principal)
         val requestedIds = request.patchNoteIds
+        val requestedIdSet = requestedIds.toSet()
         if (requestedIds.isEmpty()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "정렬할 패치노트가 없습니다.")
         }
-        if (requestedIds.size != requestedIds.toSet().size) {
+        if (requestedIds.size != requestedIdSet.size) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "중복된 패치노트 ID가 있습니다.")
         }
         val allPatchNotes = patchNoteRepository.findAllByOrderBySortOrderAscCreatedAtDesc()
@@ -81,7 +82,7 @@ class PatchNoteService(
         if (!allIds.containsAll(requestedIds)) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "일부 패치노트를 찾을 수 없습니다.")
         }
-        val remainingIds = allIds.filterNot { requestedIds.contains(it) }
+        val remainingIds = allIds.filterNot { requestedIdSet.contains(it) }
         val orderedIds = requestedIds + remainingIds
         val patchNoteById = allPatchNotes.associateBy { it.id }
         orderedIds.forEachIndexed { index, patchNoteId ->

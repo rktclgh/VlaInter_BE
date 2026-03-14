@@ -6,4 +6,5 @@ import org.springframework.data.jpa.repository.JpaRepository
 interface PatchNoteRepository : JpaRepository<PatchNote, Long> {
     fun findAllByIsPublishedTrueOrderBySortOrderAscCreatedAtDesc(): List<PatchNote>
     fun findAllByOrderBySortOrderAscCreatedAtDesc(): List<PatchNote>
+    fun findFirstByOrderBySortOrderAscCreatedAtDesc(): PatchNote?
 }
