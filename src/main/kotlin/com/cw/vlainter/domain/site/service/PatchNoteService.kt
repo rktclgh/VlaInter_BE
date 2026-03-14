@@ -62,7 +62,7 @@ class PatchNoteService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "패치노트 본문을 입력해 주세요.")
         }
         request.sortOrder?.let { patchNote.sortOrder = it }
-        patchNote.isPublished = request.isPublished
+        request.isPublished?.let { patchNote.isPublished = it }
         return patchNoteRepository.save(patchNote).toAdminResponse()
     }
 

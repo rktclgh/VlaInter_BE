@@ -41,7 +41,7 @@ data class UpdatePatchNoteRequest(
     @field:Size(max = 5000, message = "패치노트 본문은 5000자 이하여야 합니다.")
     val body: String,
     val sortOrder: Int? = null,
-    val isPublished: Boolean = true
+    val isPublished: Boolean? = null
 )
 
 data class ReorderPatchNotesRequest(
