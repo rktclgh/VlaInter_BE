@@ -1,8 +1,12 @@
 package com.cw.vlainter.domain.student.controller
 
 import com.cw.vlainter.domain.student.dto.CreateStudentCourseRequest
+import com.cw.vlainter.domain.student.dto.CreateStudentExamSessionRequest
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialResponse
 import com.cw.vlainter.domain.student.dto.StudentCourseResponse
+import com.cw.vlainter.domain.student.dto.StudentExamSessionDetailResponse
+import com.cw.vlainter.domain.student.dto.StudentExamSessionResponse
+import com.cw.vlainter.domain.student.dto.SubmitStudentExamAnswersRequest
 import com.cw.vlainter.domain.student.service.StudentCourseService
 import com.cw.vlainter.global.security.AuthPrincipal
 import jakarta.validation.Valid
@@ -53,5 +57,39 @@ class StudentCourseController(
         @RequestParam file: MultipartFile
     ): ResponseEntity<StudentCourseMaterialResponse> {
         return ResponseEntity.ok(studentCourseService.uploadCourseMaterial(principal, courseId, file))
+    }
+
+    @GetMapping("/{courseId}/sessions")
+    fun getCourseSessions(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable courseId: Long
+    ): ResponseEntity<List<StudentExamSessionResponse>> {
+        return ResponseEntity.ok(studentCourseService.getCourseSessions(principal, courseId))
+    }
+
+    @PostMapping("/{courseId}/sessions")
+    fun createCourseSession(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable courseId: Long,
+        @Valid @RequestBody request: CreateStudentExamSessionRequest
+    ): ResponseEntity<StudentExamSessionResponse> {
+        return ResponseEntity.ok(studentCourseService.createCourseSession(principal, courseId, request))
+    }
+
+    @GetMapping("/sessions/{sessionId}")
+    fun getSessionDetail(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable sessionId: Long
+    ): ResponseEntity<StudentExamSessionDetailResponse> {
+        return ResponseEntity.ok(studentCourseService.getSessionDetail(principal, sessionId))
+    }
+
+    @PostMapping("/sessions/{sessionId}/submit")
+    fun submitSessionAnswers(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable sessionId: Long,
+        @Valid @RequestBody request: SubmitStudentExamAnswersRequest
+    ): ResponseEntity<StudentExamSessionDetailResponse> {
+        return ResponseEntity.ok(studentCourseService.submitSessionAnswers(principal, sessionId, request))
     }
 }
