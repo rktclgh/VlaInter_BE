@@ -39,6 +39,16 @@ class User (
     @Column(nullable = false)
     var point: Long = 0,
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "service_mode", length = 20)
+    var serviceMode: UserServiceMode? = null,
+
+    @Column(name = "university_name", length = 120)
+    var universityName: String? = null,
+
+    @Column(name = "department_name", length = 120)
+    var departmentName: String? = null,
+
     @Column(name = "gemini_api_key_encrypted", length = 4096)
     var geminiApiKeyEncrypted: String? = null,
 

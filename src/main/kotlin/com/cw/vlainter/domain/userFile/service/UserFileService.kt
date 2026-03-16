@@ -53,6 +53,7 @@ class UserFileService(
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
         const val MAX_DOCUMENT_FILES_PER_TYPE = 5L
+        const val MAX_COURSE_MATERIAL_FILES = 20L
     }
 
     private val logger = LoggerFactory.getLogger(UserFileService::class.java)
@@ -63,6 +64,13 @@ class UserFileService(
         val actor = loadActiveUser(principal.userId)
         return userFileRepository.findAllByUser_IdAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id)
             .map { toResponse(it) }
+    }
+
+    @Transactional(readOnly = true)
+    fun loadOwnedFile(userId: Long, fileId: Long): UserFile {
+        loadActiveUser(userId)
+        return userFileRepository.findByIdAndUser_IdAndDeletedAtIsNull(fileId, userId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "파일 정보를 찾을 수 없습니다.")
     }
 
     @Transactional(readOnly = true)
@@ -123,10 +131,14 @@ class UserFileService(
 
         if (fileType != FileType.PROFILE_IMAGE) {
             val currentCount = userFileRepository.countByUser_IdAndFileTypeAndDeletedAtIsNull(actor.id, fileType)
-            if (currentCount >= MAX_DOCUMENT_FILES_PER_TYPE) {
+            val maxFilesPerType = when (fileType) {
+                FileType.COURSE_MATERIAL -> MAX_COURSE_MATERIAL_FILES
+                else -> MAX_DOCUMENT_FILES_PER_TYPE
+            }
+            if (currentCount >= maxFilesPerType) {
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "${fileType.koreanLabel()} 파일은 최대 ${MAX_DOCUMENT_FILES_PER_TYPE}개까지 보관할 수 있습니다."
+                    "${fileType.koreanLabel()} 파일은 최대 ${maxFilesPerType}개까지 보관할 수 있습니다."
                 )
             }
         }
@@ -222,13 +234,13 @@ class UserFileService(
         val contentType = file.contentType?.trim()?.lowercase().orEmpty()
         val extension = lowerName.substringAfterLast('.', "")
 
-        if (fileType == FileType.RESUME || fileType == FileType.INTRODUCE || fileType == FileType.PORTFOLIO) {
+        if (fileType == FileType.RESUME || fileType == FileType.INTRODUCE || fileType == FileType.PORTFOLIO || fileType == FileType.COURSE_MATERIAL) {
             val extensionValid = extension in ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS
             val contentTypeValid = contentType.isNotBlank() && contentType in ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES
             if (!extensionValid || !contentTypeValid) {
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "이력서/자기소개서/포트폴리오는 PDF, DOCX, PPTX 파일만 업로드할 수 있습니다."
+                    "문서 자료는 PDF, DOCX, PPTX 파일만 업로드할 수 있습니다."
                 )
             }
         }
@@ -275,6 +287,7 @@ class UserFileService(
             FileType.INTRODUCE -> "introduce"
             FileType.PORTFOLIO -> "portfolio"
             FileType.PROFILE_IMAGE -> "profile-image"
+            FileType.COURSE_MATERIAL -> "course-material"
         }
         return "$prefix/users/$userId/$typeSegment/${now.year}/$month/$fileName"
     }
@@ -407,6 +420,7 @@ class UserFileService(
         FileType.INTRODUCE -> "자기소개서"
         FileType.PORTFOLIO -> "포트폴리오"
         FileType.PROFILE_IMAGE -> "프로필 이미지"
+        FileType.COURSE_MATERIAL -> "과목 자료"
     }
 
     private fun FileType.isInterviewDocument(): Boolean {

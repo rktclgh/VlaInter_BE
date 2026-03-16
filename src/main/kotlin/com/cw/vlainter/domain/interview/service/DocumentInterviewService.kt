@@ -1636,6 +1636,7 @@ class DocumentInterviewService(
         FileType.INTRODUCE -> "자기소개서"
         FileType.PORTFOLIO -> "포트폴리오"
         FileType.PROFILE_IMAGE -> "프로필 이미지"
+        FileType.COURSE_MATERIAL -> "과목 자료"
     }
 
     private fun splitIntoChunks(text: String, maxChars: Int = 1200, overlapChars: Int = 200): List<String> {

@@ -9,12 +9,16 @@ import com.cw.vlainter.domain.user.dto.AdminMemberAccessSummaryResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberListResponse
 import com.cw.vlainter.domain.user.dto.AdminMemberSummaryResponse
 import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
+import com.cw.vlainter.domain.academic.service.AcademicSearchService
+import com.cw.vlainter.domain.user.dto.UpdateMyAcademicProfileRequest
 import com.cw.vlainter.domain.user.dto.UpdateGeminiApiKeyRequest
 import com.cw.vlainter.domain.user.dto.UpdateMyProfileRequest
+import com.cw.vlainter.domain.user.dto.UpdateMyServiceModeRequest
 import com.cw.vlainter.domain.user.dto.UpdateMemberByAdminRequest
 import com.cw.vlainter.domain.user.dto.UserProfileResponse
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
+import com.cw.vlainter.domain.user.entity.UserServiceMode
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
@@ -38,7 +42,8 @@ class UserService(
     private val loginSessionStore: LoginSessionStore,
     private val userGeminiApiKeyService: UserGeminiApiKeyService,
     private val authAccessAuditService: AuthAccessAuditService,
-    private val userLifecycleEmailService: UserLifecycleEmailService
+    private val userLifecycleEmailService: UserLifecycleEmailService,
+    private val academicSearchService: AcademicSearchService
 ) {
     private val passwordComplexityRegex = Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z\\d]).{8,100}$")
 
@@ -67,6 +72,67 @@ class UserService(
             applyPasswordChange(user, request.currentPassword, request.newPassword)
         }
 
+        val saved = userRepository.save(user)
+        return toProfileResponse(saved)
+    }
+
+    @Transactional
+    fun updateMyServiceMode(principal: AuthPrincipal, request: UpdateMyServiceModeRequest): UserProfileResponse {
+        val user = userRepository.findById(principal.userId)
+            .orElseThrow { unauthorizedException() }
+        ensureActiveUser(user.status)
+
+        user.serviceMode = request.serviceMode
+        val saved = userRepository.save(user)
+        return toProfileResponse(saved)
+    }
+
+    @Transactional
+    fun updateMyAcademicProfile(principal: AuthPrincipal, request: UpdateMyAcademicProfileRequest): UserProfileResponse {
+        val user = userRepository.findById(principal.userId)
+            .orElseThrow { unauthorizedException() }
+        ensureActiveUser(user.status)
+
+        val normalizedUniversity = request.universityName.normalizeAcademicText("대학교")
+        val normalizedDepartment = request.departmentName.normalizeAcademicText("학과")
+        val universityId = request.universityId
+        val departmentId = request.departmentId
+
+        if ((normalizedUniversity == null) != (normalizedDepartment == null)) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학교와 학과는 함께 입력하거나 함께 비워 주세요.")
+        }
+        if ((universityId == null) != (departmentId == null)) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학교와 학과는 검색 결과에서 함께 선택해 주세요.")
+        }
+        if (user.serviceMode == UserServiceMode.STUDENT && normalizedUniversity == null) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학생 모드에서는 대학교와 학과를 입력해 주세요.")
+        }
+        if (normalizedUniversity != null) {
+            if (universityId == null || departmentId == null) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학교와 학과는 검색 결과에서 선택해 주세요.")
+            }
+            val verifiedUniversity = academicSearchService.resolveVerifiedUniversity(
+                universityId = universityId,
+                universityName = normalizedUniversity
+            ) ?: throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "검색 결과에서 선택한 대학교만 저장할 수 있습니다."
+            )
+            val verifiedDepartment = academicSearchService.resolveVerifiedDepartment(
+                universityId = universityId,
+                departmentId = departmentId,
+                departmentName = normalizedDepartment ?: "",
+                universityName = verifiedUniversity.universityName
+            ) ?: throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "검색 결과에서 선택한 학과만 저장할 수 있습니다."
+            )
+            user.universityName = verifiedUniversity.universityName
+            user.departmentName = verifiedDepartment.departmentName
+        } else {
+            user.universityName = null
+            user.departmentName = null
+        }
         val saved = userRepository.save(user)
         return toProfileResponse(saved)
     }
@@ -404,18 +470,32 @@ class UserService(
     }
 
     private fun toProfileResponse(user: User): UserProfileResponse {
+        val normalizedUniversity = user.universityName?.trim()?.takeIf { it.isNotBlank() }
+        val normalizedDepartment = user.departmentName?.trim()?.takeIf { it.isNotBlank() }
         return UserProfileResponse(
             email = user.email,
             name = user.name,
             role = user.role,
             status = user.status,
             point = user.point,
+            serviceMode = user.serviceMode,
+            universityName = normalizedUniversity,
+            departmentName = normalizedDepartment,
+            hasAcademicProfile = normalizedUniversity != null && normalizedDepartment != null,
             hasGeminiApiKey = userGeminiApiKeyService.hasGeminiApiKey(user),
             hasProfileImage = userFileRepository.findTopByUser_IdAndFileTypeAndIsActiveTrueAndDeletedAtIsNullOrderByCreatedAtDesc(
                 user.id,
                 FileType.PROFILE_IMAGE
             ) != null
         )
+    }
+
+    private fun String?.normalizeAcademicText(fieldName: String): String? {
+        val normalized = this?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        if (normalized.length > 120) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "${fieldName}은 120자를 초과할 수 없습니다.")
+        }
+        return normalized
     }
 
     private fun toAdminMemberSummaryResponse(user: User): AdminMemberSummaryResponse {

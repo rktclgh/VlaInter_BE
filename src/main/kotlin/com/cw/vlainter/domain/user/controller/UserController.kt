@@ -1,8 +1,10 @@
 package com.cw.vlainter.domain.user.controller
 
 import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
+import com.cw.vlainter.domain.user.dto.UpdateMyAcademicProfileRequest
 import com.cw.vlainter.domain.user.dto.UpdateGeminiApiKeyRequest
 import com.cw.vlainter.domain.user.dto.UpdateMyProfileRequest
+import com.cw.vlainter.domain.user.dto.UpdateMyServiceModeRequest
 import com.cw.vlainter.domain.user.dto.UserProfileResponse
 import com.cw.vlainter.domain.user.service.UserService
 import com.cw.vlainter.global.security.AuthCookieManager
@@ -41,6 +43,22 @@ class UserController(
         @RequestBody request: UpdateMyProfileRequest
     ): ResponseEntity<UserProfileResponse> {
         return ResponseEntity.ok(userService.updateMyProfile(principal, request))
+    }
+
+    @PatchMapping("/me/service-mode")
+    fun updateMyServiceMode(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @Valid @RequestBody request: UpdateMyServiceModeRequest
+    ): ResponseEntity<UserProfileResponse> {
+        return ResponseEntity.ok(userService.updateMyServiceMode(principal, request))
+    }
+
+    @PatchMapping("/me/academic-profile")
+    fun updateMyAcademicProfile(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @Valid @RequestBody request: UpdateMyAcademicProfileRequest
+    ): ResponseEntity<UserProfileResponse> {
+        return ResponseEntity.ok(userService.updateMyAcademicProfile(principal, request))
     }
 
     @PutMapping("/me/gemini-api-key")
