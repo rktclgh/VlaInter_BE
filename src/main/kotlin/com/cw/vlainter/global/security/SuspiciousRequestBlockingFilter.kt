@@ -26,11 +26,15 @@ class SuspiciousRequestBlockingFilter(
     ) {
         val requestMethod = request.method
         val requestUri = request.requestURI
+        if (isAlwaysAllowedPublicAsset(requestUri) || isPreviewBotAllowedRequest(requestMethod, requestUri, request.getHeader("User-Agent"))) {
+            filterChain.doFilter(request, response)
+            return
+        }
         val suspiciousRequest = suspiciousRequestBlockService.isSuspiciousRequest(requestMethod, requestUri)
         val resolution = clientIpResolver.resolveDetail(request)
         val clientIp = resolution.clientIp
         if (!resolution.isReliableForSecurity) {
-            if (suspiciousRequest) {
+            if (suspiciousRequest && suspiciousRequestBlockService.shouldLogUnresolvedClientIp(clientIp, requestUri)) {
                 auditLogger.warn(
                     "Skipping suspicious request blocking due to unresolved client IP source={} ipHash={} method={} path={}",
                     resolution.source,
@@ -45,12 +49,14 @@ class SuspiciousRequestBlockingFilter(
 
         if (suspiciousRequestBlockService.isBlocked(clientIp)) {
             writeBlockedResponse(response, requestUri)
-            auditLogger.warn(
-                "Blocked request from suspicious client ipHash={} method={} path={}",
-                SensitiveValueSanitizer.hash(clientIp),
-                requestMethod,
-                requestUri
-            )
+            if (suspiciousRequestBlockService.shouldLogBlockedRequest(clientIp)) {
+                auditLogger.warn(
+                    "Blocked request from suspicious client ipHash={} method={} path={}",
+                    SensitiveValueSanitizer.hash(clientIp),
+                    requestMethod,
+                    requestUri
+                )
+            }
             return
         }
 
@@ -82,5 +88,39 @@ class SuspiciousRequestBlockingFilter(
             )
         )
         response.writer.flush()
+    }
+
+    private fun isAlwaysAllowedPublicAsset(requestUri: String): Boolean {
+        val normalized = requestUri.lowercase()
+        return normalized == "/favicon.ico" ||
+            normalized == "/favicon.png" ||
+            normalized == "/social-preview.png" ||
+            normalized == "/robots.txt" ||
+            normalized == "/manifest.webmanifest" ||
+            normalized == "/site.webmanifest" ||
+            normalized.startsWith("/apple-touch-icon")
+    }
+
+    private fun isPreviewBotAllowedRequest(method: String, requestUri: String, userAgent: String?): Boolean {
+        if (!method.equals("GET", ignoreCase = true) && !method.equals("HEAD", ignoreCase = true)) {
+            return false
+        }
+        val agent = userAgent?.lowercase()?.trim().orEmpty()
+        if (agent.isBlank() || PREVIEW_BOT_MARKERS.none { it in agent }) {
+            return false
+        }
+        val normalized = requestUri.lowercase()
+        return normalized == "/" || isAlwaysAllowedPublicAsset(normalized)
+    }
+
+    private companion object {
+        val PREVIEW_BOT_MARKERS = listOf(
+            "facebookexternalhit",
+            "facebot",
+            "kakaotalk",
+            "slackbot",
+            "discordbot",
+            "twitterbot"
+        )
     }
 }
