@@ -191,6 +191,258 @@ class InterviewAiOrchestrator(
         )
     }
 
+    fun generateCourseExamQuestions(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        professorName: String?,
+        questionCount: Int,
+        difficultyLevel: Int?,
+        questionStyles: List<String>,
+        lectureContextSnippets: List<String>,
+        styleReferenceSnippets: List<String>,
+        generationMode: String,
+        language: InterviewLanguage = InterviewLanguage.KO
+    ): List<GeneratedCourseExamQuestion> {
+        require(questionCount > 0) { "questionCount must be positive." }
+        val temperatures = listOf(0.35, 0.5, 0.65, 0.8, 0.95)
+        val collected = linkedMapOf<String, GeneratedCourseExamQuestion>()
+        val requestedStyleSet = questionStyles
+            .map { it.trim().uppercase() }
+            .filter { it.isNotBlank() }
+            .toSet()
+        var lastError: Exception? = null
+
+        temperatures.forEachIndexed { index, temperature ->
+            if (collected.size >= questionCount) return@forEachIndexed
+            val remaining = questionCount - collected.size
+            val existingQuestionTexts = collected.values.map { it.questionText }
+            logger.info(
+                "과목 시험문제 생성 라운드 시작 course={} mode={} round={} remaining={} requestedStyles={} excludedCount={} temperature={}",
+                courseName,
+                generationMode,
+                index + 1,
+                remaining,
+                questionStyles.joinToString(","),
+                existingQuestionTexts.size,
+                temperature
+            )
+            val prompt = buildCourseExamQuestionPrompt(
+                universityName = universityName,
+                departmentName = departmentName,
+                courseName = courseName,
+                professorName = professorName,
+                difficultyLevel = difficultyLevel,
+                questionStyles = questionStyles,
+                questionCount = minOf(questionCount + 2, remaining + 2),
+                lectureContextSnippets = lectureContextSnippets,
+                styleReferenceSnippets = styleReferenceSnippets,
+                generationMode = generationMode,
+                excludedQuestionTexts = existingQuestionTexts,
+                language = language
+            )
+            try {
+                val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
+                val parsed = parseGeneratedCourseExamQuestions(generated.text)
+                val beforeCount = collected.size
+                var rejectedBlankCount = 0
+                var rejectedUnrequestedStyleCount = 0
+                var rejectedGenericCount = 0
+                parsed.forEach { item ->
+                    val normalized = item.questionText.replace(Regex("\\s+"), " ").trim()
+                    val normalizedAnswer = item.canonicalAnswer.replace(Regex("\\s+"), " ").trim()
+                    val normalizedCriteria = item.gradingCriteria.replace(Regex("\\s+"), " ").trim()
+                    if (normalized.isBlank() || normalizedAnswer.isBlank() || normalizedCriteria.isBlank()) {
+                        rejectedBlankCount += 1
+                        return@forEach
+                    }
+                    val normalizedStyle = item.questionStyle.trim().uppercase()
+                    if (requestedStyleSet.isNotEmpty() && normalizedStyle !in requestedStyleSet) {
+                        rejectedUnrequestedStyleCount += 1
+                        return@forEach
+                    }
+                    val key = normalized.lowercase()
+                    if (!collected.containsKey(key) && isUsableCourseExamQuestion(courseName, normalized)) {
+                        collected[key] = item.copy(
+                            questionNo = collected.size + 1,
+                            questionText = normalized,
+                            questionStyle = normalizedStyle,
+                            canonicalAnswer = normalizedAnswer,
+                            gradingCriteria = normalizedCriteria,
+                            referenceExample = item.referenceExample?.trim()?.takeIf { it.isNotBlank() }
+                        )
+                    } else if (!collected.containsKey(key)) {
+                        rejectedGenericCount += 1
+                    }
+                }
+                logger.info(
+                    "과목 시험문제 생성 라운드 결과 course={} mode={} round={} parsedCount={} addedCount={} cumulativeCount={} rejectedBlank={} rejectedUnrequestedStyle={} rejectedGeneric={}",
+                    courseName,
+                    generationMode,
+                    index + 1,
+                    parsed.size,
+                    collected.size - beforeCount,
+                    collected.size,
+                    rejectedBlankCount,
+                    rejectedUnrequestedStyleCount,
+                    rejectedGenericCount
+                )
+            } catch (ex: Exception) {
+                lastError = ex
+                logger.warn(
+                    "과목 시험문제 생성 실패(provider={}, round={}, remaining={}, mode={}): {}",
+                    aiProperties.provider,
+                    index + 1,
+                    remaining,
+                    generationMode,
+                    ex.message
+                )
+                if (shouldStopRetry(ex)) {
+                    logger.warn("과목 시험문제 생성 재시도 중단: transient overload/rate limit 감지")
+                    return@forEachIndexed
+                }
+            }
+        }
+
+        if (collected.size >= questionCount) {
+            return collected.values.take(questionCount).toList()
+        }
+        if (collected.isNotEmpty() && canReturnPartialDocumentQuestions(lastError)) {
+            logger.info(
+                "course exam question generation partial success course={} requested={} generated={} mode={}",
+                courseName,
+                questionCount,
+                collected.size,
+                generationMode
+            )
+            return collected.values.toList()
+        }
+        val transientError = lastError as? GeminiTransientException
+        if (transientError != null) {
+            throw transientError
+        }
+
+        val cause = lastError?.message?.takeIf { it.isNotBlank() }
+        throw IllegalStateException(
+            "시험문제 생성 결과가 품질 기준을 충족하지 못했습니다. 잠시 후 다시 시도해 주세요.${cause?.let { " ($it)" } ?: ""}"
+        )
+    }
+
+    fun refinePastExamPracticeQuestions(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        professorName: String?,
+        extractedQuestions: List<PastExamPracticeQuestionCandidate>,
+        language: InterviewLanguage = InterviewLanguage.KO
+    ): List<GeneratedCourseExamQuestion> {
+        require(extractedQuestions.isNotEmpty()) { "extractedQuestions must not be empty." }
+
+        val prompt = buildPastExamPracticeRefinementPrompt(
+            universityName = universityName,
+            departmentName = departmentName,
+            courseName = courseName,
+            professorName = professorName,
+            extractedQuestions = extractedQuestions,
+            language = language
+        )
+        val generated = llmProviderRouter.generateJson(prompt, temperature = 0.15)
+        val parsed = parseGeneratedCourseExamQuestions(generated.text)
+        if (parsed.size != extractedQuestions.size) {
+            throw IllegalStateException(
+                "족보 그대로 연습 문제 보정 결과 개수가 맞지 않습니다. extracted=${extractedQuestions.size}, refined=${parsed.size}"
+            )
+        }
+
+        return parsed.mapIndexed { index, item ->
+            val source = extractedQuestions[index]
+            val correctedQuestion = item.questionText.replace(Regex("\\s+"), " ").trim()
+            item.copy(
+                questionNo = source.questionNo,
+                questionText = preservePastExamQuestionText(source.questionText, correctedQuestion),
+                questionStyle = item.questionStyle.trim().uppercase(),
+                canonicalAnswer = item.canonicalAnswer.replace(Regex("\\s+"), " ").trim(),
+                gradingCriteria = item.gradingCriteria.replace(Regex("\\s+"), " ").trim(),
+                referenceExample = item.referenceExample?.trim()?.takeIf { it.isNotBlank() }
+            )
+        }
+    }
+
+    fun evaluateCourseExamAnswersBatch(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        generationMode: String,
+        difficultyLevel: Int?,
+        items: List<CourseExamEvaluationInput>,
+        responseLanguage: InterviewLanguage = InterviewLanguage.KO
+    ): Map<String, CourseExamEvaluationResult> {
+        if (items.isEmpty()) return emptyMap()
+
+        val prompt = """
+            ${evaluationSystemRole(responseLanguage, "university written exam grader")}
+            ${jsonLanguageInstruction(responseLanguage)}
+
+            [대학교]
+            $universityName
+
+            [학과]
+            $departmentName
+
+            [과목명]
+            $courseName
+
+            [출제 모드]
+            $generationMode
+
+            [난이도]
+            ${difficultyLevel ?: "족보 기준 반영"}
+
+            아래 각 문제를 서로 독립적으로 채점하고 JSON만 반환하세요.
+
+            출력 JSON 스키마:
+            {
+              "items": [
+                {
+                  "key": "stable key",
+                  "score": 0~maxScore 정수,
+                  "passScore": 통과 기준 점수 정수,
+                  "feedback": "부분점수 근거와 보강 포인트를 포함한 총평(2~5문장)"
+                }
+              ]
+            }
+
+            채점 규칙:
+            - 반드시 모든 입력 key를 유지해서 반환
+            - score는 0 이상 maxScore 이하의 정수
+            - 부분점수를 적극 허용할 것
+            - questionStyle=DEFINITION 또는 ESSAY: 핵심 개념의 정확성, 범위 충실도, 비교/적용 설명을 본다
+            - questionStyle=CALCULATION: 식 설정, 변수 해석, 단위, 계산 과정, 최종 결론을 본다
+            - questionStyle=CODING: 답안이 실제 코드 형태인지, 요구 기능을 충족하는지, 예시 입출력 또는 제시된 조건을 만족하는지, 핵심 자료구조/알고리즘 선택이 적절한지 본다
+            - questionStyle=CODING: 사용 언어는 감점 요소가 아니며, 학교 교육과정 차이를 고려해 Java, C, C++, Python 등 어떤 언어로 작성해도 로직이 타당하면 인정할 것
+            - questionStyle=CODING: 컴파일 오류 가능성이 높은 문법 오류, 실행 자체가 불가능한 수준의 선언/구문 오류, 문제 요구를 깨는 API 오용은 명확한 감점 요소로 반영할 것
+            - questionStyle=CODING: 단순 문법 실수 하나만으로 0점을 주지 말고, 로직이 맞으면 부분점수를 줄 것
+            - questionStyle=PRACTICAL: 명령어, 절차, 시스템 조작 흐름의 정확성, 예제 만족 여부, 중요한 예외 처리를 본다
+            - referenceExample이 있으면 예시 충족 여부를 함께 보되, 표현 차이만으로 감점하지 말 것
+            - canonicalAnswer와 gradingCriteria는 채점 기준이며, 강의자료 밖 정답을 요구하지 말 것
+            - feedback에는 무엇을 맞췄고 무엇이 부족했는지, 왜 그 점수가 나왔는지 분명히 적을 것
+            - feedback은 ${responseLanguage.displayLanguageName()}로 작성할 것
+            - 반드시 JSON만 출력
+
+            [items]
+            ${objectMapper.writeValueAsString(items)}
+        """.trimIndent()
+
+        return runCatching {
+            val generated = llmProviderRouter.generateJson(prompt)
+            parseCourseExamEvaluationJson(generated.text)
+        }.onFailure { ex ->
+            logger.warn("과목 시험문제 채점 실패(provider={}, count={}): {}", aiProperties.provider, items.size, ex.message)
+        }.getOrElse { ex ->
+            if (aiProperties.fallbackToHeuristic) emptyMap() else throw ex
+        }
+    }
+
     private fun documentQuestionCandidateCount(remaining: Int, targetCount: Int): Int {
         return when {
             remaining >= 3 -> minOf(targetCount + 2, remaining + 2)
@@ -716,6 +968,174 @@ class InterviewAiOrchestrator(
         """.trimIndent()
     }
 
+    private fun buildCourseExamQuestionPrompt(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        professorName: String?,
+        difficultyLevel: Int?,
+        questionStyles: List<String>,
+        questionCount: Int,
+        lectureContextSnippets: List<String>,
+        styleReferenceSnippets: List<String>,
+        generationMode: String,
+        excludedQuestionTexts: List<String> = emptyList(),
+        language: InterviewLanguage
+    ): String {
+        val joinedLectureContext = lectureContextSnippets
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n")
+        val joinedStyleReference = styleReferenceSnippets
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n")
+        val normalizedMode = generationMode.trim().uppercase()
+        val normalizedStyles = questionStyles.map { it.trim().uppercase() }.filter { it.isNotBlank() }.distinct()
+        val styleText = normalizedStyles.joinToString(", ").ifBlank { "DEFINITION" }
+        val lectureSectionTitle = if (normalizedMode == "PAST_EXAM_PRACTICE") "강의 자료 발췌 (사용 금지)" else "강의 자료 발췌"
+        val lectureSectionBody = if (normalizedMode == "PAST_EXAM_PRACTICE") "(사용하지 않음)" else joinedLectureContext
+        val pastExamSectionTitle = if (normalizedMode == "PAST_EXAM_PRACTICE") "족보 원문 발췌" else "족보 스타일 참고"
+        val excludedText = excludedQuestionTexts
+            .filter { it.isNotBlank() }
+            .joinToString("\n") { "- $it" }
+            .ifBlank { "(없음)" }
+        val difficultyGuide = when (difficultyLevel ?: 3) {
+            1 -> "대학 저학년 기초 수준으로 핵심 개념 확인 위주로 출제합니다."
+            2 -> "기초 개념과 기본 적용을 함께 묻는 수준으로 출제합니다."
+            3 -> "일반적인 대학 중간/기말고사 평균 난이도로 출제합니다."
+            4 -> "풀이 과정, 응용 판단, 개념 연결이 필요한 상위권 수준으로 출제합니다."
+            else -> "대학 교육과정 범위 안에서 변형 응용과 엄밀한 논증이 필요한 어려운 수준으로 출제합니다."
+        }
+        val styleGuide = when (normalizedMode) {
+            "PAST_EXAM" -> {
+                """
+                - 강의 자료 발췌는 문제 내용의 유일한 근거로 사용하고, 족보 스타일 참고 발췌는 난이도와 문장 스타일을 맞추는 용도로만 사용할 것
+                - 족보 스타일 참고 발췌에 나타난 서술 방식, 반복 포인트, 난이도 체감, 풀이 요구 깊이를 최대한 반영할 것
+                - 족보 문장을 복사하거나 외부 내용을 섞지 말고, 강의자료 범위 안에서만 재구성할 것
+                - 실제 대학 시험지처럼 "설명하시오", "비교하시오", "서술하시오", "구하시오", "정의하고 예를 드시오" 같은 문장형 표현을 적극 사용할 것
+                """.trimIndent()
+            }
+            "PAST_EXAM_PRACTICE" -> {
+                """
+                - 강의 자료는 사용하지 말고, 업로드된 족보 원문 발췌만을 기반으로 문제를 복원할 것
+                - 족보 원문 발췌에 실제 문제 문장, 보기, 계산 조건, 명령어, 코드 요구가 있으면 그 구조와 의도를 최대한 그대로 살린 연습 문제로 재구성할 것
+                - 단, OCR 추출 원문에는 띄어쓰기/문자 인식 오류가 있을 수 있으므로 족보 내부 문맥을 기준으로만 보수적으로 후보정할 것
+                - OCR이 불명확한 부분은 함부로 외삽하지 말고, 문맥상 확실한 범위까지만 자연스럽게 복원할 것
+                - 족보 그대로 연습 모드에서는 스타일 참고가 아니라 실제 기출 복원 연습이라는 점을 반영해, 원문 문제 유형과 풀이 요구를 우선 유지할 것
+                - 외부 지식으로 새 문제를 창작하기보다, 업로드된 족보의 문제 의도와 표현을 보강·정리한 실전 연습지처럼 작성할 것
+                """.trimIndent()
+            }
+            else -> {
+                """
+                - 실제 대학 전공 과목의 중간고사 또는 기말고사 스타일로 출제할 것
+                - 학생이 답안지 또는 실습 환경에서 실제로 풀고 채점받을 수 있는 시험문항으로 만들 것
+                - 면접 질문처럼 "말해보세요"가 아니라 시험지 문장처럼 작성할 것
+                """.trimIndent()
+            }
+        }
+        val subjectGuide = """
+            - 학과가 상경/경영/경제/회계/재무/통계 계열이거나 강의자료가 수식 중심이면 계산 과정과 식 전개가 드러나는 계산형 문제를 적극 포함할 것
+            - 학과가 기계/전기/전자/화공/산업/물리 계열이거나 강의자료가 공식, 단위, 공학 해석 중심이면 계산형과 개념 정의형을 함께 출제할 것
+            - 과목이 자료구조, 알고리즘, 운영체제, 데이터베이스, 시스템 프로그래밍, 네트워크와 같이 구현 비중이 높다면 학생이 실제 코드로 작성해야 하는 문제를 만들 것
+            - CODING 문제는 "코드로 작성하시오" 또는 그에 준하는 시험지 문장으로 쓰고, 언어를 고정하지 말며, 입력/출력 또는 함수 시그니처/조건을 분명히 제시할 것
+            - 리눅스관리처럼 실습형 과목은 PRACTICAL 문제로 분류하고 명령어를 실제로 작성하게 만들 것
+            - 교양 과목, 인문사회 과목, 읽기·토론·이론 중심 과목은 강의자료를 충실히 반영한 서술형/비교형/비판형 문제를 만들 것
+            - 모든 문제는 강의자료 범위를 벗어나지 말고, 대학생 수준을 넘는 전문 자격시험 스타일로 과도하게 비약하지 말 것
+        """.trimIndent()
+        val outputRules = """
+            - questionStyle은 반드시 DEFINITION, CODING, CALCULATION, ESSAY, PRACTICAL 중 하나
+            - questionText는 시험지에 그대로 넣을 수 있는 문장
+            - canonicalAnswer는 채점 기준이 되는 정답/모범해설을 4~10문장 수준으로 작성
+            - gradingCriteria는 부분점수 기준이 드러나도록 핵심 채점 포인트를 3~6개 정도의 자연어 문장 또는 불릿 느낌 문장으로 작성
+            - referenceExample은 CODING, CALCULATION, PRACTICAL 문제에서는 절대 null이면 안 되며, 입력/출력 예시, 명령어 예시, 계산 전개 예시 중 최소 하나를 반드시 포함
+            - referenceExample은 DEFINITION 또는 ESSAY 문제에서만 null 가능
+            - CODING 문제의 canonicalAnswer는 실제 코드 또는 언어 중립 의사코드가 아니라, 채점 포인트와 정답 로직 설명을 담은 해설이어야 한다
+            - CODING 문제의 gradingCriteria에는 기능 충족, 자료구조/알고리즘 선택, 시간복잡도 또는 핵심 로직, 예외 처리, 문법/컴파일 안정성 감점 요소가 드러나야 한다
+            - CODING 문제의 referenceExample에는 입력 예시, 출력 예시, 함수 시그니처, 제약 조건 중 최소 하나를 반드시 포함해야 한다
+            - maxScore는 20으로 고정
+        """.trimIndent()
+
+        return """
+            ${generationSystemRole(language, "university exam question author")}
+            Generate realistic written exam questions in ${language.displayLanguageName()}.
+
+            [대학교]
+            $universityName
+
+            [학과]
+            $departmentName
+
+            [과목명]
+            $courseName
+
+            [교수명]
+            ${professorName?.trim()?.takeIf { it.isNotBlank() } ?: "미상"}
+
+            [난이도]
+            ${difficultyLevel ?: "족보 기준 반영"}
+
+            [난이도 기준]
+            $difficultyGuide
+
+            [요청 문제 스타일]
+            $styleText
+
+            [출제 모드]
+            $normalizedMode
+
+            [$lectureSectionTitle]
+            $lectureSectionBody
+
+            [$pastExamSectionTitle]
+            ${joinedStyleReference.ifBlank { "(없음)" }}
+
+            [이미 생성된 문제 - 중복 금지]
+            $excludedText
+
+            출력 JSON 스키마:
+            {
+              "questions": [
+                {
+                  "questionText": "실제 시험지에 들어갈 문제 문장",
+                  "questionStyle": "DEFINITION|CODING|CALCULATION|ESSAY|PRACTICAL",
+                  "canonicalAnswer": "채점 기준이 되는 정답/모범해설",
+                  "gradingCriteria": "부분점수 기준이 드러나는 채점 포인트",
+                  "referenceExample": "예시 입력/출력/명령어/계산 예시 또는 null",
+                  "maxScore": 20
+                }
+              ]
+            }
+
+            규칙:
+            - 총 ${questionCount}개 문제 생성
+            - 출제 모드가 PAST_EXAM_PRACTICE가 아니라면 모든 문제는 제공된 강의 자료 발췌에서 직접 근거를 찾을 수 있어야 함
+            - 출제 모드가 PAST_EXAM_PRACTICE라면 모든 문제는 업로드된 족보 원문 발췌에서 직접 근거를 찾을 수 있어야 함
+            - 업로드된 자료에 없는 개념, 교수 스타일, 외부 족보 내용을 임의로 추가하지 말 것
+            - 서로 다른 핵심 주제와 단원을 고르게 반영할 것
+            - 모든 문제의 questionStyle은 반드시 요청된 스타일 집합(${normalizedStyles.joinToString(", ").ifBlank { "DEFINITION" }}) 안에 있어야 함
+            - 사용자가 CODING만 선택했다면 모든 문제를 CODING으로, CALCULATION만 선택했다면 모든 문제를 CALCULATION으로 작성할 것
+            - 요청하지 않은 DEFINITION, CALCULATION, ESSAY, PRACTICAL, CODING 스타일을 임의로 섞지 말 것
+            - 문제마다 출제 포인트가 겹치지 않게 하고, 정의형/비교형/과정 설명형/응용형/구현형/계산형을 적절히 섞을 것
+            - [이미 생성된 문제 - 중복 금지] 목록과 주제, 표현, 답안 포인트가 겹치는 문제는 만들지 말 것
+            - "강의자료에 따르면", "제공된 자료를 참고하여" 같은 메타 표현은 금지
+            - raw snippet을 길게 복붙하지 말고 시험문장으로 재작성할 것
+            - 너무 포괄적이거나 아무 과목에나 쓸 수 있는 질문은 금지
+            - $departmentName 학과의 $courseName 과목이라는 점이 드러날 정도로 구체적인 개념과 표현을 사용할 것
+            - 출제 모드가 PAST_EXAM_PRACTICE라면 업로드된 족보 문제의 표현, 조건, 요구사항을 보강하여 실전 연습지처럼 복원하되 OCR 오류는 족보 내부 문맥 기준으로만 보정할 것
+            - CODING 문제는 반드시 학생이 소스코드를 작성해야 풀 수 있는 형태여야 하며, 문제 문장에 "코드로 작성하시오" 또는 동등한 지시를 포함할 것
+            - CODING 문제는 특정 언어를 강제하지 말고, 학교별 교육과정 차이를 고려해 언어 자유로 출제할 것
+            - CODING 문제는 컴파일 오류 가능성이 큰 문법 오류가 감점 요소가 되도록 채점 기준을 설계할 것
+            - 코딩/실습형 문제는 예제나 명령어, 정확한 평가 포인트를 포함해 실제 채점이 가능해야 함
+            - 계산형 문제는 식 설정, 변수 의미, 단위 또는 풀이 절차가 정답에 포함되어야 함
+            - 정의형/서술형 문제는 핵심 개념 정의, 비교 포인트, 적용 맥락이 정답에 드러나야 함
+            - maxScore는 모든 문제에 대해 20으로 설정할 것
+            - ${language.displayLanguageName()}로만 작성할 것
+            - 반드시 JSON만 출력
+            $subjectGuide
+            $outputRules
+            $styleGuide
+        """.trimIndent()
+    }
+
     private fun buildBatchTechQuestionPrompt(
         jobName: String,
         skillNames: List<String>,
@@ -794,6 +1214,89 @@ class InterviewAiOrchestrator(
                 )
             }
             .orEmpty()
+    }
+
+    private fun parseGeneratedCourseExamQuestions(raw: String): List<GeneratedCourseExamQuestion> {
+        val node = objectMapper.readTree(raw)
+        return node["questions"]
+            ?.takeIf { it.isArray }
+            ?.mapIndexedNotNull { index, item ->
+                val questionText = item.text("questionText").ifBlank { return@mapIndexedNotNull null }
+                GeneratedCourseExamQuestion(
+                    questionNo = index + 1,
+                    questionText = questionText,
+                    questionStyle = item.text("questionStyle").ifBlank { "DEFINITION" },
+                    canonicalAnswer = item.text("canonicalAnswer").ifBlank { "" },
+                    gradingCriteria = item.text("gradingCriteria").ifBlank { "" },
+                    referenceExample = item.text("referenceExample").ifBlank { null },
+                    maxScore = item["maxScore"]?.asInt() ?: 20
+                )
+            }
+            .orEmpty()
+    }
+
+    private fun buildPastExamPracticeRefinementPrompt(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        professorName: String?,
+        extractedQuestions: List<PastExamPracticeQuestionCandidate>,
+        language: InterviewLanguage
+    ): String {
+        val professorLine = professorName?.trim()?.takeIf { it.isNotBlank() } ?: "미상"
+        val extractedSection = extractedQuestions.joinToString("\n\n") { item ->
+            """
+            [원문 문제 ${item.questionNo}]
+            자료명: ${item.sourceFileName}
+            추출 방식: ${item.extractionMethod ?: "UNKNOWN"}
+            문제 원문:
+            ${item.questionText}
+            """.trimIndent()
+        }
+
+        return """
+            당신은 대학 족보 원문을 정리하는 편집자이자 채점 기준 작성자다.
+            목적은 새 문제를 만드는 것이 아니라, 추출된 족보 원문 문제를 그대로 연습용으로 정리하는 것이다.
+
+            [학교/학과/과목]
+            학교: $universityName
+            학과: $departmentName
+            과목: $courseName
+            교수명: $professorLine
+
+            [원문 문제 목록]
+            $extractedSection
+
+            출력 JSON 스키마:
+            {
+              "questions": [
+                {
+                  "questionText": "족보 원문을 그대로 유지한 문제 문장",
+                  "questionStyle": "DEFINITION | CODING | CALCULATION | ESSAY | PRACTICAL",
+                  "canonicalAnswer": "정답 또는 모범해설",
+                  "gradingCriteria": "부분점수 기준이 드러나는 채점 기준",
+                  "referenceExample": "코딩/계산/실습형일 때만 필요하면 제공, 아니면 null",
+                  "maxScore": 20
+                }
+              ]
+            }
+
+            절대 규칙:
+            - 새 문제를 만들지 말 것
+            - 서로 다른 문제를 합치거나 나누지 말 것
+            - 숫자, 조건, 행렬 크기, 입력값, 배열, 그래프 정보, 요구사항을 임의로 바꾸지 말 것
+            - 강의자료나 외부 지식을 참조해 문제 문장을 재구성하지 말 것
+            - questionText는 원문을 최대한 그대로 유지할 것
+            - questionText는 띄어쓰기, 줄바꿈, 문장부호, 명백한 OCR 깨짐, 말이 되지 않는 문자만 최소한으로 보정할 수 있다
+            - 원문이 이미 자연스러우면 questionText를 거의 그대로 둘 것
+            - questionStyle은 원문 문제의 실제 유형을 분류할 것
+            - canonicalAnswer와 gradingCriteria는 문제를 푸는 데 필요한 정답/채점기준을 작성하되, questionText 자체는 바꾸지 말 것
+            - CODING 문제는 언어를 고정하지 말고 로직/입출력/핵심 구현 포인트 중심으로 채점 기준을 작성할 것
+            - CALCULATION 문제는 계산 절차와 중간 핵심 결과를 포함할 것
+            - referenceExample은 CODING, CALCULATION, PRACTICAL에서만 필요하면 제공할 것
+            - 모든 questionText, canonicalAnswer, gradingCriteria, referenceExample은 ${language.displayLanguageName()}로 작성할 것
+            - 반드시 입력 문제 수와 동일한 개수, 동일한 순서로 JSON만 출력할 것
+        """.trimIndent()
     }
 
     private fun validateGeneratedDocumentQuestions(
@@ -1395,6 +1898,80 @@ class InterviewAiOrchestrator(
         return true
     }
 
+    private fun isUsableCourseExamQuestion(courseName: String, questionText: String): Boolean {
+        val normalized = questionText.trim()
+        if (normalized.length < 14) return false
+        if (normalized.length > 220) return false
+
+        val lowered = normalized.lowercase()
+        if (listOf("말해 보세요", "말해보세요", "설명해 주세요", "설명해주세요", "어떻게 생각", "의견을 말씀").any { lowered.contains(it) }) {
+            return false
+        }
+
+        val examSignals = listOf(
+            "설명하시오",
+            "서술하시오",
+            "비교하시오",
+            "기술하시오",
+            "정리하시오",
+            "구하시오",
+            "논하시오",
+            "작성하시오",
+            "구현하시오",
+            "코드로 작성하시오",
+            "프로그램을 작성하시오",
+            "함수를 작성하시오",
+            "메서드를 작성하시오",
+            "명령어를 작성하시오"
+        )
+        val codingSignals = listOf(
+            "코드",
+            "구현",
+            "함수",
+            "메서드",
+            "클래스",
+            "프로그램",
+            "입력",
+            "출력",
+            "의사코드",
+            "알고리즘"
+        )
+        val hasExamSignal = examSignals.any { normalized.contains(it) } ||
+            (codingSignals.any { lowered.contains(it) } && listOf("작성", "구현", "하시오").any { lowered.contains(it) }) ||
+            normalized.endsWith("?")
+        if (!hasExamSignal) return false
+
+        val courseTokens = courseName
+            .lowercase()
+            .split(Regex("\\s+"))
+            .filter { it.length >= 2 }
+        return courseTokens.isEmpty() || courseTokens.any { lowered.contains(it) } || normalized.length >= 20
+    }
+
+    private fun preservePastExamQuestionText(original: String, corrected: String): String {
+        val normalizedOriginal = original
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+        val normalizedCorrected = corrected
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+        if (normalizedOriginal.isBlank()) return normalizedCorrected
+        if (!looksLikeBrokenExtractedQuestion(normalizedOriginal)) return normalizedOriginal
+        return normalizedCorrected.ifBlank { normalizedOriginal }
+    }
+
+    private fun looksLikeBrokenExtractedQuestion(questionText: String): Boolean {
+        val weirdCharacters = listOf("�", "□", "◻", "�")
+        if (weirdCharacters.any { questionText.contains(it) }) return true
+        if (Regex("[A-Za-z0-9]{1}\\s+[가-힣]{1}\\s+[A-Za-z0-9]{1}").containsMatchIn(questionText)) return true
+        if (Regex("[^\\p{L}\\p{N}\\s\\p{Punct}①②③④⑤⑥⑦⑧⑨⑩]").containsMatchIn(questionText)) return true
+        return false
+    }
+
     private fun isGuideLikeModelAnswer(answer: String): Boolean {
         val trimmed = answer.trim()
         return trimmed.startsWith("질문 의도") ||
@@ -1746,6 +2323,25 @@ class InterviewAiOrchestrator(
         return parseEvaluationNode(objectMapper.readTree(raw))
     }
 
+    private fun parseCourseExamEvaluationJson(raw: String): Map<String, CourseExamEvaluationResult> {
+        val root = objectMapper.readTree(raw)
+        return root["items"]
+            ?.takeIf { it.isArray }
+            ?.mapNotNull { item ->
+                val key = item["key"]?.asText()?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val score = item["score"]?.asInt() ?: 0
+                val passScore = item["passScore"]?.asInt() ?: 12
+                val feedback = item.text("feedback").ifBlank { "채점 근거를 생성하지 못했습니다." }
+                key to CourseExamEvaluationResult(
+                    score = score,
+                    passScore = passScore,
+                    feedback = feedback
+                )
+            }
+            ?.toMap()
+            .orEmpty()
+    }
+
     private fun parseBatchEvaluationJson(raw: String): Map<String, AiTurnEvaluation> {
         val root = objectMapper.readTree(raw)
         return root["items"]
@@ -1851,6 +2447,23 @@ data class GeneratedTechQuestion(
     val tags: List<String> = emptyList()
 )
 
+data class GeneratedCourseExamQuestion(
+    val questionNo: Int,
+    val questionText: String,
+    val questionStyle: String,
+    val canonicalAnswer: String,
+    val gradingCriteria: String,
+    val referenceExample: String? = null,
+    val maxScore: Int = 20
+)
+
+data class PastExamPracticeQuestionCandidate(
+    val questionNo: Int,
+    val questionText: String,
+    val sourceFileName: String,
+    val extractionMethod: String? = null
+)
+
 data class GeneratedSkillTechQuestion(
     val skillName: String,
     val questionText: String,
@@ -1868,6 +2481,23 @@ data class ValidatedSnippet(
     val snippet: String,
     val accepted: Boolean,
     val reason: String
+)
+
+data class CourseExamEvaluationInput(
+    val key: String,
+    val questionStyle: String,
+    val questionText: String,
+    val canonicalAnswer: String,
+    val gradingCriteria: String,
+    val referenceExample: String? = null,
+    val maxScore: Int,
+    val userAnswer: String
+)
+
+data class CourseExamEvaluationResult(
+    val score: Int,
+    val passScore: Int,
+    val feedback: String
 )
 
 private data class CategoryLabels(

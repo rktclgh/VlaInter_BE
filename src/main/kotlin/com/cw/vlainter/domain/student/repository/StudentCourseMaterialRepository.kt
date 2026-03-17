@@ -6,4 +6,5 @@ import org.springframework.data.jpa.repository.JpaRepository
 interface StudentCourseMaterialRepository : JpaRepository<StudentCourseMaterial, Long> {
     fun findAllByCourse_IdOrderByCreatedAtDesc(courseId: Long): List<StudentCourseMaterial>
     fun countByCourse_Id(courseId: Long): Long
+    fun findByUserFile_Id(userFileId: Long): StudentCourseMaterial?
 }

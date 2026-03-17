@@ -15,17 +15,18 @@ import jakarta.persistence.Table
 import java.time.OffsetDateTime
 
 @Entity
-@Table(name = "student_exam_questions")
-class StudentExamQuestion(
+@Table(name = "student_wrong_answer_items")
+class StudentWrongAnswerItem(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
 
-    @Suppress("unused")
-    @Column(name = "session_id", nullable = false)
-    val sessionId: Long,
+    @Column(name = "set_id", nullable = false)
+    val setId: Long,
 
-    @Suppress("unused")
+    @Column(name = "question_id", nullable = false)
+    val questionId: Long,
+
     @Column(name = "question_order", nullable = false)
     val questionOrder: Int,
 
@@ -49,19 +50,13 @@ class StudentExamQuestion(
     val maxScore: Int = 20,
 
     @Column(name = "answer_text", columnDefinition = "text")
-    var answerText: String? = null,
+    val answerText: String? = null,
 
     @Column(name = "score")
-    var score: Int? = null,
+    val score: Int? = null,
 
     @Column(name = "feedback", columnDefinition = "text")
-    var feedback: String? = null,
-
-    @Column(name = "is_correct")
-    var isCorrect: Boolean? = null,
-
-    @Column(name = "answered_at")
-    var answeredAt: OffsetDateTime? = null,
+    val feedback: String? = null,
 
     @Column(name = "created_at", nullable = false)
     var createdAt: OffsetDateTime = OffsetDateTime.now()

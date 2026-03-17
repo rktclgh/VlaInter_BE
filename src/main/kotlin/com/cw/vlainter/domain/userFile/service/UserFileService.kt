@@ -3,6 +3,8 @@ package com.cw.vlainter.domain.userFile.service
 import com.cw.vlainter.domain.interview.repository.DocChunkEmbeddingRepository
 import com.cw.vlainter.domain.interview.repository.DocumentIngestionJobRepository
 import com.cw.vlainter.domain.interview.entity.DocumentIngestionStatus
+import com.cw.vlainter.domain.student.dto.StudentCourseMaterialDownloadResponse
+import com.cw.vlainter.domain.student.repository.StudentCourseMaterialVisualAssetRepository
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
 import com.cw.vlainter.domain.user.entity.UserStatus
@@ -27,9 +29,13 @@ import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
+import software.amazon.awssdk.services.s3.presigner.S3Presigner
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest
 import software.amazon.awssdk.core.exception.SdkClientException
 import software.amazon.awssdk.services.s3.model.S3Exception
+import software.amazon.awssdk.regions.Region
 import java.net.URI
+import java.time.Duration
 import java.time.OffsetDateTime
 import java.util.UUID
 
@@ -39,6 +45,7 @@ class UserFileService(
     private val userFileRepository: UserFileRepository,
     private val docChunkEmbeddingRepository: DocChunkEmbeddingRepository,
     private val documentIngestionJobRepository: DocumentIngestionJobRepository,
+    private val studentCourseMaterialVisualAssetRepository: StudentCourseMaterialVisualAssetRepository,
     private val s3Client: S3Client,
     private val s3Properties: S3Properties,
     private val objectMapper: ObjectMapper
@@ -52,12 +59,18 @@ class UserFileService(
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
+        val ALLOWED_PAST_EXAM_EXTENSIONS = setOf("pdf", "docx", "pptx", "jpg", "jpeg", "png")
+        val ALLOWED_PAST_EXAM_CONTENT_TYPES = ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES + setOf(
+            "image/jpeg",
+            "image/png"
+        )
         const val MAX_DOCUMENT_FILES_PER_TYPE = 5L
         const val MAX_COURSE_MATERIAL_FILES = 20L
     }
 
     private val logger = LoggerFactory.getLogger(UserFileService::class.java)
     private val originalFileNameMaxLength = 255
+    private val downloadExpirySeconds = 900L
 
     @Transactional(readOnly = true)
     fun getMyFiles(principal: AuthPrincipal): List<UserFileResponse> {
@@ -118,12 +131,21 @@ class UserFileService(
     }
 
     @Transactional
-    fun uploadMyFile(principal: AuthPrincipal, fileType: FileType, file: MultipartFile): UserFileResponse {
+    fun uploadMyFile(
+        principal: AuthPrincipal,
+        fileType: FileType,
+        file: MultipartFile,
+        storedDisplayFileName: String? = null,
+        allowedExtensions: Set<String>? = null,
+        allowedContentTypes: Set<String>? = null,
+        invalidTypeMessage: String? = null
+    ): UserFileResponse {
         val actor = loadActiveUser(principal.userId)
-        validateUploadFile(fileType, file)
+        validateUploadFile(fileType, file, allowedExtensions, allowedContentTypes, invalidTypeMessage)
         ensureS3Configured()
 
         val originalFileName = extractOriginalFileName(file.originalFilename)
+        val effectiveFileName = storedDisplayFileName?.trim()?.takeIf { it.isNotBlank() } ?: originalFileName
         val storageFileName = buildStorageFileName(originalFileName)
         val objectKey = buildObjectKey(actor.id, fileType, storageFileName)
         val storedPath = buildStoredPath(objectKey)
@@ -166,7 +188,7 @@ class UserFileService(
                     user = actor,
                     fileType = fileType,
                     fileUrl = storedPath,
-                    fileName = originalFileName,
+                    fileName = effectiveFileName,
                     originalFileName = originalFileName,
                     storageFileName = storageFileName,
                     storageKey = objectKey,
@@ -194,13 +216,57 @@ class UserFileService(
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 파일만 삭제할 수 있습니다.")
         }
 
+        deleteFileInternal(target)
+    }
+
+    @Transactional
+    fun deleteOwnedFile(userId: Long, fileId: Long) {
+        val actor = loadActiveUser(userId)
+        val target = userFileRepository.findById(fileId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "파일 정보를 찾을 수 없습니다.") }
+
+        if (target.user.id != actor.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 파일만 삭제할 수 있습니다.")
+        }
+
+        deleteFileInternal(target)
+    }
+
+    @Transactional(readOnly = true)
+    fun getOwnedFileDownloadUrl(userId: Long, fileId: Long): StudentCourseMaterialDownloadResponse {
+        val actor = loadActiveUser(userId)
+        val target = userFileRepository.findById(fileId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "파일 정보를 찾을 수 없습니다.") }
+
+        if (target.user.id != actor.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 파일만 다운로드할 수 있습니다.")
+        }
+        ensureS3Configured()
+
+        val objectKey = resolveDeletionKey(target.storageKey, target.fileUrl)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "파일 저장 경로를 찾을 수 없습니다.")
+        val downloadUrl = createPresignedDownloadUrl(objectKey, target.originalFileName)
+        return StudentCourseMaterialDownloadResponse(
+            downloadUrl = downloadUrl,
+            expiresInSeconds = downloadExpirySeconds
+        )
+    }
+
+    @Transactional(readOnly = true)
+    fun createVisualAssetDownloadUrl(storageKey: String, downloadFileName: String): String {
+        ensureS3Configured()
+        return createPresignedDownloadUrl(storageKey, downloadFileName)
+    }
+
+    private fun deleteFileInternal(target: UserFile) {
         val deletionKey = resolveDeletionKey(target.storageKey, target.fileUrl)
         val targetOwnerId = target.user.id
 
-        if (target.fileType.isInterviewDocument()) {
+        if (target.fileType.isInterviewDocument() || target.fileType == FileType.COURSE_MATERIAL) {
             // 문서 삭제 시 임베딩/ingestion 이력도 함께 정리한다.
             docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(targetOwnerId, target.id)
             documentIngestionJobRepository.deleteAllByUserIdAndDocumentFileId(targetOwnerId, target.id)
+            studentCourseMaterialVisualAssetRepository.deleteAllByUserFile_Id(target.id)
         }
 
         userFileRepository.delete(target)
@@ -219,7 +285,13 @@ class UserFileService(
         return user
     }
 
-    private fun validateUploadFile(fileType: FileType, file: MultipartFile) {
+    private fun validateUploadFile(
+        fileType: FileType,
+        file: MultipartFile,
+        allowedExtensions: Set<String>? = null,
+        allowedContentTypes: Set<String>? = null,
+        invalidTypeMessage: String? = null
+    ) {
         if (file.isEmpty) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "업로드할 파일이 비어 있습니다.")
         }
@@ -235,12 +307,14 @@ class UserFileService(
         val extension = lowerName.substringAfterLast('.', "")
 
         if (fileType == FileType.RESUME || fileType == FileType.INTRODUCE || fileType == FileType.PORTFOLIO || fileType == FileType.COURSE_MATERIAL) {
-            val extensionValid = extension in ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS
-            val contentTypeValid = contentType.isNotBlank() && contentType in ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES
+            val targetExtensions = allowedExtensions ?: ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS
+            val targetContentTypes = allowedContentTypes ?: ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES
+            val extensionValid = extension in targetExtensions
+            val contentTypeValid = contentType.isNotBlank() && contentType in targetContentTypes
             if (!extensionValid || !contentTypeValid) {
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "문서 자료는 PDF, DOCX, PPTX 파일만 업로드할 수 있습니다."
+                    invalidTypeMessage ?: "문서 자료는 PDF, DOCX, PPTX 파일만 업로드할 수 있습니다."
                 )
             }
         }
@@ -260,6 +334,30 @@ class UserFileService(
     private fun ensureS3Configured() {
         if (s3Properties.bucket.isBlank()) {
             throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "S3 버킷 설정이 누락되었습니다.")
+        }
+    }
+
+    private fun createPresignedDownloadUrl(objectKey: String, originalFileName: String): String {
+        val presignerBuilder = S3Presigner.builder().region(Region.of(s3Properties.region))
+        if (s3Properties.endpoint.isNotBlank()) {
+            presignerBuilder.endpointOverride(URI.create(s3Properties.endpoint))
+        }
+        return try {
+            presignerBuilder.build().use { presigner ->
+                val getObjectRequest = GetObjectRequest.builder()
+                    .bucket(s3Properties.bucket.trim())
+                    .key(objectKey)
+                    .responseContentDisposition("""attachment; filename="$originalFileName"""")
+                    .build()
+                val presignRequest = GetObjectPresignRequest.builder()
+                    .signatureDuration(Duration.ofSeconds(downloadExpirySeconds))
+                    .getObjectRequest(getObjectRequest)
+                    .build()
+                presigner.presignGetObject(presignRequest).url().toString()
+            }
+        } catch (ex: Exception) {
+            logger.warn("S3 presigned download URL generation failed key={} reason={}", objectKey, ex.message)
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "다운로드 링크 생성에 실패했습니다.")
         }
     }
 
@@ -426,4 +524,8 @@ class UserFileService(
     private fun FileType.isInterviewDocument(): Boolean {
         return this == FileType.RESUME || this == FileType.INTRODUCE || this == FileType.PORTFOLIO
     }
+
+    fun allowedPastExamExtensions(): Set<String> = ALLOWED_PAST_EXAM_EXTENSIONS
+
+    fun allowedPastExamContentTypes(): Set<String> = ALLOWED_PAST_EXAM_CONTENT_TYPES
 }

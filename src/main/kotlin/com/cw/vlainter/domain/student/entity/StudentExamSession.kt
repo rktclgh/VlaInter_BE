@@ -2,6 +2,7 @@
 
 package com.cw.vlainter.domain.student.entity
 
+import com.cw.vlainter.domain.student.dto.StudentExamGenerationMode
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.EnumType
@@ -31,8 +32,21 @@ class StudentExamSession(
     @Enumerated(EnumType.STRING)
     var status: StudentExamSessionStatus = StudentExamSessionStatus.READY,
 
+    @Column(name = "generation_mode", nullable = false, length = 40)
+    @Enumerated(EnumType.STRING)
+    var generationMode: StudentExamGenerationMode,
+
+    @Column(name = "difficulty_level")
+    var difficultyLevel: Int? = null,
+
+    @Column(name = "question_styles_csv", nullable = false, length = 200)
+    var questionStylesCsv: String,
+
     @Column(name = "question_count", nullable = false)
     var questionCount: Int,
+
+    @Column(name = "max_score", nullable = false)
+    var maxScore: Int = 0,
 
     @Column(name = "source_material_count", nullable = false)
     var sourceMaterialCount: Int,
