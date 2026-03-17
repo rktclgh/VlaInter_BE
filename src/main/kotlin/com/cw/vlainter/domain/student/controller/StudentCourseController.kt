@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.student.controller
 
 import com.cw.vlainter.domain.student.dto.CreateStudentCourseRequest
+import com.cw.vlainter.domain.student.dto.CreateStudentCourseSummaryDocumentRequest
 import com.cw.vlainter.domain.student.dto.CreateStudentExamSessionRequest
 import com.cw.vlainter.domain.student.dto.CreateStudentWrongAnswerSetRequest
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialKind
@@ -135,6 +136,22 @@ class StudentCourseController(
         @PathVariable materialId: Long
     ): ResponseEntity<StudentCourseMaterialResponse> {
         return ResponseEntity.ok(studentCourseService.requestCourseMaterialIngestion(principal, courseId, materialId))
+    }
+
+    @PostMapping("/{courseId}/summary-documents")
+    fun generateCourseSummaryDocument(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable courseId: Long,
+        @Valid @RequestBody request: CreateStudentCourseSummaryDocumentRequest
+    ): ResponseEntity<ByteArray> {
+        val resource = studentCourseService.generateCourseSummaryDocument(principal, courseId, request)
+        return ResponseEntity.ok()
+            .contentType(MediaType.parseMediaType(resource.contentType))
+            .header(
+                HttpHeaders.CONTENT_DISPOSITION,
+                ContentDisposition.attachment().filename(resource.fileName, StandardCharsets.UTF_8).build().toString()
+            )
+            .body(resource.bytes)
     }
 
     @GetMapping("/{courseId}/sessions")

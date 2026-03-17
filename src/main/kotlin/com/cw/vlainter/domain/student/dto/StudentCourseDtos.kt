@@ -79,6 +79,18 @@ data class StudentCourseMaterialDownloadResponse(
     val expiresInSeconds: Long
 )
 
+data class CreateStudentCourseSummaryDocumentRequest(
+    @field:Size(min = 1, max = 12, message = "요약할 강의자료를 1개 이상 12개 이하로 선택해 주세요.")
+    val selectedMaterialIds: List<Long>,
+
+    val format: StudentCourseSummaryDocumentFormat = StudentCourseSummaryDocumentFormat.DOCX
+)
+
+enum class StudentCourseSummaryDocumentFormat {
+    DOCX,
+    PDF
+}
+
 data class CreateStudentExamSessionRequest(
     @field:Min(value = 3, message = "문항 수는 3개 이상이어야 합니다.")
     @field:Max(value = 20, message = "문항 수는 20개 이하여야 합니다.")

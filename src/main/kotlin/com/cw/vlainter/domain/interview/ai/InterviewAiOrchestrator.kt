@@ -328,6 +328,27 @@ class InterviewAiOrchestrator(
         )
     }
 
+    fun generateCourseMaterialSummary(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        professorName: String?,
+        sources: List<CourseMaterialSummarySource>,
+        language: InterviewLanguage = InterviewLanguage.KO
+    ): GeneratedCourseMaterialSummary {
+        require(sources.isNotEmpty()) { "sources must not be empty." }
+        val prompt = buildCourseMaterialSummaryPrompt(
+            universityName = universityName,
+            departmentName = departmentName,
+            courseName = courseName,
+            professorName = professorName,
+            sources = sources,
+            language = language
+        )
+        val generated = llmProviderRouter.generateJson(prompt, temperature = 0.2)
+        return parseGeneratedCourseMaterialSummary(generated.text)
+    }
+
     fun refinePastExamPracticeQuestions(
         universityName: String,
         departmentName: String,
@@ -1165,6 +1186,81 @@ class InterviewAiOrchestrator(
         """.trimIndent()
     }
 
+    private fun buildCourseMaterialSummaryPrompt(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        professorName: String?,
+        sources: List<CourseMaterialSummarySource>,
+        language: InterviewLanguage
+    ): String {
+        val payload = sources.map { source ->
+            mapOf(
+                "fileName" to source.fileName,
+                "snippets" to source.snippets
+            )
+        }
+        return """
+            ${generationSystemRole(language, "university course summary writer")}
+            ${jsonLanguageInstruction(language)}
+
+            [대학교]
+            $universityName
+
+            [학과]
+            $departmentName
+
+            [과목명]
+            $courseName
+
+            [교수명]
+            ${professorName?.trim()?.takeIf { it.isNotBlank() } ?: "미상"}
+
+            [선택 강의자료 발췌]
+            ${objectMapper.writeValueAsString(payload)}
+
+            출력 JSON 스키마:
+            {
+              "title": "요약본 제목",
+              "overview": "과목 전체 흐름을 설명하는 3~5문장 요약",
+              "majorTopics": [
+                {
+                  "title": "대주제 제목",
+                  "summary": "이 대주제의 핵심 맥락과 학술적 의의를 설명하는 2~4문장",
+                  "subtopics": [
+                    {
+                      "title": "소주제 제목",
+                      "summary": "소주제의 핵심 개념과 맥락을 설명하는 2~3문장",
+                      "keyPoints": [
+                        "핵심 개념, 정의, 원리, 절차, 공식, 비교 포인트 중 하나를 구체적으로 설명하는 문장",
+                        "..."
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+
+            규칙:
+            - 선택된 강의자료 발췌만 근거로 사용할 것
+            - 자료에 없는 내용은 보태지 말 것
+            - overview는 과목 전체의 큰 흐름과 개념 간 연결 관계를 짧고 선명하게 정리할 것
+            - majorTopics는 반드시 3~6개 작성할 것
+            - 각 majorTopics.summary는 짧은 감상문이 아니라, 그 대주제에서 다루는 학술적 범위와 핵심 논점을 설명할 것
+            - 각 대주제마다 subtopics를 반드시 3~5개 작성할 것
+            - 각 소주제에는 summary를 반드시 작성할 것
+            - 각 소주제 summary는 그 소주제가 어떤 개념을 설명하고, 상위 대주제 안에서 어떤 역할을 하는지 드러내는 2~3문장으로 작성할 것
+            - 각 소주제의 keyPoints는 반드시 4~6개 작성할 것
+            - keyPoints는 짧은 키워드가 아니라 완결된 설명 문장으로 작성할 것
+            - keyPoints에는 정의, 원리, 시간복잡도, 점화식, 절차, 비교 기준, 장단점, 예외 조건처럼 시험 답안에 직접 쓸 수 있는 학술 정보를 우선 포함할 것
+            - 가능하면 한 소주제 안에서 "정의 -> 작동 원리 -> 예시/비교 -> 주의할 점" 순서가 드러나게 구성할 것
+            - 학습 조언, 태도, 체크리스트, 시험 요령 같은 메타 조언은 쓰지 말 것
+            - "중요하다", "다룬다", "설명한다" 같은 일반론만 쓰지 말고, 발췌에 등장하는 용어를 최대한 그대로 살려 구체적으로 서술할 것
+            - 서로 다른 자료에서 같은 개념이 반복되면 하나의 대주제로 묶고, 세부 차이는 소주제/핵심내용에서 구분할 것
+            - 한국어 JSON 객체만 반환하고 코드블록은 금지
+        """.trimIndent()
+    }
+
     private fun buildBatchTechQuestionPrompt(
         jobName: String,
         skillNames: List<String>,
@@ -1262,6 +1358,52 @@ class InterviewAiOrchestrator(
                 )
             }
             .orEmpty()
+    }
+
+    private fun parseGeneratedCourseMaterialSummary(raw: String): GeneratedCourseMaterialSummary {
+        val node = objectMapper.readTree(raw)
+        val title = node.text("title").trim().ifBlank { "강의자료 요약본" }
+        val overview = node.text("overview").trim().ifBlank {
+            throw IllegalStateException("요약 overview가 비어 있습니다.")
+        }
+        val majorTopics = node["majorTopics"]
+            ?.takeIf { it.isArray }
+            ?.mapNotNull { item ->
+                val topicTitle = item.text("title").trim().takeIf(String::isNotBlank) ?: return@mapNotNull null
+                val summary = item.text("summary").trim().takeIf(String::isNotBlank) ?: return@mapNotNull null
+                val subtopics = item["subtopics"]
+                    ?.takeIf { it.isArray }
+                    ?.mapNotNull subtopicMap@{ subtopic ->
+                        val subtopicTitle = subtopic.text("title").trim().takeIf(String::isNotBlank) ?: return@subtopicMap null
+                        val subtopicSummary = subtopic.text("summary").trim().takeIf(String::isNotBlank) ?: return@subtopicMap null
+                        val keyPoints = subtopic["keyPoints"]
+                            ?.takeIf { it.isArray }
+                            ?.mapNotNull { point -> point.asText().trim().takeIf(String::isNotBlank) }
+                            .orEmpty()
+                        if (keyPoints.isEmpty()) return@subtopicMap null
+                        GeneratedCourseMaterialSummarySubtopic(
+                            title = subtopicTitle,
+                            summary = subtopicSummary,
+                            keyPoints = keyPoints
+                        )
+                    }
+                    .orEmpty()
+                if (subtopics.isEmpty()) return@mapNotNull null
+                GeneratedCourseMaterialSummaryTopic(
+                    title = topicTitle,
+                    summary = summary,
+                    subtopics = subtopics
+                )
+            }
+            .orEmpty()
+        if (majorTopics.isEmpty()) {
+            throw IllegalStateException("요약본 구조가 충분하지 않습니다.")
+        }
+        return GeneratedCourseMaterialSummary(
+            title = title,
+            overview = overview,
+            majorTopics = majorTopics
+        )
     }
 
     private fun buildPastExamPracticeRefinementPrompt(
@@ -2553,6 +2695,29 @@ data class GeneratedCourseExamQuestion(
     val gradingCriteria: String,
     val referenceExample: String? = null,
     val maxScore: Int = 20
+)
+
+data class CourseMaterialSummarySource(
+    val fileName: String,
+    val snippets: List<String>
+)
+
+data class GeneratedCourseMaterialSummary(
+    val title: String,
+    val overview: String,
+    val majorTopics: List<GeneratedCourseMaterialSummaryTopic>
+)
+
+data class GeneratedCourseMaterialSummaryTopic(
+    val title: String,
+    val summary: String,
+    val subtopics: List<GeneratedCourseMaterialSummarySubtopic>
+)
+
+data class GeneratedCourseMaterialSummarySubtopic(
+    val title: String,
+    val summary: String,
+    val keyPoints: List<String>
 )
 
 data class PastExamPracticeQuestionCandidate(

@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.student.service
 
 import com.cw.vlainter.domain.student.dto.CreateStudentCourseRequest
+import com.cw.vlainter.domain.student.dto.CreateStudentCourseSummaryDocumentRequest
 import com.cw.vlainter.domain.student.dto.CreateStudentExamSessionRequest
 import com.cw.vlainter.domain.student.dto.CreateStudentWrongAnswerSetRequest
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialDownloadResponse
@@ -8,6 +9,7 @@ import com.cw.vlainter.domain.student.dto.StudentCourseMaterialKind
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialResponse
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialVisualAssetResponse
 import com.cw.vlainter.domain.student.dto.StudentCourseResponse
+import com.cw.vlainter.domain.student.dto.StudentCourseSummaryDocumentFormat
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialVisualAssetType
 import com.cw.vlainter.domain.student.dto.StudentExamGenerationMode
 import com.cw.vlainter.domain.student.dto.StudentExamQuestionStyle
@@ -21,9 +23,13 @@ import com.cw.vlainter.domain.student.dto.SubmitStudentExamAnswersRequest
 import com.cw.vlainter.domain.interview.ai.GeminiTransientException
 import com.cw.vlainter.domain.interview.ai.CourseExamEvaluationInput
 import com.cw.vlainter.domain.interview.ai.CourseExamEvaluationResult
+import com.cw.vlainter.domain.interview.ai.CourseMaterialSummarySource
 import com.cw.vlainter.domain.interview.ai.GeneratedCourseExamQuestion
+import com.cw.vlainter.domain.interview.ai.GeneratedCourseMaterialSummary
+import com.cw.vlainter.domain.interview.ai.GeneratedCourseMaterialSummaryTopic
 import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.ai.PastExamPracticeQuestionCandidate
+import com.cw.vlainter.domain.interview.entity.DocChunkEmbedding
 import com.cw.vlainter.domain.student.entity.StudentCourse
 import com.cw.vlainter.domain.student.entity.StudentCourseMaterial
 import com.cw.vlainter.domain.student.entity.StudentExamQuestion
@@ -52,13 +58,26 @@ import com.cw.vlainter.domain.userFile.service.UserFileService
 import com.cw.vlainter.global.security.AuthPrincipal
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
+import org.apache.pdfbox.pdmodel.PDDocument
+import org.apache.pdfbox.pdmodel.PDPage
+import org.apache.pdfbox.pdmodel.PDPageContentStream
+import org.apache.pdfbox.pdmodel.common.PDRectangle
+import org.apache.pdfbox.pdmodel.font.PDType0Font
+import org.apache.poi.xwpf.usermodel.ParagraphAlignment
+import org.apache.poi.xwpf.usermodel.XWPFDocument
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.STShd
 import org.springframework.http.HttpStatus
+import org.springframework.core.io.ClassPathResource
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.multipart.MultipartFile
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder
 import org.springframework.web.server.ResponseStatusException
 import kotlin.math.roundToInt
+import java.awt.Color
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.text.Normalizer
 import java.time.OffsetDateTime
 
 @Service
@@ -81,6 +100,43 @@ class StudentCourseService(
     private companion object {
         const val PAST_EXAM_FILE_NAME_PREFIX = "__STUDENT_PAST_EXAM__"
         const val DEFAULT_QUESTION_MAX_SCORE = 20
+        const val SUMMARY_SNIPPET_SAMPLE_SIZE = 8
+        val ACADEMIC_EMPHASIS_PATTERNS = listOf(
+            Regex("""\b(?:O|Omega|Theta)\s*\([^)]*\)"""),
+            Regex("""\b(?:T|f|dp)\s*\([^)]*\)"""),
+            Regex("""[A-Za-z]\[[^]]+]"""),
+            Regex("""\b(?:점화식|시간 복잡도|공간 복잡도|점근|의사코드|pseudo[- ]?code|알고리즘|복잡도|정의)\b"""),
+            Regex("""[=<>+\-*/^]""")
+        )
+        val PDF_UNICODE_FALLBACKS = mapOf(
+            0x00A0 to " ",
+            0x2013 to "-",
+            0x2014 to "-",
+            0x2018 to "'",
+            0x2019 to "'",
+            0x201C to "\"",
+            0x201D to "\"",
+            0x2026 to "...",
+            0x03A9 to "Omega",
+            0x03B1 to "alpha",
+            0x03B2 to "beta",
+            0x03B3 to "gamma",
+            0x03B4 to "delta",
+            0x03B8 to "theta",
+            0x03BB to "lambda",
+            0x03BC to "mu",
+            0x03C0 to "pi",
+            0x03C3 to "sigma",
+            0x0394 to "Delta"
+        )
+        val PDF_FONT_CANDIDATES = listOf(
+            "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+            "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf",
+            "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+            "/System/Library/Fonts/Supplemental/AppleSDGothicNeo.ttc"
+        )
     }
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -262,6 +318,75 @@ class StudentCourseService(
             downloadFileName = buildVisualAssetDownloadFileName(material, asset),
             fallbackContentType = asset.contentType
         )
+    }
+
+    @Transactional(readOnly = true)
+    fun generateCourseSummaryDocument(
+        principal: AuthPrincipal,
+        courseId: Long,
+        request: CreateStudentCourseSummaryDocumentRequest
+    ): UserFileService.FileContentResource {
+        val user = getValidatedStudentUser(principal)
+        val course = getOwnedCourse(user.id, courseId)
+        userGeminiApiKeyService.assertGeminiApiKeyConfigured(user.id)
+
+        val materialsById = studentCourseMaterialRepository.findAllByCourse_IdOrderByCreatedAtDesc(course.id)
+            .associateBy(StudentCourseMaterial::id)
+        val selectedMaterials = request.selectedMaterialIds.distinct().map { materialId ->
+            materialsById[materialId]
+                ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "선택한 강의자료를 찾을 수 없습니다.")
+        }
+        if (selectedMaterials.any { resolveMaterialKind(it) != StudentCourseMaterialKind.LECTURE_MATERIAL }) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "요약본은 강의자료만 선택할 수 있습니다.")
+        }
+        val notReadyMaterial = selectedMaterials.firstOrNull {
+            documentIngestionJobRepository.findTopByDocumentFileIdOrderByRequestedAtDesc(it.userFile.id)?.status != DocumentIngestionStatus.READY
+        }
+        if (notReadyMaterial != null) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "\"${decodeDisplayMaterialFileName(notReadyMaterial.userFile.fileName)}\" 자료 분석이 아직 완료되지 않았습니다."
+            )
+        }
+
+        val summarySources = collectSummarySources(user.id, selectedMaterials)
+        if (summarySources.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "요약본 생성에 사용할 강의자료 발췌가 부족합니다. 자료를 다시 분석해 주세요.")
+        }
+
+        logger.info(
+            "학생 강의자료 요약 생성 요청 courseId={} userId={} format={} selectedMaterials={} sources={} snippets={}",
+            course.id,
+            user.id,
+            request.format,
+            selectedMaterials.size,
+            summarySources.size,
+            summarySources.sumOf { it.snippets.size }
+        )
+
+        val summary = userGeminiApiKeyService.withUserApiKey(user.id) {
+            interviewAiOrchestrator.generateCourseMaterialSummary(
+                universityName = user.universityName!!.trim(),
+                departmentName = user.departmentName!!.trim(),
+                courseName = course.courseName,
+                professorName = course.professorName,
+                sources = summarySources,
+                language = InterviewLanguage.KO
+            )
+        }
+        val fileName = buildSummaryDocumentFileName(course, selectedMaterials.size, request.format)
+        return when (request.format) {
+            StudentCourseSummaryDocumentFormat.DOCX -> UserFileService.FileContentResource(
+                bytes = createSummaryDocx(summary, course, selectedMaterials.map { decodeDisplayMaterialFileName(it.userFile.fileName) }),
+                contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                fileName = fileName
+            )
+            StudentCourseSummaryDocumentFormat.PDF -> UserFileService.FileContentResource(
+                bytes = createSummaryPdf(summary, course, selectedMaterials.map { decodeDisplayMaterialFileName(it.userFile.fileName) }),
+                contentType = "application/pdf",
+                fileName = fileName
+            )
+        }
     }
 
     @Transactional
@@ -687,7 +812,8 @@ class StudentCourseService(
     }
 
     private fun decodeDisplayMaterialFileName(fileName: String): String {
-        return fileName.removePrefix(PAST_EXAM_FILE_NAME_PREFIX).trim().ifBlank { fileName }
+        val decoded = fileName.removePrefix(PAST_EXAM_FILE_NAME_PREFIX).trim().ifBlank { fileName }
+        return normalizeDisplayText(decoded)
     }
 
     private fun encodeStoredMaterialFileName(originalFileName: String?, materialKind: StudentCourseMaterialKind): String {
@@ -919,6 +1045,63 @@ class StudentCourseService(
             }
             .distinct()
             .take(totalLimit)
+    }
+
+    private fun collectSummarySources(
+        userId: Long,
+        materials: List<StudentCourseMaterial>
+    ): List<CourseMaterialSummarySource> {
+        return materials.mapNotNull { material ->
+            val fileName = decodeDisplayMaterialFileName(material.userFile.fileName)
+            val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
+            val snippets = buildSummarySnippets(chunks)
+            if (snippets.isEmpty()) {
+                null
+            } else {
+                CourseMaterialSummarySource(
+                    fileName = fileName,
+                    snippets = snippets
+                )
+            }
+        }
+    }
+
+    private fun buildSummarySnippets(chunks: List<DocChunkEmbedding>): List<String> {
+        val normalizedChunks = chunks.mapNotNull { chunk ->
+            val text = normalizeChunkText(chunk.chunkText)
+            text.takeIf { it.length >= 80 }?.let { chunk.chunkNo to it }
+        }
+        if (normalizedChunks.isEmpty()) return emptyList()
+
+        val mergedSegments = normalizedChunks.chunked(2).map { group ->
+            val firstChunkNo = group.first().first
+            val lastChunkNo = group.last().first
+            val mergedText = group.joinToString("\n") { it.second }
+                .let { if (it.length <= 1100) it else it.take(1100).trimEnd() + "..." }
+            "[문서 구간 ${firstChunkNo}-${lastChunkNo}] $mergedText"
+        }
+
+        return sampleEvenly(mergedSegments.distinct())
+    }
+
+    private fun normalizeChunkText(text: String): String =
+        normalizeDisplayText(text).replace(Regex("\\s+"), " ").trim()
+
+    private fun normalizeDisplayText(text: String): String =
+        Normalizer.normalize(text, Normalizer.Form.NFC)
+
+    private fun <T> sampleEvenly(items: List<T>): List<T> {
+        val limit = SUMMARY_SNIPPET_SAMPLE_SIZE
+        if (items.size <= limit) return items
+        val sampled = linkedSetOf<T>()
+        val lastIndex = items.lastIndex
+        repeat(limit) { index ->
+            val targetIndex = ((index.toDouble() * lastIndex) / (limit - 1).coerceAtLeast(1))
+                .toInt()
+                .coerceIn(0, lastIndex)
+            sampled += items[targetIndex]
+        }
+        return sampled.toList()
     }
 
     private fun collectStyleReferenceSnippets(
@@ -1352,6 +1535,376 @@ class StudentCourseService(
             isCorrect = score >= (question.maxScore * 0.6).roundToInt(),
             feedback = feedback
         )
+    }
+
+    private fun buildSummaryDocumentFileName(
+        course: StudentCourse,
+        materialCount: Int,
+        format: StudentCourseSummaryDocumentFormat
+    ): String {
+        val baseName = course.courseName.trim()
+            .replace(Regex("[^0-9A-Za-z가-힣._ -]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .ifBlank { "강의자료_요약본" }
+        val extension = when (format) {
+            StudentCourseSummaryDocumentFormat.DOCX -> "docx"
+            StudentCourseSummaryDocumentFormat.PDF -> "pdf"
+        }
+        return "${baseName}_요약본(${materialCount}개).$extension"
+    }
+
+    private fun createSummaryDocx(
+        summary: GeneratedCourseMaterialSummary,
+        course: StudentCourse,
+        sourceFileNames: List<String>
+    ): ByteArray {
+        return ByteArrayOutputStream().use { outputStream ->
+            XWPFDocument().use { document ->
+                document.createParagraph().apply {
+                    alignment = ParagraphAlignment.CENTER
+                    spacingAfter = 120
+                    createRun().apply {
+                        isBold = true
+                        fontSize = 17
+                        setText(summary.title)
+                    }
+                }
+                document.createParagraph().apply {
+                    alignment = ParagraphAlignment.CENTER
+                    spacingAfter = 220
+                    createRun().apply {
+                        fontSize = 10
+                        setText("${course.universityName} · ${course.departmentName} · ${course.courseName}${course.professorName?.let { " · $it" } ?: ""}")
+                    }
+                }
+                appendDocxSection(document, "과목 개요", listOf(summary.overview), bullet = false)
+                summary.majorTopics.forEachIndexed { index, topic ->
+                    appendDocxTopicSection(document, index + 1, topic)
+                }
+                appendDocxSection(document, "참고한 강의자료", sourceFileNames.distinct())
+                document.write(outputStream)
+            }
+            outputStream.toByteArray()
+        }
+    }
+
+    private fun appendDocxSection(
+        document: XWPFDocument,
+        title: String,
+        lines: List<String>,
+        bullet: Boolean = true
+    ) {
+        if (lines.isEmpty()) return
+        document.createParagraph().apply {
+            spacingAfter = 120
+        }.createRun().apply {
+            isBold = true
+            fontSize = 13
+            setText(title)
+        }
+        lines.filter { it.isNotBlank() }.forEach { line ->
+            document.createParagraph().apply {
+                spacingAfter = 100
+                spacingBetween = 1.18
+            }.createRun().apply {
+                fontSize = 10
+                setText(if (bullet) "• $line" else line)
+            }
+        }
+    }
+
+    private fun appendDocxTopicSection(
+        document: XWPFDocument,
+        topicIndex: Int,
+        topic: GeneratedCourseMaterialSummaryTopic
+    ) {
+        document.createParagraph().apply {
+            spacingBefore = 120
+            spacingAfter = 90
+        }.createRun().apply {
+            isBold = true
+            fontSize = 13
+            setText("$topicIndex. ${topic.title}")
+        }
+        document.createParagraph().apply {
+            spacingAfter = 120
+            spacingBetween = 1.2
+        }.createRun().apply {
+            fontSize = 10
+            setText(topic.summary)
+        }
+        topic.subtopics.forEachIndexed { subtopicIndex, subtopic ->
+            document.createParagraph().apply {
+                indentationLeft = 240
+                spacingBefore = 40
+                spacingAfter = 70
+            }.createRun().apply {
+                isBold = true
+                fontSize = 11
+                setText("$topicIndex.${subtopicIndex + 1} ${subtopic.title}")
+            }
+            document.createParagraph().apply {
+                indentationLeft = 360
+                spacingAfter = 90
+                spacingBetween = 1.2
+            }.createRun().apply {
+                fontSize = 10
+                setText(subtopic.summary)
+            }
+            subtopic.keyPoints.forEach { keyPoint ->
+                val emphasized = shouldEmphasizeAcademicLine(keyPoint)
+                val paragraph = document.createParagraph().apply {
+                    indentationLeft = 540
+                    spacingAfter = 70
+                    spacingBetween = 1.22
+                }
+                if (emphasized) {
+                    styleDocxCalloutParagraph(paragraph)
+                }
+                paragraph.createRun().apply {
+                    isBold = emphasized
+                    fontSize = if (emphasized) 11 else 10
+                    setText("• $keyPoint")
+                }
+            }
+        }
+    }
+
+    private fun createSummaryPdf(
+        summary: GeneratedCourseMaterialSummary,
+        course: StudentCourse,
+        sourceFileNames: List<String>
+    ): ByteArray {
+        return ByteArrayOutputStream().use { outputStream ->
+            PDDocument().use { document ->
+                val font = loadPdfFont(document)
+                    ?: throw ResponseStatusException(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "PDF 요약본 생성에 사용할 수 있는 한글 폰트를 찾지 못했습니다. DOCX 형식으로 다운로드해 주세요."
+                    )
+                val pageSize = PDRectangle.A4
+                val margin = 48f
+                var page = PDPage(pageSize)
+                document.addPage(page)
+                var contentStream = PDPageContentStream(document, page)
+                var cursorY = page.mediaBox.height - margin
+
+                fun ensureSpace(requiredHeight: Float) {
+                    if (cursorY - requiredHeight > margin) return
+                    contentStream.close()
+                    page = PDPage(pageSize)
+                    document.addPage(page)
+                    contentStream = PDPageContentStream(document, page)
+                    cursorY = page.mediaBox.height - margin
+                }
+
+                fun writeWrapped(
+                    text: String,
+                    fontSize: Float = 12f,
+                    indent: Float = 0f,
+                    spacingAfter: Float = 6f,
+                    lineGap: Float = 5f
+                ) {
+                    val maxWidth = page.mediaBox.width - margin * 2 - indent
+                    val lines = wrapPdfText(text, font, fontSize, maxWidth)
+                    ensureSpace(lines.size * (fontSize + lineGap) + spacingAfter)
+                    lines.forEach { line ->
+                        contentStream.beginText()
+                        contentStream.setFont(font, fontSize)
+                        contentStream.newLineAtOffset(margin + indent, cursorY)
+                        contentStream.showText(line)
+                        contentStream.endText()
+                        cursorY -= fontSize + lineGap
+                    }
+                    cursorY -= spacingAfter
+                }
+
+                fun writeCallout(
+                    text: String,
+                    fontSize: Float = 10.9f,
+                    indent: Float = 42f,
+                    spacingAfter: Float = 4f,
+                    lineGap: Float = 5.4f
+                ) {
+                    val paddingX = 10f
+                    val paddingY = 8f
+                    val boxWidth = page.mediaBox.width - margin * 2 - indent
+                    val contentWidth = boxWidth - paddingX * 2
+                    val lines = wrapPdfText(text, font, fontSize, contentWidth)
+                    val lineHeight = fontSize + lineGap
+                    val boxHeight = lines.size * lineHeight + paddingY * 2
+                    ensureSpace(boxHeight + spacingAfter)
+
+                    val topY = cursorY + 4f
+                    val boxY = topY - boxHeight
+                    val boxX = margin + indent
+
+                    contentStream.setNonStrokingColor(Color(243, 244, 246))
+                    contentStream.addRect(boxX, boxY, boxWidth, boxHeight)
+                    contentStream.fill()
+                    contentStream.setNonStrokingColor(Color.BLACK)
+
+                    var textY = topY - paddingY - fontSize
+                    lines.forEach { line ->
+                        contentStream.beginText()
+                        contentStream.setFont(font, fontSize)
+                        contentStream.newLineAtOffset(boxX + paddingX, textY)
+                        contentStream.showText(line)
+                        contentStream.endText()
+                        textY -= lineHeight
+                    }
+                    cursorY = boxY - spacingAfter
+                }
+
+                writeWrapped(summary.title, fontSize = 17f, spacingAfter = 12f, lineGap = 5.5f)
+                writeWrapped("${course.universityName} · ${course.departmentName} · ${course.courseName}${course.professorName?.let { " · $it" } ?: ""}", fontSize = 10f, spacingAfter = 14f)
+                writeWrapped("과목 개요", fontSize = 13f, spacingAfter = 5f)
+                writeWrapped(summary.overview, fontSize = 10.4f, spacingAfter = 12f, lineGap = 5.5f)
+                summary.majorTopics.forEachIndexed { index, topic ->
+                    writeWrapped("${index + 1}. ${topic.title}", fontSize = 13f, spacingAfter = 5f, lineGap = 5.2f)
+                    writeWrapped(topic.summary, fontSize = 10.4f, spacingAfter = 7f, lineGap = 5.5f)
+                    topic.subtopics.forEachIndexed { subtopicIndex, subtopic ->
+                        writeWrapped("${index + 1}.${subtopicIndex + 1} ${subtopic.title}", fontSize = 11f, indent = 18f, spacingAfter = 4f, lineGap = 5.2f)
+                        writeWrapped(subtopic.summary, fontSize = 10.2f, indent = 30f, spacingAfter = 5f, lineGap = 5.4f)
+                        subtopic.keyPoints.forEach { keyPoint ->
+                            val emphasized = shouldEmphasizeAcademicLine(keyPoint)
+                            if (emphasized) {
+                                writeCallout("• $keyPoint")
+                            } else {
+                                writeWrapped(
+                                    text = "• $keyPoint",
+                                    fontSize = 10.2f,
+                                    indent = 42f,
+                                    spacingAfter = 3f,
+                                    lineGap = 5.4f
+                                )
+                            }
+                        }
+                        cursorY -= 4f
+                    }
+                    cursorY -= 8f
+                }
+                writeWrapped("참고한 강의자료", fontSize = 13f, spacingAfter = 5f)
+                sourceFileNames.distinct().forEach { writeWrapped("• $it", fontSize = 10.2f, indent = 18f, spacingAfter = 3f, lineGap = 5.2f) }
+
+                contentStream.close()
+                document.save(outputStream)
+            }
+            outputStream.toByteArray()
+        }
+    }
+
+    private fun wrapPdfText(
+        text: String,
+        font: PDType0Font,
+        fontSize: Float,
+        maxWidth: Float
+    ): List<String> {
+        val normalizedText = sanitizePdfText(text, font)
+        if (normalizedText.isBlank()) return listOf("")
+        val paragraphs = normalizedText.split('\n')
+        val lines = mutableListOf<String>()
+        paragraphs.forEach { paragraph ->
+            val words = paragraph.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+            if (words.isEmpty()) {
+                lines += ""
+                return@forEach
+            }
+            var current = ""
+            words.forEach { word ->
+                val candidate = if (current.isBlank()) word else "$current $word"
+                val width = font.getStringWidth(candidate) / 1000f * fontSize
+                if (width <= maxWidth || current.isBlank()) {
+                    current = candidate
+                } else {
+                    lines += current
+                    current = word
+                }
+            }
+            if (current.isNotBlank()) {
+                lines += current
+            }
+        }
+        return lines
+    }
+
+    private fun sanitizePdfText(text: String, font: PDType0Font): String {
+        if (text.isEmpty()) return text
+        val sanitized = StringBuilder(text.length)
+        var index = 0
+        while (index < text.length) {
+            val codePoint = text.codePointAt(index)
+            val raw = String(Character.toChars(codePoint))
+            val normalized = PDF_UNICODE_FALLBACKS[codePoint] ?: raw
+            when {
+                canRenderPdfText(font, normalized) -> sanitized.append(normalized)
+                canRenderPdfText(font, raw) -> sanitized.append(raw)
+                Character.isWhitespace(codePoint) -> sanitized.append(' ')
+                else -> sanitized.append('?')
+            }
+            index += Character.charCount(codePoint)
+        }
+        return sanitized.toString()
+    }
+
+    private fun canRenderPdfText(font: PDType0Font, text: String): Boolean =
+        runCatching {
+            font.encode(text)
+        }.isSuccess
+
+    private fun shouldEmphasizeAcademicLine(text: String): Boolean {
+        val normalized = text.trim()
+        if (normalized.isBlank()) return false
+        return ACADEMIC_EMPHASIS_PATTERNS.any { it.containsMatchIn(normalized) }
+    }
+
+    private fun styleDocxCalloutParagraph(paragraph: org.apache.poi.xwpf.usermodel.XWPFParagraph) {
+        val pPr = paragraph.ctp.pPr ?: paragraph.ctp.addNewPPr()
+        val shading = if (pPr.isSetShd) pPr.shd else pPr.addNewShd()
+        shading.fill = "F3F4F6"
+        shading.color = "auto"
+        shading.`val` = STShd.CLEAR
+        paragraph.indentationLeft = 640
+        paragraph.indentationRight = 120
+        paragraph.spacingBefore = 30
+        paragraph.spacingAfter = 90
+        paragraph.spacingBetween = 1.2
+    }
+
+    private fun loadPdfFont(document: PDDocument): PDType0Font? {
+        loadBundledPdfFont(document)?.let { return it }
+        return PDF_FONT_CANDIDATES.asSequence()
+            .map(::File)
+            .filter { it.exists() && it.isFile }
+            .mapNotNull { fontFile ->
+                runCatching { PDType0Font.load(document, fontFile) }
+                    .onFailure { ex ->
+                        logger.warn("PDF 한글 폰트 로드 실패 path={} reason={}", fontFile.absolutePath, ex.message)
+                    }
+                    .getOrNull()
+            }
+            .firstOrNull()
+    }
+
+    private fun loadBundledPdfFont(document: PDDocument): PDType0Font? {
+        val resourcePaths = listOf(
+            "fonts/NanumGothic-Regular.ttf",
+            "fonts/NotoSansCJKkr-Regular.otf"
+        )
+        return resourcePaths.asSequence()
+            .map(::ClassPathResource)
+            .filter { it.exists() }
+            .mapNotNull { resource ->
+                runCatching {
+                    resource.inputStream.use { inputStream ->
+                        PDType0Font.load(document, inputStream)
+                    }
+                }.onFailure { ex ->
+                    logger.warn("번들 PDF 한글 폰트 로드 실패 resource={} reason={}", resource.path, ex.message)
+                }.getOrNull()
+            }
+            .firstOrNull()
     }
 
     private fun StudentCourse.toResponse(): StudentCourseResponse = StudentCourseResponse(
