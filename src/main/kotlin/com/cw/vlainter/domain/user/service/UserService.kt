@@ -101,15 +101,12 @@ class UserService(
         if ((normalizedUniversity == null) != (normalizedDepartment == null)) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학교와 학과는 함께 입력하거나 함께 비워 주세요.")
         }
-        if ((universityId == null) != (departmentId == null)) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학교와 학과는 검색 결과에서 함께 선택해 주세요.")
-        }
         if (user.serviceMode == UserServiceMode.STUDENT && normalizedUniversity == null) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학생 모드에서는 대학교와 학과를 입력해 주세요.")
         }
         if (normalizedUniversity != null) {
-            if (universityId == null || departmentId == null) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학교와 학과는 검색 결과에서 선택해 주세요.")
+            if (universityId == null) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학교는 검색 결과에서 선택해 주세요.")
             }
             val verifiedUniversity = academicSearchService.resolveVerifiedUniversity(
                 universityId = universityId,
@@ -118,17 +115,21 @@ class UserService(
                 HttpStatus.BAD_REQUEST,
                 "검색 결과에서 선택한 대학교만 저장할 수 있습니다."
             )
-            val verifiedDepartment = academicSearchService.resolveVerifiedDepartment(
-                universityId = universityId,
-                departmentId = departmentId,
-                departmentName = normalizedDepartment ?: "",
-                universityName = verifiedUniversity.universityName
-            ) ?: throw ResponseStatusException(
-                HttpStatus.BAD_REQUEST,
-                "검색 결과에서 선택한 학과만 저장할 수 있습니다."
-            )
             user.universityName = verifiedUniversity.universityName
-            user.departmentName = verifiedDepartment.departmentName
+            user.departmentName = if (departmentId != null) {
+                val verifiedDepartment = academicSearchService.resolveVerifiedDepartment(
+                    universityId = universityId,
+                    departmentId = departmentId,
+                    departmentName = normalizedDepartment ?: "",
+                    universityName = verifiedUniversity.universityName
+                ) ?: throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "검색 결과에서 선택한 학과만 저장할 수 있습니다."
+                )
+                verifiedDepartment.departmentName
+            } else {
+                normalizedDepartment
+            }
         } else {
             user.universityName = null
             user.departmentName = null

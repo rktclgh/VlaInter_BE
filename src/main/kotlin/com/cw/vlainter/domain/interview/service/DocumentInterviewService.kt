@@ -133,6 +133,7 @@ class DocumentInterviewService(
         private const val INTRO_QUESTION_TEXT = INTERVIEW_INTRO_QUESTION_TEXT
         private const val MAX_COURSE_VISUAL_ASSETS = 12
         private const val COURSE_VISUAL_RENDER_DPI = 140f
+        private const val OCR_MIN_RENDER_WIDTH = 1800
     }
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -1717,7 +1718,12 @@ class DocumentInterviewService(
         val imagePath = Files.createTempFile("vlainter-image-ocr-", ".$format")
         val outputBase = imagePath.resolveSibling(imagePath.fileName.toString().removeSuffix(".$format"))
         return try {
-            Files.write(imagePath, bytes)
+            val image = ByteArrayInputStream(bytes).use(ImageIO::read)
+            if (image != null) {
+                writePreparedImageForOcr(image, imagePath)
+            } else {
+                Files.write(imagePath, bytes)
+            }
             val text = runTesseract(imagePath, outputBase, languages)
             ExtractedDocumentText(
                 text = normalizeText(text),
@@ -2104,9 +2110,7 @@ class DocumentInterviewService(
             val outputBase = imagePath.resolveSibling(imagePath.fileName.toString().removeSuffix(".png"))
             try {
                 val image = renderer.renderImageWithDPI(pageIndex, ocrProperties.renderDpi)
-                imagePath.toFile().outputStream().use { output ->
-                    ImageIO.write(image, "png", output)
-                }
+                writePreparedImageForOcr(image, imagePath)
                 val text = runTesseract(imagePath, outputBase, languages)
                 if (text.isNotBlank()) {
                     pageTexts += text
@@ -2132,8 +2136,12 @@ class DocumentInterviewService(
             outputBase.toString(),
             "-l",
             languages,
+            "--oem",
+            "1",
             "--psm",
             "6",
+            "-c",
+            "preserve_interword_spaces=1",
             "txt"
         )
             .redirectErrorStream(true)
@@ -2155,6 +2163,55 @@ class DocumentInterviewService(
             return ""
         }
         return Files.readString(outputTextFile)
+    }
+
+    private fun writePreparedImageForOcr(image: BufferedImage, targetPath: Path) {
+        val prepared = prepareImageForOcr(image)
+        targetPath.toFile().outputStream().use { output ->
+            ImageIO.write(prepared, "png", output)
+        }
+    }
+
+    private fun prepareImageForOcr(source: BufferedImage): BufferedImage {
+        val scale = if (source.width >= OCR_MIN_RENDER_WIDTH) 1.0 else OCR_MIN_RENDER_WIDTH.toDouble() / source.width.toDouble()
+        val targetWidth = max(1, (source.width * scale).roundToInt())
+        val targetHeight = max(1, (source.height * scale).roundToInt())
+        val scaled = BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_BYTE_GRAY)
+        val graphics = scaled.createGraphics()
+        try {
+            graphics.color = Color.WHITE
+            graphics.fillRect(0, 0, targetWidth, targetHeight)
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            graphics.drawImage(source, 0, 0, targetWidth, targetHeight, null)
+        } finally {
+            graphics.dispose()
+        }
+
+        val threshold = estimateOcrThreshold(scaled)
+        val binarized = BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_BYTE_BINARY)
+        for (y in 0 until targetHeight) {
+            for (x in 0 until targetWidth) {
+                val gray = scaled.raster.getSample(x, y, 0)
+                val rgb = if (gray < threshold) Color.BLACK.rgb else Color.WHITE.rgb
+                binarized.setRGB(x, y, rgb)
+            }
+        }
+        return binarized
+    }
+
+    private fun estimateOcrThreshold(image: BufferedImage): Int {
+        var sum = 0L
+        var count = 0L
+        for (y in 0 until image.height step 2) {
+            for (x in 0 until image.width step 2) {
+                sum += image.raster.getSample(x, y, 0)
+                count += 1
+            }
+        }
+        if (count == 0L) return 180
+        val average = (sum / count).toInt()
+        return average.coerceIn(140, 205)
     }
 
     private fun resolveOcrLanguages(): String? {
@@ -2212,7 +2269,12 @@ class DocumentInterviewService(
 
     private fun normalizeText(text: String): String {
         return text.replace("\u0000", " ")
-            .replace(Regex("\\s+"), " ")
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .lineSequence()
+            .map { line -> line.replace(Regex("[ \\t]+"), " ").trim() }
+            .joinToString("\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
             .trim()
     }
 

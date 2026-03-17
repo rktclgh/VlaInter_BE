@@ -368,6 +368,35 @@ class InterviewAiOrchestrator(
         }
     }
 
+    fun recoverPastExamPracticeQuestionCandidates(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        professorName: String?,
+        sourceFileName: String,
+        extractionMethod: String?,
+        rawText: String,
+        expectedQuestionCount: Int,
+        language: InterviewLanguage = InterviewLanguage.KO
+    ): List<String> {
+        require(rawText.isNotBlank()) { "rawText must not be blank." }
+        require(expectedQuestionCount > 0) { "expectedQuestionCount must be positive." }
+
+        val prompt = buildPastExamPracticeRecoveryPrompt(
+            universityName = universityName,
+            departmentName = departmentName,
+            courseName = courseName,
+            professorName = professorName,
+            sourceFileName = sourceFileName,
+            extractionMethod = extractionMethod,
+            rawText = rawText,
+            expectedQuestionCount = expectedQuestionCount,
+            language = language
+        )
+        val generated = llmProviderRouter.generateJson(prompt, temperature = 0.05)
+        return parseRecoveredPastExamPracticeQuestions(generated.text)
+    }
+
     fun evaluateCourseExamAnswersBatch(
         universityName: String,
         departmentName: String,
@@ -1297,6 +1326,75 @@ class InterviewAiOrchestrator(
             - 모든 questionText, canonicalAnswer, gradingCriteria, referenceExample은 ${language.displayLanguageName()}로 작성할 것
             - 반드시 입력 문제 수와 동일한 개수, 동일한 순서로 JSON만 출력할 것
         """.trimIndent()
+    }
+
+    private fun buildPastExamPracticeRecoveryPrompt(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        professorName: String?,
+        sourceFileName: String,
+        extractionMethod: String?,
+        rawText: String,
+        expectedQuestionCount: Int,
+        language: InterviewLanguage
+    ): String {
+        val professorLine = professorName?.trim()?.takeIf { it.isNotBlank() } ?: "미상"
+        return """
+            당신은 OCR로 추출된 대학 족보 원문을 문제 단위로 복원하는 편집자다.
+            목적은 새 문제를 만드는 것이 아니라, 깨진 OCR 텍스트에서 원래 존재하던 문제 경계만 복원하는 것이다.
+
+            [학교/학과/과목]
+            학교: $universityName
+            학과: $departmentName
+            과목: $courseName
+            교수명: $professorLine
+
+            [원문 정보]
+            자료명: $sourceFileName
+            추출 방식: ${extractionMethod ?: "UNKNOWN"}
+            기대 문제 수: 최대 ${expectedQuestionCount}개
+
+            [OCR 원문]
+            $rawText
+
+            출력 JSON 스키마:
+            {
+              "questions": [
+                {
+                  "questionText": "원문 문제 1개"
+                }
+              ]
+            }
+
+            절대 규칙:
+            - 새 문제를 만들지 말 것
+            - 원문에 없는 숫자, 조건, 행렬 크기, 그래프 정보, 변수, 배열, 입력값을 추가하지 말 것
+            - 여러 문제를 하나로 합치지 말 것
+            - 하나의 문제를 임의로 둘로 나누지 말 것
+            - questionText는 원문 표현을 최대한 유지할 것
+            - 띄어쓰기, 줄바꿈, 문장부호, 명백한 OCR 깨짐, 말이 되지 않는 문자만 최소한으로 보정할 수 있다
+            - 강의자료나 외부 지식을 사용하지 말 것
+            - 원문에서 확인 가능한 문제만 반환할 것
+            - 문제 수가 확실하지 않으면 무리해서 개수를 맞추지 말고, 식별 가능한 문제만 반환할 것
+            - 반환 개수는 1개 이상 ${expectedQuestionCount}개 이하로 제한할 것
+            - 모든 questionText는 ${language.displayLanguageName()}로 작성할 것
+            - 반드시 JSON만 출력할 것
+        """.trimIndent()
+    }
+
+    private fun parseRecoveredPastExamPracticeQuestions(json: String): List<String> {
+        val root = objectMapper.readTree(json)
+        return root.path("questions")
+            .takeIf(JsonNode::isArray)
+            ?.mapNotNull { node ->
+                node.path("questionText")
+                    .asText()
+                    .replace(Regex("\\s+"), " ")
+                    .trim()
+                    .takeIf { it.length >= 12 }
+            }
+            .orEmpty()
     }
 
     private fun validateGeneratedDocumentQuestions(

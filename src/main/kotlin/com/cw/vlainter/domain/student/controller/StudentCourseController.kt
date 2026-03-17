@@ -15,6 +15,9 @@ import com.cw.vlainter.domain.student.dto.SubmitStudentExamAnswersRequest
 import com.cw.vlainter.domain.student.service.StudentCourseService
 import com.cw.vlainter.global.security.AuthPrincipal
 import jakarta.validation.Valid
+import java.nio.charset.StandardCharsets
+import org.springframework.http.ContentDisposition
+import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -92,6 +95,37 @@ class StudentCourseController(
         @PathVariable materialId: Long
     ): ResponseEntity<StudentCourseMaterialDownloadResponse> {
         return ResponseEntity.ok(studentCourseService.getCourseMaterialDownloadUrl(principal, courseId, materialId))
+    }
+
+    @GetMapping("/{courseId}/materials/{materialId}/content")
+    fun getCourseMaterialContent(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable courseId: Long,
+        @PathVariable materialId: Long
+    ): ResponseEntity<ByteArray> {
+        val resource = studentCourseService.getCourseMaterialContent(principal, courseId, materialId)
+        return ResponseEntity.ok()
+            .contentType(MediaType.parseMediaType(resource.contentType))
+            .header(
+                HttpHeaders.CONTENT_DISPOSITION,
+                ContentDisposition.attachment().filename(resource.fileName, StandardCharsets.UTF_8).build().toString()
+            )
+            .body(resource.bytes)
+    }
+
+    @GetMapping("/material-visual-assets/{assetId}/content")
+    fun getCourseMaterialVisualAssetContent(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable assetId: Long
+    ): ResponseEntity<ByteArray> {
+        val resource = studentCourseService.getCourseMaterialVisualAssetContent(principal, assetId)
+        return ResponseEntity.ok()
+            .contentType(MediaType.parseMediaType(resource.contentType))
+            .header(
+                HttpHeaders.CONTENT_DISPOSITION,
+                ContentDisposition.inline().filename(resource.fileName, StandardCharsets.UTF_8).build().toString()
+            )
+            .body(resource.bytes)
     }
 
     @PostMapping("/{courseId}/materials/{materialId}/analyze")

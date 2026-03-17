@@ -91,7 +91,10 @@ data class CreateStudentExamSessionRequest(
     val difficultyLevel: Int? = null,
 
     @field:Size(max = 5, message = "문제 스타일은 최대 5개까지 선택할 수 있습니다.")
-    val questionStyles: List<StudentExamQuestionStyle> = emptyList()
+    val questionStyles: List<StudentExamQuestionStyle> = emptyList(),
+
+    @field:Size(max = 20, message = "선택 가능한 족보는 최대 20개입니다.")
+    val selectedPastExamMaterialIds: List<Long> = emptyList()
 )
 
 enum class StudentExamGenerationMode {
@@ -141,7 +144,9 @@ data class StudentExamQuestionResponse(
     val score: Int?,
     val feedback: String?,
     val isCorrect: Boolean?,
-    val answeredAt: OffsetDateTime?
+    val answeredAt: OffsetDateTime?,
+    val sourceFileName: String? = null,
+    val sourceVisualAssets: List<StudentCourseMaterialVisualAssetResponse> = emptyList()
 )
 
 data class StudentExamSessionDetailResponse(
@@ -198,7 +203,9 @@ data class StudentWrongAnswerItemResponse(
     val maxScore: Int,
     val answerText: String?,
     val score: Int?,
-    val feedback: String?
+    val feedback: String?,
+    val sourceFileName: String? = null,
+    val sourceVisualAssets: List<StudentCourseMaterialVisualAssetResponse> = emptyList()
 )
 
 data class SubmitStudentExamAnswersRequest(

@@ -39,7 +39,8 @@ class AcademicSearchService(
         if (academyInfoServiceKey.isBlank()) return emptyList()
 
         val responseBody = requestUniversitySearch(normalizedKeyword) ?: return emptyList()
-        val fetchedItems = parseItems(responseBody)
+        val parsedItems = parseItems(responseBody)
+        val fetchedItems = parsedItems
             .mapNotNull { item ->
                 val universityName = item.valueOf("schlKrnNm").ifBlank { item.valueOf("schoolName") }
                 if (universityName.isBlank()) return@mapNotNull null
@@ -48,6 +49,7 @@ class AcademicSearchService(
                     universityCode = item.valueOf("schlId").ifBlank { item.valueOf("schoolCode") }.takeIf { it.isNotBlank() }
                 )
             }
+            .filter { it.universityName.contains(normalizedKeyword, ignoreCase = true) }
             .distinctBy { it.universityName }
             .take(MAX_RESULT_SIZE)
         return upsertUniversities(fetchedItems).map { it.toResponse() }
@@ -74,26 +76,33 @@ class AcademicSearchService(
         }
         if (academyInfoServiceKey.isBlank()) return emptyList()
 
-        val responseBody = requestDepartmentSearch(normalizedUniversityName) ?: return emptyList()
+        val responseBody = requestDepartmentSearch(
+            universityCode = localUniversity?.externalCode,
+            universityName = normalizedUniversityName
+        ) ?: return emptyList()
+        val parsedItems = parseItems(responseBody)
         val university = localUniversity ?: upsertUniversities(
             listOf(
                 UniversitySearchItemResponse(
                     universityName = normalizedUniversityName,
-                    universityCode = null
+                    universityCode = parsedItems
+                        .firstNotNullOfOrNull { item -> item.valueOf("schlId").takeIf { it.isNotBlank() } }
                 )
             )
         ).firstOrNull() ?: return emptyList()
 
-        val fetchedItems = parseItems(responseBody)
+        val fetchedItems = parsedItems
             .mapNotNull { item ->
                 val departmentName = item.valueOf("korMjrNm").ifBlank { item.valueOf("majorNm") }
-                val responseUniversityName = item.valueOf("schlKrnNm").ifBlank { normalizedUniversityName }
+                val responseUniversityName = item.valueOf("korSchlNm")
+                    .ifBlank { item.valueOf("schlKrnNm") }
+                    .ifBlank { normalizedUniversityName }
                 if (departmentName.isBlank() || responseUniversityName.isBlank()) return@mapNotNull null
                 DepartmentSearchItemResponse(
                     universityName = responseUniversityName,
                     departmentName = departmentName,
-                    departmentCode = item.valueOf("mjrCd").ifBlank {
-                        item.valueOf("kediMjrCd")
+                    departmentCode = item.valueOf("kediMjrId").ifBlank {
+                        item.valueOf("kediMjrCd").ifBlank { item.valueOf("mjrCd") }
                     }.takeIf { it.isNotBlank() }
                 )
             }
@@ -204,7 +213,6 @@ class AcademicSearchService(
                         .queryParam("numOfRows", MAX_RESULT_SIZE)
                         .queryParam("svyYr", surveyYear)
                         .queryParam("schlKrnNm", keyword)
-                        .queryParam("searchSchulNm", keyword)
                         .build()
                 }
                 .retrieve()
@@ -215,25 +223,54 @@ class AcademicSearchService(
         }.getOrElse { null }
     }
 
-    private fun requestDepartmentSearch(universityName: String): String? {
-        return runCatching {
+    private fun requestDepartmentSearch(universityCode: String?, universityName: String): String? {
+        val primaryResponse = runCatching {
             restClient.get()
                 .uri { builder ->
-                    builder.path(departmentSearchPath)
+                    val uriBuilder = builder.path(departmentSearchPath)
                         .queryParam("serviceKey", academyInfoServiceKey)
                         .queryParam("pageNo", 1)
                         .queryParam("numOfRows", MAX_RESULT_SIZE)
                         .queryParam("svyYr", surveyYear)
                         .queryParam("schlKrnNm", universityName)
-                        .queryParam("schulNm", universityName)
-                        .build()
+                    if (!universityCode.isNullOrBlank()) {
+                        uriBuilder.queryParam("schlId", universityCode)
+                    }
+                    uriBuilder.build()
                 }
                 .retrieve()
                 .body(String::class.java)
                 .orEmpty()
         }.onFailure { ex ->
-            logger.warn("학과 검색 API 호출 실패 university={}", universityName, ex)
+            logger.warn("학과 검색 API 호출 실패 university={} universityCode={}", universityName, universityCode, ex)
         }.getOrElse { null }
+        if (!primaryResponse.isNullOrBlank() && parseItems(primaryResponse).isNotEmpty()) {
+            return primaryResponse
+        }
+
+        val fallbackPath = FALLBACK_DEPARTMENT_SEARCH_PATH
+        if (departmentSearchPath == fallbackPath) return primaryResponse
+
+        return runCatching {
+            restClient.get()
+                .uri { builder ->
+                    val uriBuilder = builder.path(fallbackPath)
+                        .queryParam("serviceKey", academyInfoServiceKey)
+                        .queryParam("pageNo", 1)
+                        .queryParam("numOfRows", MAX_RESULT_SIZE)
+                        .queryParam("svyYr", surveyYear)
+                        .queryParam("schlKrnNm", universityName)
+                    if (!universityCode.isNullOrBlank()) {
+                        uriBuilder.queryParam("schlId", universityCode)
+                    }
+                    uriBuilder.build()
+                }
+                .retrieve()
+                .body(String::class.java)
+                .orEmpty()
+        }.onFailure { ex ->
+            logger.warn("학과 검색 API fallback 호출 실패 university={} universityCode={}", universityName, universityCode, ex)
+        }.getOrElse { primaryResponse }
     }
 
     private fun resolveUniversityEntity(universityId: Long?, universityName: String): AcademicUniversity? {
@@ -281,5 +318,6 @@ class AcademicSearchService(
     companion object {
         private const val MIN_QUERY_LENGTH = 2
         private const val MAX_RESULT_SIZE = 20
+        private const val FALLBACK_DEPARTMENT_SEARCH_PATH = "/BasicInformationService/getUniversityMajorCode"
     }
 }

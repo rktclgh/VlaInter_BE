@@ -56,6 +56,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.multipart.MultipartFile
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder
 import org.springframework.web.server.ResponseStatusException
 import kotlin.math.roundToInt
 import java.time.OffsetDateTime
@@ -227,7 +228,40 @@ class StudentCourseService(
         val user = getValidatedStudentUser(principal)
         val course = getOwnedCourse(user.id, courseId)
         val material = getOwnedMaterial(course.id, materialId)
-        return userFileService.getOwnedFileDownloadUrl(user.id, material.userFile.id)
+        return StudentCourseMaterialDownloadResponse(
+            downloadUrl = buildCourseMaterialContentUrl(course.id, material.id),
+            expiresInSeconds = 0
+        )
+    }
+
+    @Transactional(readOnly = true)
+    fun getCourseMaterialContent(
+        principal: AuthPrincipal,
+        courseId: Long,
+        materialId: Long
+    ): UserFileService.FileContentResource {
+        val user = getValidatedStudentUser(principal)
+        val course = getOwnedCourse(user.id, courseId)
+        val material = getOwnedMaterial(course.id, materialId)
+        return userFileService.getOwnedFileContent(user.id, material.userFile.id)
+    }
+
+    @Transactional(readOnly = true)
+    fun getCourseMaterialVisualAssetContent(
+        principal: AuthPrincipal,
+        assetId: Long
+    ): UserFileService.FileContentResource {
+        val user = getValidatedStudentUser(principal)
+        val asset = studentCourseMaterialVisualAssetRepository.findById(assetId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "시각 자산을 찾을 수 없습니다.") }
+        val material = asset.material
+        val course = getOwnedCourse(user.id, material.course.id)
+        getOwnedMaterial(course.id, material.id)
+        return userFileService.loadStoredObjectContent(
+            storageKey = asset.storageKey,
+            downloadFileName = buildVisualAssetDownloadFileName(material, asset),
+            fallbackContentType = asset.contentType
+        )
     }
 
     @Transactional
@@ -291,7 +325,8 @@ class StudentCourseService(
             resolveMaterialKind(material) == StudentCourseMaterialKind.PAST_EXAM &&
                 documentIngestionJobRepository.findTopByDocumentFileIdOrderByRequestedAtDesc(material.userFile.id)?.status == DocumentIngestionStatus.READY
         }
-        validateSessionCreationRequest(request, readyPastExamMaterials.isNotEmpty())
+        val selectedPastExamMaterials = resolveSelectedPastExamMaterials(request, readyPastExamMaterials)
+        validateSessionCreationRequest(request, readyPastExamMaterials.isNotEmpty(), selectedPastExamMaterials.isNotEmpty())
 
         val effectiveDifficultyLevel = if (
             request.generationMode == StudentExamGenerationMode.PAST_EXAM ||
@@ -303,7 +338,7 @@ class StudentCourseService(
         }
         val effectiveQuestionStyles = normalizeRequestedQuestionStyles(request)
         logger.info(
-            "학생 모의고사 생성 요청 courseId={} userId={} mode={} difficulty={} styles={} questionCount={} lectureReady={} pastExamReady={}",
+            "학생 모의고사 생성 요청 courseId={} userId={} mode={} difficulty={} styles={} questionCount={} lectureReady={} selectedPastExams={}",
             course.id,
             user.id,
             request.generationMode,
@@ -311,7 +346,7 @@ class StudentCourseService(
             effectiveQuestionStyles.joinToString(",") { it.name },
             request.questionCount,
             readyLectureMaterials.size,
-            readyPastExamMaterials.size
+            selectedPastExamMaterials.size
         )
         val questionStylesCsv = encodeQuestionStyles(effectiveQuestionStyles)
         val maxScore = request.questionCount * DEFAULT_QUESTION_MAX_SCORE
@@ -327,11 +362,13 @@ class StudentCourseService(
                 questionCount = request.questionCount,
                 maxScore = maxScore,
                 sourceMaterialCount = if (request.generationMode == StudentExamGenerationMode.PAST_EXAM_PRACTICE) {
-                    readyPastExamMaterials.size
+                    selectedPastExamMaterials.size
+                } else if (request.generationMode == StudentExamGenerationMode.PAST_EXAM) {
+                    readyLectureMaterials.size + selectedPastExamMaterials.size
                 } else {
                     readyLectureMaterials.size
                 },
-                title = buildSessionTitle(course, request.questionCount, request.generationMode)
+                title = buildSessionTitle(course, request.questionCount, request.generationMode, selectedPastExamMaterials)
             )
         )
         val questions = try {
@@ -346,7 +383,7 @@ class StudentCourseService(
                     } else {
                         readyLectureMaterials
                     },
-                    styleReferenceMaterials = readyPastExamMaterials,
+                    styleReferenceMaterials = selectedPastExamMaterials,
                     questionCount = request.questionCount,
                     generationMode = request.generationMode,
                     difficultyLevel = effectiveDifficultyLevel,
@@ -416,7 +453,12 @@ class StudentCourseService(
         val user = getValidatedStudentUser(principal)
         val set = getOwnedWrongAnswerSet(user.id, setId)
         val items = studentWrongAnswerItemRepository.findAllBySetIdOrderByQuestionOrderAsc(set.id)
-        return set.toDetailResponse(items)
+        val originalSession = getOwnedSession(user.id, set.sessionId)
+        val originalQuestions = studentExamQuestionRepository.findAllBySessionIdOrderByQuestionOrderAsc(originalSession.id)
+        return set.toDetailResponse(
+            items = items,
+            sourceContexts = buildQuestionSourceContexts(user.id, originalSession, originalQuestions)
+        )
     }
 
     @Transactional
@@ -468,7 +510,10 @@ class StudentCourseService(
         val user = getValidatedStudentUser(principal)
         val session = getOwnedSession(user.id, sessionId)
         val questions = studentExamQuestionRepository.findAllBySessionIdOrderByQuestionOrderAsc(session.id)
-        return session.toDetailResponse(questions)
+        return session.toDetailResponse(
+            questions = questions,
+            sourceContexts = buildQuestionSourceContexts(user.id, session, questions)
+        )
     }
 
     @Transactional
@@ -521,7 +566,10 @@ class StudentCourseService(
         session.status = StudentExamSessionStatus.SUBMITTED
         session.submittedAt = answeredAt
         val savedSession = studentExamSessionRepository.save(session)
-        return savedSession.toDetailResponse(savedQuestions)
+        return savedSession.toDetailResponse(
+            questions = savedQuestions,
+            sourceContexts = buildQuestionSourceContexts(user.id, savedSession, savedQuestions)
+        )
     }
 
     @Transactional
@@ -785,8 +833,15 @@ class StudentCourseService(
             totalLimit = questionCount
         )
         if (extractedCandidates.size < questionCount) {
+            val ocrBased = extractedCandidates.any { it.extractionMethod == "OCR_TESSERACT" } ||
+                styleReferenceMaterials.any { extractExtractionMethod(it.latestIngestionJob()?.metadataJson) == "OCR_TESSERACT" }
+            val guide = if (ocrBased) {
+                " 선명한 PDF로 다시 저장하거나, 문제 영역만 잘라 정면에서 촬영한 이미지로 재업로드해 주세요."
+            } else {
+                ""
+            }
             throw IllegalStateException(
-                "족보 원문에서 문제를 충분히 추출하지 못했습니다. extracted=${extractedCandidates.size}, required=$questionCount"
+                "족보 원문에서 문제를 충분히 추출하지 못했습니다. extracted=${extractedCandidates.size}, required=$questionCount.$guide"
             )
         }
 
@@ -820,13 +875,34 @@ class StudentCourseService(
             refinedQuestions.groupingBy { it.questionStyle }.eachCount().entries.joinToString(",") { "${it.key}:${it.value}" }
         )
 
-        return refinedQuestions.take(questionCount).map { question ->
+        var rejectedBrokenQuestionCount = 0
+        val acceptedQuestions = refinedQuestions.mapNotNull { question ->
+            val normalizedQuestionText = question.questionText.trim()
+            if (!isUsablePastExamPracticeQuestionText(normalizedQuestionText)) {
+                rejectedBrokenQuestionCount += 1
+                return@mapNotNull null
+            }
             question.copy(
                 questionStyle = parseQuestionStyle(question.questionStyle)?.name ?: StudentExamQuestionStyle.ESSAY.name,
-                referenceExample = question.referenceExample?.trim()?.takeIf { it.isNotBlank() },
+                referenceExample = normalizeOptionalReferenceExample(question.referenceExample),
                 maxScore = DEFAULT_QUESTION_MAX_SCORE
             )
         }
+
+        logger.info(
+            "족보 그대로 연습 품질 필터 courseId={} acceptedCount={} rejectedBroken={}",
+            course.id,
+            acceptedQuestions.size,
+            rejectedBrokenQuestionCount
+        )
+
+        if (acceptedQuestions.size < questionCount) {
+            throw IllegalStateException(
+                "족보 문제 복원 품질이 낮습니다. usable=${acceptedQuestions.size}, required=$questionCount, broken=$rejectedBrokenQuestionCount. 선명한 PDF로 다시 저장하거나 문제 영역만 잘라서 재업로드해 주세요."
+            )
+        }
+
+        return acceptedQuestions.take(questionCount)
     }
 
     private fun collectMaterialSnippets(
@@ -876,15 +952,37 @@ class StudentCourseService(
     ): List<ExtractedPastExamQuestionCandidate> {
         return materials
             .flatMap { material ->
-                val combinedText = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
-                    .joinToString("\n") { chunk -> chunk.chunkText.trim() }
+                val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
+                val combinedText = mergeChunkTextsForQuestionExtraction(chunks.map { it.chunkText })
                 val extractionMethod = extractExtractionMethod(material.latestIngestionJob()?.metadataJson)
-                extractQuestionBlocksFromPastExam(combinedText)
-                    .mapIndexed { index, block ->
+                val sourceFileName = decodeDisplayMaterialFileName(material.userFile.fileName)
+                val regexCandidates = extractQuestionBlocksFromPastExam(combinedText)
+                val recoveredCandidates = if (regexCandidates.size >= minOf(totalLimit, 2)) {
+                    regexCandidates
+                } else {
+                    recoverQuestionBlocksFromPastExamWithAi(
+                        material = material,
+                        sourceFileName = sourceFileName,
+                        extractionMethod = extractionMethod,
+                        rawText = combinedText,
+                        expectedQuestionCount = totalLimit
+                    ).ifEmpty { regexCandidates }
+                }
+                logger.info(
+                    "족보 원문 문제 추출 fileId={} fileName={} extractionMethod={} chunkCount={} chars={} regexCount={} finalCount={}",
+                    material.userFile.id,
+                    sourceFileName,
+                    extractionMethod ?: "UNKNOWN",
+                    chunks.size,
+                    combinedText.length,
+                    regexCandidates.size,
+                    recoveredCandidates.size
+                )
+                recoveredCandidates.mapIndexed { index, block ->
                         ExtractedPastExamQuestionCandidate(
                             questionNo = index + 1,
                             questionText = block,
-                            sourceFileName = decodeDisplayMaterialFileName(material.userFile.fileName),
+                            sourceFileName = sourceFileName,
                             extractionMethod = extractionMethod
                         )
                     }
@@ -895,13 +993,21 @@ class StudentCourseService(
 
     private fun extractQuestionBlocksFromPastExam(rawText: String): List<String> {
         if (rawText.isBlank()) return emptyList()
-        val normalized = rawText
-            .replace("\r\n", "\n")
-            .replace('\r', '\n')
-            .replace(Regex("[ \t]+"), " ")
-            .trim()
-        val markerRegex = Regex("(?m)^\\s*(문제\\s*\\d+\\s*[.:]?|\\d+\\s*[.)])")
-        val matches = markerRegex.findAll(normalized).toList()
+        val normalized = normalizePastExamExtractionText(rawText)
+        val explicitQuestionMarkerRegex = Regex("문\\s*제\\s*[0-9]{1,2}\\s*[.:)]?")
+        val explicitQuestionMatches = explicitQuestionMarkerRegex.findAll(normalized).toList()
+        val qMarkerRegex = Regex("Q\\s*[0-9]{1,2}\\s*[.:)]?", RegexOption.IGNORE_CASE)
+        val qMatches = qMarkerRegex.findAll(normalized).toList()
+        val numberedLineMarkerRegex = Regex("(?m)^\\s*(문\\s*제\\s*[0-9]{1,2}\\s*[.:)]?|Q\\s*[0-9]{1,2}\\s*[.:)]?|[0-9]{1,2}\\s*[.)](?=\\s*[가-힣A-Za-z<(\\[]))")
+        val inlineNumberedMarkerRegex = Regex("(?<![0-9])[0-9]{1,2}\\s*[.)](?=\\s*[가-힣A-Za-z<(\\[])")
+        val matches = if (explicitQuestionMatches.size >= 2) {
+            explicitQuestionMatches
+        } else if (qMatches.size >= 2) {
+            qMatches
+        } else {
+            val lineMatches = numberedLineMarkerRegex.findAll(normalized).toList()
+            if (lineMatches.size >= 2) lineMatches else inlineNumberedMarkerRegex.findAll(normalized).toList()
+        }
         if (matches.isEmpty()) return emptyList()
 
         return matches.mapIndexedNotNull { index, match ->
@@ -914,13 +1020,91 @@ class StudentCourseService(
                 .joinToString("\n")
                 .replace(Regex("\\n{3,}"), "\n\n")
                 .trim()
-                .takeIf { it.length >= 12 }
+                .takeIf { it.length >= 18 }
         }
+    }
+
+    private fun normalizePastExamExtractionText(rawText: String): String {
+        return rawText
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .replace(Regex("(?<!\\n)(문\\s*제\\s*[0-9]{1,2}\\s*[.:)]?)"), "\n$1")
+            .replace(Regex("(?<!\\n)(Q\\s*[0-9]{1,2}\\s*[.:)]?)", RegexOption.IGNORE_CASE), "\n$1")
+            .replace(Regex("([①②③④⑤⑥⑦⑧⑨⑩])")) { match ->
+                val number = "①②③④⑤⑥⑦⑧⑨⑩".indexOf(match.value[0]) + 1
+                "\n문제 $number. "
+            }
+            .replace(Regex("([⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])")) { match ->
+                val number = "⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳".indexOf(match.value[0]) + 11
+                "\n문제 $number. "
+            }
+            .replace(Regex("(?<!\\n)(?<![0-9A-Za-z가-힣])([0-9]{1,2}\\s*[.)])(?=\\s*[가-힣A-Za-z<(\\[])", RegexOption.MULTILINE), "\n$1")
+            .replace(Regex("[ \t]+"), " ")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+    }
+
+    private fun mergeChunkTextsForQuestionExtraction(chunks: List<String>): String {
+        if (chunks.isEmpty()) return ""
+        var merged = chunks.first().trim()
+        chunks.drop(1).forEach { rawChunk ->
+            val chunk = rawChunk.trim()
+            if (chunk.isBlank()) return@forEach
+            if (merged.contains(chunk)) return@forEach
+            val overlap = longestSuffixPrefixOverlap(merged, chunk)
+            merged = if (overlap >= 40) {
+                merged + chunk.substring(overlap)
+            } else {
+                "$merged\n$chunk"
+            }
+        }
+        return merged
+    }
+
+    private fun longestSuffixPrefixOverlap(left: String, right: String): Int {
+        val maxWindow = minOf(left.length, right.length, 220)
+        for (size in maxWindow downTo 24) {
+            if (left.regionMatches(left.length - size, right, 0, size, ignoreCase = false)) {
+                return size
+            }
+        }
+        return 0
+    }
+
+    private fun recoverQuestionBlocksFromPastExamWithAi(
+        material: StudentCourseMaterial,
+        sourceFileName: String,
+        extractionMethod: String?,
+        rawText: String,
+        expectedQuestionCount: Int
+    ): List<String> {
+        if (rawText.length < 40) return emptyList()
+        return runCatching {
+            interviewAiOrchestrator.recoverPastExamPracticeQuestionCandidates(
+                universityName = material.course.universityName.trim(),
+                departmentName = material.course.departmentName.trim(),
+                courseName = material.course.courseName,
+                professorName = material.course.professorName,
+                sourceFileName = sourceFileName,
+                extractionMethod = extractionMethod,
+                rawText = rawText.take(20_000),
+                expectedQuestionCount = expectedQuestionCount,
+                language = InterviewLanguage.KO
+            )
+        }.onFailure { ex ->
+            logger.warn(
+                "족보 원문 AI 분리 fallback 실패 fileId={} fileName={} reason={}",
+                material.userFile.id,
+                sourceFileName,
+                ex.message
+            )
+        }.getOrDefault(emptyList())
     }
 
     private fun validateSessionCreationRequest(
         request: CreateStudentExamSessionRequest,
-        hasPastExamReference: Boolean
+        hasPastExamReference: Boolean,
+        hasSelectedPastExamReference: Boolean
     ) {
         if (request.generationMode == StudentExamGenerationMode.STANDARD && request.difficultyLevel == null) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "일반형 모의고사는 난이도를 선택해 주세요.")
@@ -932,9 +1116,38 @@ class StudentCourseService(
         ) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "족보형 모의고사는 분석 완료된 족보가 1개 이상 필요합니다.")
         }
+        if (
+            (request.generationMode == StudentExamGenerationMode.PAST_EXAM ||
+                request.generationMode == StudentExamGenerationMode.PAST_EXAM_PRACTICE) &&
+            !hasSelectedPastExamReference
+        ) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의고사에 사용할 족보를 1개 이상 선택해 주세요.")
+        }
         if (request.generationMode == StudentExamGenerationMode.STANDARD && request.questionStyles.isEmpty()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "문제 스타일을 1개 이상 선택해 주세요.")
         }
+    }
+
+    private fun resolveSelectedPastExamMaterials(
+        request: CreateStudentExamSessionRequest,
+        readyPastExamMaterials: List<StudentCourseMaterial>
+    ): List<StudentCourseMaterial> {
+        if (
+            request.generationMode != StudentExamGenerationMode.PAST_EXAM &&
+            request.generationMode != StudentExamGenerationMode.PAST_EXAM_PRACTICE
+        ) {
+            return readyPastExamMaterials
+        }
+        if (request.selectedPastExamMaterialIds.isEmpty()) {
+            return readyPastExamMaterials
+        }
+
+        val selectedIds = request.selectedPastExamMaterialIds.toSet()
+        val selectedMaterials = readyPastExamMaterials.filter { it.id in selectedIds }
+        if (selectedMaterials.size != selectedIds.size) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "선택한 족보 중 사용할 수 없는 자료가 포함되어 있습니다.")
+        }
+        return selectedMaterials
     }
 
     private fun normalizeRequestedQuestionStyles(request: CreateStudentExamSessionRequest): List<StudentExamQuestionStyle> {
@@ -948,15 +1161,65 @@ class StudentCourseService(
         }
     }
 
-    private fun buildSessionTitle(course: StudentCourse, questionCount: Int, generationMode: StudentExamGenerationMode): String {
-        val professorSuffix = course.professorName?.trim()?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
-        val modePrefix = when (generationMode) {
-            StudentExamGenerationMode.PAST_EXAM -> "족보형 "
-            StudentExamGenerationMode.PAST_EXAM_PRACTICE -> "족보 그대로 연습 "
-            StudentExamGenerationMode.WRONG_ANSWER_RETEST -> "오답노트 "
-            StudentExamGenerationMode.STANDARD -> ""
+    private fun normalizeOptionalReferenceExample(value: String?): String? {
+        val normalized = value?.trim().orEmpty()
+        if (normalized.isBlank()) return null
+        if (normalized.equals("null", ignoreCase = true)) return null
+        return normalized
+    }
+
+    private fun isUsablePastExamPracticeQuestionText(questionText: String): Boolean {
+        val normalized = questionText
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (normalized.length < 18) return false
+        if (Regex("[�□◻]").containsMatchIn(normalized)) return false
+
+        val hangulCount = normalized.count { it in '\uAC00'..'\uD7A3' }
+        val letterCount = normalized.count(Char::isLetter)
+        val uppercaseLetterCount = normalized.count { it.isLetter() && it.isUpperCase() }
+        val digitCount = normalized.count(Char::isDigit)
+        val tokens = normalized.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val uppercaseNoiseTokens = tokens.count { token ->
+            val letters = token.filter(Char::isLetter)
+            letters.length >= 4 && letters.all(Char::isUpperCase)
         }
-        return "${course.courseName}$professorSuffix ${modePrefix}모의고사 (${questionCount}문항)"
+        val shortBrokenPattern = Regex("[A-Za-z]{1,3}\\s+[A-Za-z]{1,3}\\s+[A-Za-z]{1,3}\\s+[A-Za-z]{1,3}").containsMatchIn(normalized)
+        val examSignal = Regex("(문\\s*제\\s*\\d+|[가-힣]+하시오|[가-힣]+하라|구하시오|보이시오|작성하시오|설명하시오|제시하시오|비교하시오|구현하시오|명령어|알고리즘|행렬|그래프|배열|트리|시간복잡도|증명)").containsMatchIn(normalized)
+
+        if (uppercaseNoiseTokens >= 2) return false
+        if (shortBrokenPattern && hangulCount < 6) return false
+        if (letterCount >= 12 && uppercaseLetterCount.toDouble() / letterCount.toDouble() > 0.72 && hangulCount < 6) return false
+        if (hangulCount == 0 && digitCount < 2) return false
+        if (!examSignal) return false
+        return true
+    }
+
+    private fun buildSessionTitle(
+        course: StudentCourse,
+        questionCount: Int,
+        generationMode: StudentExamGenerationMode,
+        selectedPastExamMaterials: List<StudentCourseMaterial>
+    ): String {
+        val professorSuffix = course.professorName?.trim()?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+        val selectedPastExamLabel = selectedPastExamMaterials.firstOrNull()?.let { material ->
+            val primaryName = decodeDisplayMaterialFileName(material.userFile.fileName)
+            if (selectedPastExamMaterials.size <= 1) {
+                primaryName
+            } else {
+                "$primaryName 외 ${selectedPastExamMaterials.size - 1}개"
+            }
+        }
+        return when (generationMode) {
+            StudentExamGenerationMode.PAST_EXAM ->
+                "족보형_${selectedPastExamLabel ?: course.courseName}(${questionCount}문항)"
+            StudentExamGenerationMode.PAST_EXAM_PRACTICE ->
+                "족보 그대로 연습_${selectedPastExamLabel ?: course.courseName}(${questionCount}문항)"
+            StudentExamGenerationMode.WRONG_ANSWER_RETEST ->
+                "오답노트_${course.courseName}(${questionCount}문항)"
+            StudentExamGenerationMode.STANDARD ->
+                "${course.courseName}$professorSuffix 모의고사 (${questionCount}문항)"
+        }
     }
 
     private fun encodeQuestionStyles(styles: List<StudentExamQuestionStyle>): String {
@@ -1122,7 +1385,10 @@ class StudentCourseService(
         updatedAt = updatedAt
     )
 
-    private fun StudentExamSession.toDetailResponse(questions: List<StudentExamQuestion>): StudentExamSessionDetailResponse = StudentExamSessionDetailResponse(
+    private fun StudentExamSession.toDetailResponse(
+        questions: List<StudentExamQuestion>,
+        sourceContexts: Map<Long, PastExamQuestionSourceContext> = emptyMap()
+    ): StudentExamSessionDetailResponse = StudentExamSessionDetailResponse(
         sessionId = id,
         courseId = courseId,
         title = title,
@@ -1152,7 +1418,9 @@ class StudentCourseService(
                 score = question.score,
                 feedback = question.feedback,
                 isCorrect = question.isCorrect,
-                answeredAt = question.answeredAt
+                answeredAt = question.answeredAt,
+                sourceFileName = sourceContexts[question.id]?.sourceFileName,
+                sourceVisualAssets = sourceContexts[question.id]?.sourceVisualAssets.orEmpty()
             )
         }
     )
@@ -1169,7 +1437,10 @@ class StudentCourseService(
         updatedAt = updatedAt
     )
 
-    private fun StudentWrongAnswerSet.toDetailResponse(items: List<StudentWrongAnswerItem>): StudentWrongAnswerSetDetailResponse =
+    private fun StudentWrongAnswerSet.toDetailResponse(
+        items: List<StudentWrongAnswerItem>,
+        sourceContexts: Map<Long, PastExamQuestionSourceContext> = emptyMap()
+    ): StudentWrongAnswerSetDetailResponse =
         StudentWrongAnswerSetDetailResponse(
             setId = id,
             sessionId = sessionId,
@@ -1191,7 +1462,9 @@ class StudentCourseService(
                     maxScore = item.maxScore,
                     answerText = item.answerText,
                     score = item.score,
-                    feedback = item.feedback
+                    feedback = item.feedback,
+                    sourceFileName = sourceContexts[item.questionId]?.sourceFileName,
+                    sourceVisualAssets = sourceContexts[item.questionId]?.sourceVisualAssets.orEmpty()
                 )
             }
         )
@@ -1199,7 +1472,73 @@ class StudentCourseService(
     private fun StudentCourseMaterial.toResponse(): StudentCourseMaterialResponse {
         val latestJob = latestIngestionJob()
         val extractionMethod = latestJob?.metadataJson?.let(::extractExtractionMethod)
-        val visualAssets = studentCourseMaterialVisualAssetRepository.findAllByMaterial_IdOrderByAssetOrderAsc(id)
+        val visualAssets = loadVisualAssetResponses(this)
+        return StudentCourseMaterialResponse(
+            materialId = id,
+            fileId = userFile.id,
+            fileType = userFile.fileType,
+            materialKind = resolveMaterialKind(this),
+            fileName = decodeDisplayMaterialFileName(userFile.fileName),
+            originalFileName = userFile.originalFileName,
+            fileUrl = buildCourseMaterialContentUrl(course.id, id),
+            createdAt = createdAt,
+            ingestionStatus = latestJob?.status?.name,
+            ingested = latestJob?.status == DocumentIngestionStatus.READY,
+            errorMessage = latestJob?.errorMessage,
+            extractionMethod = extractionMethod,
+            ocrUsed = extractionMethod == "OCR_TESSERACT",
+            visualAssets = visualAssets
+        )
+    }
+
+    private fun buildQuestionSourceContexts(
+        userId: Long,
+        session: StudentExamSession,
+        questions: List<StudentExamQuestion>
+    ): Map<Long, PastExamQuestionSourceContext> {
+        val sourceSession = resolveSourceSessionForQuestionContext(userId, session) ?: return emptyMap()
+        if (sourceSession.generationMode != StudentExamGenerationMode.PAST_EXAM_PRACTICE || questions.isEmpty()) {
+            return emptyMap()
+        }
+
+        val readyPastExamMaterials = studentCourseMaterialRepository.findAllByCourse_IdOrderByCreatedAtDesc(sourceSession.courseId)
+            .filter { material ->
+                resolveMaterialKind(material) == StudentCourseMaterialKind.PAST_EXAM &&
+                    material.latestIngestionJob()?.status == DocumentIngestionStatus.READY
+            }
+        if (readyPastExamMaterials.isEmpty()) return emptyMap()
+
+        val candidateByQuestionKey = extractPastExamPracticeQuestionCandidates(
+            userId = userId,
+            materials = readyPastExamMaterials,
+            totalLimit = maxOf(questions.size * 8, 40)
+        ).associateBy { it.questionText.normalizeQuestionKey() }
+
+        val visualAssetsByFileName = readyPastExamMaterials.associate { material ->
+            decodeDisplayMaterialFileName(material.userFile.fileName) to loadVisualAssetResponses(material)
+        }
+
+        return questions.mapNotNull { question ->
+            val matchedCandidate = candidateByQuestionKey[question.questionText.normalizeQuestionKey()] ?: return@mapNotNull null
+            question.id to PastExamQuestionSourceContext(
+                sourceFileName = matchedCandidate.sourceFileName,
+                sourceVisualAssets = visualAssetsByFileName[matchedCandidate.sourceFileName].orEmpty()
+            )
+        }.toMap()
+    }
+
+    private fun resolveSourceSessionForQuestionContext(userId: Long, session: StudentExamSession): StudentExamSession? {
+        return when (session.generationMode) {
+            StudentExamGenerationMode.PAST_EXAM_PRACTICE -> session
+            StudentExamGenerationMode.WRONG_ANSWER_RETEST ->
+                studentWrongAnswerSetRepository.findByRetestSessionIdAndUserId(session.id, userId)
+                    ?.let { getOwnedSession(userId, it.sessionId) }
+            else -> null
+        }
+    }
+
+    private fun loadVisualAssetResponses(material: StudentCourseMaterial): List<StudentCourseMaterialVisualAssetResponse> {
+        return studentCourseMaterialVisualAssetRepository.findAllByMaterial_IdOrderByAssetOrderAsc(material.id)
             .mapNotNull { asset ->
                 runCatching {
                     StudentCourseMaterialVisualAssetResponse(
@@ -1211,32 +1550,27 @@ class StudentCourseService(
                         slideNo = asset.slideNo,
                         width = asset.width,
                         height = asset.height,
-                        downloadUrl = userFileService.createVisualAssetDownloadUrl(
-                            storageKey = asset.storageKey,
-                            downloadFileName = buildVisualAssetDownloadFileName(this, asset)
-                        )
+                        downloadUrl = buildVisualAssetContentUrl(asset.id)
                     )
                 }.getOrElse { ex ->
-                    logger.warn("학생 자료 시각 자산 URL 생성 실패 materialId={} assetId={} reason={}", id, asset.id, ex.message)
+                    logger.warn("학생 자료 시각 자산 URL 생성 실패 materialId={} assetId={} reason={}", material.id, asset.id, ex.message)
                     null
                 }
             }
-        return StudentCourseMaterialResponse(
-            materialId = id,
-            fileId = userFile.id,
-            fileType = userFile.fileType,
-            materialKind = resolveMaterialKind(this),
-            fileName = decodeDisplayMaterialFileName(userFile.fileName),
-            originalFileName = userFile.originalFileName,
-            fileUrl = userFile.fileUrl,
-            createdAt = createdAt,
-            ingestionStatus = latestJob?.status?.name,
-            ingested = latestJob?.status == DocumentIngestionStatus.READY,
-            errorMessage = latestJob?.errorMessage,
-            extractionMethod = extractionMethod,
-            ocrUsed = extractionMethod == "OCR_TESSERACT",
-            visualAssets = visualAssets
-        )
+    }
+
+    private fun buildCourseMaterialContentUrl(courseId: Long, materialId: Long): String {
+        return ServletUriComponentsBuilder.fromCurrentContextPath()
+            .path("/api/student/courses/{courseId}/materials/{materialId}/content")
+            .buildAndExpand(courseId, materialId)
+            .toUriString()
+    }
+
+    private fun buildVisualAssetContentUrl(assetId: Long): String {
+        return ServletUriComponentsBuilder.fromCurrentContextPath()
+            .path("/api/student/courses/material-visual-assets/{assetId}/content")
+            .buildAndExpand(assetId)
+            .toUriString()
     }
 
     private fun buildVisualAssetDownloadFileName(
@@ -1304,5 +1638,10 @@ class StudentCourseService(
         val questionText: String,
         val sourceFileName: String,
         val extractionMethod: String?
+    )
+
+    private data class PastExamQuestionSourceContext(
+        val sourceFileName: String,
+        val sourceVisualAssets: List<StudentCourseMaterialVisualAssetResponse>
     )
 }

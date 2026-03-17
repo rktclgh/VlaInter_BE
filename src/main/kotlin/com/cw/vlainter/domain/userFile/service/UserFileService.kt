@@ -3,7 +3,6 @@ package com.cw.vlainter.domain.userFile.service
 import com.cw.vlainter.domain.interview.repository.DocChunkEmbeddingRepository
 import com.cw.vlainter.domain.interview.repository.DocumentIngestionJobRepository
 import com.cw.vlainter.domain.interview.entity.DocumentIngestionStatus
-import com.cw.vlainter.domain.student.dto.StudentCourseMaterialDownloadResponse
 import com.cw.vlainter.domain.student.repository.StudentCourseMaterialVisualAssetRepository
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
@@ -29,13 +28,9 @@ import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
-import software.amazon.awssdk.services.s3.presigner.S3Presigner
-import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest
 import software.amazon.awssdk.core.exception.SdkClientException
 import software.amazon.awssdk.services.s3.model.S3Exception
-import software.amazon.awssdk.regions.Region
 import java.net.URI
-import java.time.Duration
 import java.time.OffsetDateTime
 import java.util.UUID
 
@@ -70,7 +65,6 @@ class UserFileService(
 
     private val logger = LoggerFactory.getLogger(UserFileService::class.java)
     private val originalFileNameMaxLength = 255
-    private val downloadExpirySeconds = 900L
 
     @Transactional(readOnly = true)
     fun getMyFiles(principal: AuthPrincipal): List<UserFileResponse> {
@@ -233,29 +227,53 @@ class UserFileService(
     }
 
     @Transactional(readOnly = true)
-    fun getOwnedFileDownloadUrl(userId: Long, fileId: Long): StudentCourseMaterialDownloadResponse {
-        val actor = loadActiveUser(userId)
-        val target = userFileRepository.findById(fileId)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "파일 정보를 찾을 수 없습니다.") }
-
-        if (target.user.id != actor.id) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "본인 파일만 다운로드할 수 있습니다.")
-        }
-        ensureS3Configured()
-
-        val objectKey = resolveDeletionKey(target.storageKey, target.fileUrl)
-            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "파일 저장 경로를 찾을 수 없습니다.")
-        val downloadUrl = createPresignedDownloadUrl(objectKey, target.originalFileName)
-        return StudentCourseMaterialDownloadResponse(
-            downloadUrl = downloadUrl,
-            expiresInSeconds = downloadExpirySeconds
+    fun getOwnedFileContent(userId: Long, fileId: Long): FileContentResource {
+        val target = loadOwnedFile(userId, fileId)
+        return loadStoredObjectContent(
+            storageKey = resolveDeletionKey(target.storageKey, target.fileUrl)
+                ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "파일 저장 경로를 찾을 수 없습니다."),
+            downloadFileName = target.originalFileName,
+            fallbackContentType = target.contentType
         )
     }
 
     @Transactional(readOnly = true)
-    fun createVisualAssetDownloadUrl(storageKey: String, downloadFileName: String): String {
+    fun loadStoredObjectContent(
+        storageKey: String,
+        downloadFileName: String,
+        fallbackContentType: String? = null
+    ): FileContentResource {
         ensureS3Configured()
-        return createPresignedDownloadUrl(storageKey, downloadFileName)
+        val request = GetObjectRequest.builder()
+            .bucket(s3Properties.bucket.trim())
+            .key(storageKey)
+            .build()
+
+        val responseBytes = try {
+            s3Client.getObjectAsBytes(request)
+        } catch (ex: S3Exception) {
+            if (ex.statusCode() == 404) {
+                throw ResponseStatusException(HttpStatus.NOT_FOUND, "파일을 찾을 수 없습니다.")
+            }
+            logger.warn("S3 object fetch failed key={} reason={}", storageKey, ex.message)
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "파일을 불러오지 못했습니다.")
+        } catch (ex: SdkClientException) {
+            logger.warn("S3 object fetch skipped key={} reason={}", storageKey, ex.message)
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "파일 저장소에 연결하지 못했습니다.")
+        } catch (ex: Exception) {
+            logger.warn("S3 object fetch failed key={} reason={}", storageKey, ex.message)
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "파일을 불러오지 못했습니다.")
+        }
+
+        val contentType = fallbackContentType?.takeIf { it.isNotBlank() }
+            ?: responseBytes.response().contentType()?.takeIf { it.isNotBlank() }
+            ?: "application/octet-stream"
+
+        return FileContentResource(
+            bytes = responseBytes.asByteArray(),
+            contentType = contentType,
+            fileName = downloadFileName
+        )
     }
 
     private fun deleteFileInternal(target: UserFile) {
@@ -334,30 +352,6 @@ class UserFileService(
     private fun ensureS3Configured() {
         if (s3Properties.bucket.isBlank()) {
             throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "S3 버킷 설정이 누락되었습니다.")
-        }
-    }
-
-    private fun createPresignedDownloadUrl(objectKey: String, originalFileName: String): String {
-        val presignerBuilder = S3Presigner.builder().region(Region.of(s3Properties.region))
-        if (s3Properties.endpoint.isNotBlank()) {
-            presignerBuilder.endpointOverride(URI.create(s3Properties.endpoint))
-        }
-        return try {
-            presignerBuilder.build().use { presigner ->
-                val getObjectRequest = GetObjectRequest.builder()
-                    .bucket(s3Properties.bucket.trim())
-                    .key(objectKey)
-                    .responseContentDisposition("""attachment; filename="$originalFileName"""")
-                    .build()
-                val presignRequest = GetObjectPresignRequest.builder()
-                    .signatureDuration(Duration.ofSeconds(downloadExpirySeconds))
-                    .getObjectRequest(getObjectRequest)
-                    .build()
-                presigner.presignGetObject(presignRequest).url().toString()
-            }
-        } catch (ex: Exception) {
-            logger.warn("S3 presigned download URL generation failed key={} reason={}", objectKey, ex.message)
-            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "다운로드 링크 생성에 실패했습니다.")
         }
     }
 
@@ -511,6 +505,12 @@ class UserFileService(
     class ProfileImageResource(
         val bytes: ByteArray,
         val contentType: String
+    )
+
+    class FileContentResource(
+        val bytes: ByteArray,
+        val contentType: String,
+        val fileName: String
     )
 
     private fun FileType.koreanLabel(): String = when (this) {
