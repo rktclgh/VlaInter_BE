@@ -8,6 +8,7 @@ import com.cw.vlainter.domain.academic.repository.AcademicDepartmentRepository
 import com.cw.vlainter.domain.academic.repository.AcademicUniversityRepository
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.data.domain.PageRequest
 import org.springframework.stereotype.Service
 import org.springframework.web.client.RestClient
 import java.io.ByteArrayInputStream
@@ -69,9 +70,9 @@ class AcademicSearchService(
         if (localUniversity != null) {
             val localResults = academicDepartmentRepository.searchByUniversityAndKeyword(
                 universityId = localUniversity.id,
-                keyword = normalizeKeyword(normalizedKeyword)
+                keyword = normalizeKeyword(normalizedKeyword),
+                pageable = PageRequest.of(0, MAX_RESULT_SIZE)
             ).map { it.toResponse() }
-                .take(MAX_RESULT_SIZE)
             if (localResults.isNotEmpty()) return localResults
         }
         if (academyInfoServiceKey.isBlank()) return emptyList()
@@ -81,17 +82,27 @@ class AcademicSearchService(
             universityName = normalizedUniversityName
         ) ?: return emptyList()
         val parsedItems = parseItems(responseBody)
-        val university = localUniversity ?: upsertUniversities(
-            listOf(
-                UniversitySearchItemResponse(
-                    universityName = normalizedUniversityName,
-                    universityCode = parsedItems
-                        .firstNotNullOfOrNull { item -> item.valueOf("schlId").takeIf { it.isNotBlank() } }
-                )
+        val normalizedUniversityKey = normalizeKeyword(normalizedUniversityName)
+        val matchingUniversityItems = parsedItems.filter { item ->
+            item.matchesUniversity(
+                expectedUniversityCode = localUniversity?.externalCode,
+                normalizedUniversityName = normalizedUniversityKey
             )
-        ).firstOrNull() ?: return emptyList()
+        }
+        val university = localUniversity ?: matchingUniversityItems.firstOrNull()
+            ?.let { item ->
+                upsertUniversities(
+                    listOf(
+                        UniversitySearchItemResponse(
+                            universityName = item.departmentUniversityName().ifBlank { normalizedUniversityName },
+                            universityCode = item.departmentUniversityCode()
+                        )
+                    )
+                ).firstOrNull()
+            }
+            ?: return emptyList()
 
-        val fetchedItems = parsedItems
+        val fetchedItems = matchingUniversityItems
             .mapNotNull { item ->
                 val departmentName = item.valueOf("korMjrNm").ifBlank { item.valueOf("majorNm") }
                 val responseUniversityName = item.valueOf("korSchlNm")
@@ -161,8 +172,7 @@ class AcademicSearchService(
         return items.map { item ->
             val normalizedName = normalizeKeyword(item.departmentName)
             val existing = item.departmentCode?.let { academicDepartmentRepository.findByUniversityIdAndExternalCode(university.id, it) }
-                ?: academicDepartmentRepository.searchByUniversityAndKeyword(university.id, normalizedName)
-                    .firstOrNull { candidate -> candidate.normalizedName == normalizedName }
+                ?: academicDepartmentRepository.findByUniversityIdAndNormalizedName(university.id, normalizedName)
             val target = existing ?: AcademicDepartment(
                 university = university,
                 externalCode = item.departmentCode,
@@ -274,10 +284,14 @@ class AcademicSearchService(
     }
 
     private fun resolveUniversityEntity(universityId: Long?, universityName: String): AcademicUniversity? {
+        val normalizedUniversityName = normalizeKeyword(universityName)
         if (universityId != null) {
-            return academicUniversityRepository.findById(universityId).orElse(null)
+            val byId = academicUniversityRepository.findById(universityId).orElse(null)
+            if (byId != null && normalizeKeyword(byId.name) == normalizedUniversityName) {
+                return byId
+            }
         }
-        return academicUniversityRepository.findByNormalizedName(normalizeKeyword(universityName))
+        return academicUniversityRepository.findByNormalizedName(normalizedUniversityName)
     }
 
     private fun AcademicUniversity.toResponse(): UniversitySearchItemResponse {
@@ -300,6 +314,27 @@ class AcademicSearchService(
 
     private fun normalizeKeyword(value: String): String {
         return value.trim().lowercase()
+    }
+
+    private fun XmlItemNode.departmentUniversityCode(): String? {
+        return valueOf("schlId")
+            .ifBlank { valueOf("schoolCode") }
+            .takeIf { it.isNotBlank() }
+    }
+
+    private fun XmlItemNode.departmentUniversityName(): String {
+        return valueOf("korSchlNm")
+            .ifBlank { valueOf("schlKrnNm") }
+            .ifBlank { valueOf("schoolName") }
+    }
+
+    private fun XmlItemNode.matchesUniversity(expectedUniversityCode: String?, normalizedUniversityName: String): Boolean {
+        val responseUniversityCode = departmentUniversityCode()
+        if (!expectedUniversityCode.isNullOrBlank() && !responseUniversityCode.isNullOrBlank()) {
+            return responseUniversityCode == expectedUniversityCode
+        }
+        val responseUniversityName = departmentUniversityName()
+        return responseUniversityName.isNotBlank() && normalizeKeyword(responseUniversityName) == normalizedUniversityName
     }
 
     private class XmlItemNode(private val node: org.w3c.dom.Node) {

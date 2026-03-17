@@ -92,6 +92,7 @@ import java.security.MessageDigest
 import java.awt.Color
 import java.awt.RenderingHints
 import java.awt.image.BufferedImage
+import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -239,7 +240,7 @@ class DocumentInterviewService(
         ocrLanguages: String?,
         text: String,
         embeddings: List<DocChunkEmbedding>,
-        visualAssets: List<ExtractedCourseVisualAsset>
+        visualAssets: List<ExtractedCourseVisualAsset>?
     ) {
         val job = documentIngestionJobRepository.findById(jobId).orElse(null) ?: return
         if (job.status == DocumentIngestionStatus.CANCELLED) return
@@ -251,7 +252,7 @@ class DocumentInterviewService(
 
         docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(userId, fileId)
         docChunkEmbeddingRepository.saveAll(embeddings)
-        if (fileId > 0) {
+        if (fileId > 0 && visualAssets != null) {
             replaceCourseMaterialVisualAssets(fileId, visualAssets)
         }
 
@@ -306,14 +307,14 @@ class DocumentInterviewService(
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "문서에서 분석 가능한 텍스트를 찾지 못했습니다.")
             }
 
-            var visualAssets: List<ExtractedCourseVisualAsset> = emptyList()
+            var visualAssets: List<ExtractedCourseVisualAsset>? = null
             val visualAssetMillis = if (file.fileType == FileType.COURSE_MATERIAL) {
                 measureTimeMillis {
                     visualAssets = runCatching { extractCourseMaterialVisualAssets(file) }
                         .onFailure { ex ->
                             logger.warn("course visual asset extraction failed fileId={} reason={}", file.id, ex.message)
                         }
-                        .getOrDefault(emptyList())
+                        .getOrNull()
                 }
             } else {
                 0L
@@ -1876,23 +1877,30 @@ class DocumentInterviewService(
             return
         }
 
-        val savedAssets = visualAssets.map { asset ->
-            val storageKey = uploadCourseVisualAsset(material.userFile.user.id, fileId, asset)
-            StudentCourseMaterialVisualAsset(
-                material = material,
-                userFile = material.userFile,
-                assetType = asset.assetType,
-                assetOrder = asset.assetOrder,
-                label = asset.label,
-                storageKey = storageKey,
-                contentType = asset.contentType,
-                pageNo = asset.pageNo,
-                slideNo = asset.slideNo,
-                width = asset.width,
-                height = asset.height
-            )
+        val uploadedKeys = mutableListOf<String>()
+        try {
+            val savedAssets = visualAssets.map { asset ->
+                val storageKey = uploadCourseVisualAsset(material.userFile.user.id, fileId, asset)
+                uploadedKeys += storageKey
+                StudentCourseMaterialVisualAsset(
+                    material = material,
+                    userFile = material.userFile,
+                    assetType = asset.assetType,
+                    assetOrder = asset.assetOrder,
+                    label = asset.label,
+                    storageKey = storageKey,
+                    contentType = asset.contentType,
+                    pageNo = asset.pageNo,
+                    slideNo = asset.slideNo,
+                    width = asset.width,
+                    height = asset.height
+                )
+            }
+            studentCourseMaterialVisualAssetRepository.saveAll(savedAssets)
+        } catch (ex: Exception) {
+            uploadedKeys.forEach(::deleteObjectQuietly)
+            throw ex
         }
-        studentCourseMaterialVisualAssetRepository.saveAll(savedAssets)
         runAfterCommit {
             staleKeys.forEach(::deleteObjectQuietly)
         }
@@ -1902,7 +1910,8 @@ class DocumentInterviewService(
         val prefix = s3Properties.keyPrefix.trim().trim('/')
         val now = OffsetDateTime.now()
         val month = now.monthValue.toString().padStart(2, '0')
-        val storageKey = "$prefix/users/$userId/course-material-visual/${now.year}/$month/${fileId}-${asset.assetOrder}-${asset.assetType.name.lowercase()}.${asset.extension}"
+        val storageKey =
+            "$prefix/users/$userId/course-material-visual/${now.year}/$month/${fileId}-${asset.assetOrder}-${asset.assetType.name.lowercase()}-${UUID.randomUUID()}.${asset.extension}"
         val request = PutObjectRequest.builder()
             .bucket(s3Properties.bucket.trim())
             .key(storageKey)

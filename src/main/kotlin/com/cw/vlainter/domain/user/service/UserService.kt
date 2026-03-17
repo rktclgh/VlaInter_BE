@@ -116,20 +116,19 @@ class UserService(
                 "검색 결과에서 선택한 대학교만 저장할 수 있습니다."
             )
             user.universityName = verifiedUniversity.universityName
-            user.departmentName = if (departmentId != null) {
-                val verifiedDepartment = academicSearchService.resolveVerifiedDepartment(
-                    universityId = universityId,
-                    departmentId = departmentId,
-                    departmentName = normalizedDepartment ?: "",
-                    universityName = verifiedUniversity.universityName
-                ) ?: throw ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "검색 결과에서 선택한 학과만 저장할 수 있습니다."
-                )
-                verifiedDepartment.departmentName
-            } else {
-                normalizedDepartment
+            if (departmentId == null) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "학과가 검색 결과에서 선택되지 않았습니다.")
             }
+            val verifiedDepartment = academicSearchService.resolveVerifiedDepartment(
+                universityId = universityId,
+                departmentId = departmentId,
+                departmentName = normalizedDepartment ?: "",
+                universityName = verifiedUniversity.universityName
+            ) ?: throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "검색 결과에서 선택한 학과만 저장할 수 있습니다."
+            )
+            user.departmentName = verifiedDepartment.departmentName
         } else {
             user.universityName = null
             user.departmentName = null

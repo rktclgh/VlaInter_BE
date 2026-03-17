@@ -3,6 +3,7 @@ package com.cw.vlainter.domain.userFile.service
 import com.cw.vlainter.domain.interview.repository.DocChunkEmbeddingRepository
 import com.cw.vlainter.domain.interview.repository.DocumentIngestionJobRepository
 import com.cw.vlainter.domain.interview.entity.DocumentIngestionStatus
+import com.cw.vlainter.domain.student.repository.StudentCourseMaterialRepository
 import com.cw.vlainter.domain.student.repository.StudentCourseMaterialVisualAssetRepository
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
@@ -40,6 +41,7 @@ class UserFileService(
     private val userFileRepository: UserFileRepository,
     private val docChunkEmbeddingRepository: DocChunkEmbeddingRepository,
     private val documentIngestionJobRepository: DocumentIngestionJobRepository,
+    private val studentCourseMaterialRepository: StudentCourseMaterialRepository,
     private val studentCourseMaterialVisualAssetRepository: StudentCourseMaterialVisualAssetRepository,
     private val s3Client: S3Client,
     private val s3Properties: S3Properties,
@@ -285,6 +287,7 @@ class UserFileService(
             docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(targetOwnerId, target.id)
             documentIngestionJobRepository.deleteAllByUserIdAndDocumentFileId(targetOwnerId, target.id)
             studentCourseMaterialVisualAssetRepository.deleteAllByUserFile_Id(target.id)
+            studentCourseMaterialRepository.findByUserFile_Id(target.id)?.let { studentCourseMaterialRepository.delete(it) }
         }
 
         userFileRepository.delete(target)
@@ -470,7 +473,7 @@ class UserFileService(
     }
 
     private fun toResponse(file: UserFile): UserFileResponse {
-        val displayFileName = file.originalFileName.takeIf { it.isNotBlank() } ?: file.fileName
+        val displayFileName = file.fileName.takeIf { it.isNotBlank() } ?: file.originalFileName
         val latestIngestionJob = if (file.fileType == FileType.PROFILE_IMAGE) null
         else documentIngestionJobRepository.findTopByDocumentFileIdOrderByRequestedAtDesc(file.id)
         val extractionMethod = extractMetadataExtractionMethod(latestIngestionJob?.metadataJson)

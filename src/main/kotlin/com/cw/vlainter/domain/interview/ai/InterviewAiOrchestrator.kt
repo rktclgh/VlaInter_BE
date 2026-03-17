@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import java.math.BigDecimal
 import java.math.RoundingMode
+import kotlin.math.roundToInt
 
 @Component
 class InterviewAiOrchestrator(
@@ -213,8 +214,8 @@ class InterviewAiOrchestrator(
             .toSet()
         var lastError: Exception? = null
 
-        temperatures.forEachIndexed { index, temperature ->
-            if (collected.size >= questionCount) return@forEachIndexed
+        for ((index, temperature) in temperatures.withIndex()) {
+            if (collected.size >= questionCount) break
             val remaining = questionCount - collected.size
             val existingQuestionTexts = collected.values.map { it.questionText }
             logger.info(
@@ -249,9 +250,9 @@ class InterviewAiOrchestrator(
                 var rejectedUnrequestedStyleCount = 0
                 var rejectedGenericCount = 0
                 parsed.forEach { item ->
-                    val normalized = item.questionText.replace(Regex("\\s+"), " ").trim()
-                    val normalizedAnswer = item.canonicalAnswer.replace(Regex("\\s+"), " ").trim()
-                    val normalizedCriteria = item.gradingCriteria.replace(Regex("\\s+"), " ").trim()
+                    val normalized = normalizeStructuredText(item.questionText)
+                    val normalizedAnswer = normalizeStructuredText(item.canonicalAnswer)
+                    val normalizedCriteria = normalizeStructuredText(item.gradingCriteria)
                     if (normalized.isBlank() || normalizedAnswer.isBlank() || normalizedCriteria.isBlank()) {
                         rejectedBlankCount += 1
                         return@forEach
@@ -299,7 +300,7 @@ class InterviewAiOrchestrator(
                 )
                 if (shouldStopRetry(ex)) {
                     logger.warn("과목 시험문제 생성 재시도 중단: transient overload/rate limit 감지")
-                    return@forEachIndexed
+                    break
                 }
             }
         }
@@ -377,13 +378,13 @@ class InterviewAiOrchestrator(
 
         return parsed.mapIndexed { index, item ->
             val source = extractedQuestions[index]
-            val correctedQuestion = item.questionText.replace(Regex("\\s+"), " ").trim()
+            val correctedQuestion = normalizeStructuredText(item.questionText)
             item.copy(
                 questionNo = source.questionNo,
                 questionText = preservePastExamQuestionText(source.questionText, correctedQuestion),
                 questionStyle = item.questionStyle.trim().uppercase(),
-                canonicalAnswer = item.canonicalAnswer.replace(Regex("\\s+"), " ").trim(),
-                gradingCriteria = item.gradingCriteria.replace(Regex("\\s+"), " ").trim(),
+                canonicalAnswer = normalizeStructuredText(item.canonicalAnswer),
+                gradingCriteria = normalizeStructuredText(item.gradingCriteria),
                 referenceExample = item.referenceExample?.trim()?.takeIf { it.isNotBlank() }
             )
         }
@@ -485,7 +486,7 @@ class InterviewAiOrchestrator(
 
         return runCatching {
             val generated = llmProviderRouter.generateJson(prompt)
-            parseCourseExamEvaluationJson(generated.text)
+            parseCourseExamEvaluationJson(generated.text, items)
         }.onFailure { ex ->
             logger.warn("과목 시험문제 채점 실패(provider={}, count={}): {}", aiProperties.provider, items.size, ex.message)
         }.getOrElse { ex ->
@@ -2563,23 +2564,75 @@ class InterviewAiOrchestrator(
         return parseEvaluationNode(objectMapper.readTree(raw))
     }
 
-    private fun parseCourseExamEvaluationJson(raw: String): Map<String, CourseExamEvaluationResult> {
+    private fun parseCourseExamEvaluationJson(
+        raw: String,
+        items: List<CourseExamEvaluationInput>
+    ): Map<String, CourseExamEvaluationResult> {
         val root = objectMapper.readTree(raw)
-        return root["items"]
+        val rawResults = root["items"]
             ?.takeIf { it.isArray }
             ?.mapNotNull { item ->
                 val key = item["key"]?.asText()?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                val score = item["score"]?.asInt() ?: 0
-                val passScore = item["passScore"]?.asInt() ?: 12
-                val feedback = item.text("feedback").ifBlank { "채점 근거를 생성하지 못했습니다." }
+                val score = item["score"]?.asInt()
+                val passScore = item["passScore"]?.asInt()
+                val feedback = item.text("feedback").trim()
                 key to CourseExamEvaluationResult(
-                    score = score,
-                    passScore = passScore,
+                    score = score ?: 0,
+                    passScore = passScore ?: 0,
                     feedback = feedback
                 )
             }
             ?.toMap()
             .orEmpty()
+        return normalizeCourseExamEvaluationResults(rawResults, items)
+    }
+
+    private fun normalizeStructuredText(text: String): String {
+        return text.lines()
+            .map { line -> line.replace(Regex("[ \\t]+"), " ").trim() }
+            .joinToString("\n")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
+    }
+
+    private fun normalizeCourseExamEvaluationResults(
+        rawResults: Map<String, CourseExamEvaluationResult>,
+        items: List<CourseExamEvaluationInput>
+    ): Map<String, CourseExamEvaluationResult> {
+        val normalized = linkedMapOf<String, CourseExamEvaluationResult>()
+        items.forEach { item ->
+            val expectedPassScore = (item.maxScore * 0.6).roundToInt()
+            val rawResult = rawResults[item.key]
+                ?: throw IllegalStateException("과목 시험문제 채점 결과에 key=${item.key}가 누락되었습니다.")
+            val normalizedScore = rawResult.score.coerceIn(0, item.maxScore)
+            if (rawResult.score != normalizedScore) {
+                logger.warn(
+                    "과목 시험문제 채점 점수 범위 보정 key={} rawScore={} maxScore={}",
+                    item.key,
+                    rawResult.score,
+                    item.maxScore
+                )
+            }
+            if (rawResult.passScore != expectedPassScore) {
+                logger.warn(
+                    "과목 시험문제 채점 통과점수 무시 key={} rawPassScore={} expectedPassScore={}",
+                    item.key,
+                    rawResult.passScore,
+                    expectedPassScore
+                )
+            }
+            normalized[item.key] = CourseExamEvaluationResult(
+                score = normalizedScore,
+                passScore = expectedPassScore,
+                feedback = rawResult.feedback.ifBlank { "채점 근거를 생성하지 못했습니다." }
+            )
+        }
+
+        val unexpectedKeys = rawResults.keys - items.map { it.key }.toSet()
+        if (unexpectedKeys.isNotEmpty()) {
+            logger.warn("과목 시험문제 채점 결과에 예상하지 못한 key가 포함되었습니다. keys={}", unexpectedKeys.joinToString(","))
+        }
+        return normalized
     }
 
     private fun parseBatchEvaluationJson(raw: String): Map<String, AiTurnEvaluation> {
