@@ -454,7 +454,8 @@ class InterviewAiOrchestrator(
     ): String {
         require(transcriptChunk.isNotBlank()) { "transcriptChunk must not be blank." }
 
-        val professorLine = professorName?.trim()?.takeIf { it.isNotBlank() } ?: "미상"
+        val professorLine = professorName?.trim()?.takeIf { it.isNotBlank() }
+            ?: if (language == InterviewLanguage.EN) "Unknown" else "미상"
         val preservedTerms = extractPreservedTerms(
             listOf(CourseMaterialSummarySource(fileName = courseName, snippets = listOf(transcriptChunk)))
         )
@@ -465,34 +466,11 @@ class InterviewAiOrchestrator(
             "professorName" to professorLine,
             "transcriptChunk" to transcriptChunk.trim()
         )
-        val prompt = """
-            당신은 대학 강의 자동 생성 자막 후보정 도우미입니다.
-            ${jsonObjectOnlyRule(language)}
-
-            목표:
-            - 자동 생성 자막의 띄어쓰기, 끊긴 문장, 반복 어절, 오탈자를 읽기 쉬운 문장으로 다듬는다.
-            - 문맥상 명백한 연결만 복원한다.
-            - 원문에 없는 개념, 공식, 예시, 결론을 새로 추가하지 않는다.
-            - 불확실한 부분은 과장해서 보정하지 말고 최대한 보수적으로 유지한다.
-            - 영어 전문용어, 약어, 수식, 함수명, 알고리즘명은 입력에 나온 표기를 그대로 유지한다.
-            - 아래 원문 용어 유지 목록은 번역하거나 한글식 표기로 바꾸지 않는다.
-
-            출력 JSON 스키마:
-            {
-              "refinedTranscript": "후보정된 자막 본문"
-            }
-
-            규칙:
-            - 반드시 JSON 객체만 반환
-            - 마크다운 코드블록 금지
-            - 문단 구조는 필요 최소한으로만 정리
-            - 군더더기 감탄사, 의미 없는 반복, 자막 잡음은 제거 가능
-            - 강의 흐름과 순서는 유지
-            - 원문 용어 유지 목록: ${if (preservedTerms.isEmpty()) "없음" else preservedTerms.joinToString(", ")}
-
-            입력:
-            ${objectMapper.writeValueAsString(payload)}
-        """.trimIndent()
+        val prompt = buildCourseTranscriptRefinementPrompt(
+            payload = payload,
+            preservedTerms = preservedTerms,
+            language = language
+        )
 
         val generated = llmProviderRouter.generateJson(prompt, temperature = 0.1)
         return parseRefinedCourseTranscript(generated.text)
@@ -1773,8 +1751,8 @@ class InterviewAiOrchestrator(
     private fun extractPreservedTerms(sources: List<CourseMaterialSummarySource>): List<String> {
         val weightedTerms = linkedMapOf<String, Int>()
         sources.forEachIndexed { sourceIndex, source ->
-            val sourceWeight = 10 - sourceIndex
-            accumulatePreservedTerms(source.fileName, weightedTerms, sourceWeight + 4)
+            val sourceWeight = maxOf(1, 10 - sourceIndex)
+            accumulatePreservedTerms(source.fileName, weightedTerms, maxOf(1, sourceWeight + 4))
             source.snippets.forEachIndexed { snippetIndex, snippet ->
                 accumulatePreservedTerms(snippet, weightedTerms, maxOf(1, sourceWeight - (snippetIndex / 2)))
             }
@@ -2991,6 +2969,76 @@ class InterviewAiOrchestrator(
         return when (language) {
             InterviewLanguage.KO -> "아래 입력을 바탕으로 한국어 JSON만 출력하세요."
             InterviewLanguage.EN -> "Read the input below and return JSON only. feedback, bestPractice, and evidence must be written in English."
+        }
+    }
+
+    private fun buildCourseTranscriptRefinementPrompt(
+        payload: Map<String, String>,
+        preservedTerms: List<String>,
+        language: InterviewLanguage
+    ): String {
+        val preservedTermsText = preservedTerms.joinToString(", ").ifBlank {
+            if (language == InterviewLanguage.EN) "None" else "없음"
+        }
+        val inputJson = objectMapper.writeValueAsString(payload)
+        return when (language) {
+            InterviewLanguage.KO -> """
+                당신은 대학 강의 자동 생성 자막 후보정 도우미입니다.
+                ${jsonObjectOnlyRule(language)}
+
+                목표:
+                - 자동 생성 자막의 띄어쓰기, 끊긴 문장, 반복 어절, 오탈자를 읽기 쉬운 문장으로 다듬는다.
+                - 문맥상 명백한 연결만 복원한다.
+                - 원문에 없는 개념, 공식, 예시, 결론을 새로 추가하지 않는다.
+                - 불확실한 부분은 과장해서 보정하지 말고 최대한 보수적으로 유지한다.
+                - 영어 전문용어, 약어, 수식, 함수명, 알고리즘명은 입력에 나온 표기를 그대로 유지한다.
+                - 아래 원문 용어 유지 목록은 번역하거나 한글식 표기로 바꾸지 않는다.
+
+                출력 JSON 스키마:
+                {
+                  "refinedTranscript": "후보정된 자막 본문"
+                }
+
+                규칙:
+                - 반드시 JSON 객체만 반환
+                - 마크다운 코드블록 금지
+                - 문단 구조는 필요 최소한으로만 정리
+                - 군더더기 감탄사, 의미 없는 반복, 자막 잡음은 제거 가능
+                - 강의 흐름과 순서는 유지
+                - 원문 용어 유지 목록: $preservedTermsText
+
+                입력:
+                $inputJson
+            """.trimIndent()
+
+            InterviewLanguage.EN -> """
+                You are a lecture transcript cleanup assistant for university course captions.
+                ${jsonObjectOnlyRule(language)}
+
+                Goal:
+                - Rewrite auto-generated captions into readable sentences by fixing spacing, broken clauses, duplication, and obvious typos.
+                - Restore only contextually obvious connections.
+                - Do not invent concepts, formulas, examples, or conclusions that are not present in the source.
+                - Keep uncertain passages conservative instead of over-correcting them.
+                - Preserve English technical terms, abbreviations, formulas, function names, and algorithm names exactly as they appear in the input.
+                - Do not translate or localize any term from the preserved-terms list below.
+
+                Output JSON schema:
+                {
+                  "refinedTranscript": "Refined transcript body"
+                }
+
+                Rules:
+                - Return a JSON object only
+                - Do not use markdown code fences
+                - Keep paragraph restructuring minimal
+                - You may remove filler words, meaningless repetition, and caption noise
+                - Preserve the lecture flow and ordering
+                - Preserved source terms: $preservedTermsText
+
+                Input:
+                $inputJson
+            """.trimIndent()
         }
     }
 

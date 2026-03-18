@@ -77,21 +77,25 @@ import org.apache.poi.xwpf.usermodel.ParagraphAlignment
 import org.apache.poi.xwpf.usermodel.XWPFDocument
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.STShd
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.core.io.ClassPathResource
 import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.multipart.MultipartFile
 import org.springframework.web.server.ResponseStatusException
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 import java.awt.Color
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.text.Normalizer
 import java.time.OffsetDateTime
+import java.util.concurrent.RejectedExecutionException
 
 @Service
 class StudentCourseService(
@@ -169,6 +173,7 @@ class StudentCourseService(
 
     private val logger = LoggerFactory.getLogger(javaClass)
     private val objectMapper = ObjectMapper()
+    private class YoutubeSummaryJobCanceledException(message: String) : RuntimeException(message)
 
     @Transactional(readOnly = true)
     fun getMyCourses(principal: AuthPrincipal): List<StudentCourseResponse> {
@@ -246,8 +251,22 @@ class StudentCourseService(
             studentCourseMaterialRepository.deleteAll(materials)
         }
 
+        val youtubeSummaryJobs = studentCourseYoutubeSummaryJobRepository.findAllByCourseIdAndUserIdOrderByCreatedAtDesc(course.id, user.id)
+        val activeYoutubeSummaryJobs = youtubeSummaryJobs.filter { it.status in ACTIVE_YOUTUBE_SUMMARY_STATUSES }
+        if (activeYoutubeSummaryJobs.isNotEmpty()) {
+            val canceledAt = OffsetDateTime.now()
+            activeYoutubeSummaryJobs.forEach { job ->
+                job.status = StudentCourseYoutubeSummaryJobStatus.CANCELED
+                job.errorMessage = "과목이 삭제되어 유튜브 요약본 작업을 취소했습니다."
+                job.finishedAt = canceledAt
+            }
+            studentCourseYoutubeSummaryJobRepository.saveAll(activeYoutubeSummaryJobs)
+        }
+
         studentCourseRepository.delete(course)
-        studentCourseYoutubeSummaryJobRepository.deleteAllByCourseIdAndUserId(course.id, user.id)
+        studentCourseYoutubeSummaryJobRepository.deleteAll(
+            youtubeSummaryJobs.filter { it.status !in ACTIVE_YOUTUBE_SUMMARY_STATUSES }
+        )
 
         materialFileIds.forEach { fileId ->
             userFileService.deleteOwnedFile(user.id, fileId)
@@ -270,6 +289,7 @@ class StudentCourseService(
         val user = getValidatedStudentUser(principal)
         val course = getOwnedCourse(user.id, courseId)
         return studentCourseYoutubeSummaryJobRepository.findAllByCourseIdAndUserIdOrderByCreatedAtDesc(course.id, user.id)
+            .filter { it.status != StudentCourseYoutubeSummaryJobStatus.CANCELED }
             .map { it.toResponse() }
     }
 
@@ -285,6 +305,10 @@ class StudentCourseService(
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "유튜브 요약본 작업을 찾을 수 없습니다.") }
         if (job.courseId != course.id || job.userId != user.id) {
             throw ResponseStatusException(HttpStatus.NOT_FOUND, "유튜브 요약본 작업을 찾을 수 없습니다.")
+        }
+        if (job.status in ACTIVE_YOUTUBE_SUMMARY_STATUSES) {
+            selfProvider.getObject().cancelYoutubeSummaryJob(job.id, "사용자가 유튜브 요약본 작업을 취소했습니다.")
+            return
         }
         studentCourseYoutubeSummaryJobRepository.delete(job)
     }
@@ -342,22 +366,37 @@ class StudentCourseService(
             )
         }
 
-        val job = studentCourseYoutubeSummaryJobRepository.save(
-            StudentCourseYoutubeSummaryJob(
-                courseId = course.id,
-                userId = user.id,
-                universityName = user.universityName!!.trim(),
-                departmentName = user.departmentName!!.trim(),
-                courseName = course.courseName,
-                professorName = course.professorName,
-                youtubeUrl = request.youtubeUrl.trim(),
-                format = request.format,
-                status = StudentCourseYoutubeSummaryJobStatus.QUEUED
+        val job = try {
+            studentCourseYoutubeSummaryJobRepository.save(
+                StudentCourseYoutubeSummaryJob(
+                    courseId = course.id,
+                    userId = user.id,
+                    universityName = user.universityName!!.trim(),
+                    departmentName = user.departmentName!!.trim(),
+                    courseName = course.courseName,
+                    professorName = course.professorName,
+                    youtubeUrl = request.youtubeUrl.trim(),
+                    format = request.format,
+                    status = StudentCourseYoutubeSummaryJobStatus.QUEUED
+                )
             )
-        )
+        } catch (_: DataIntegrityViolationException) {
+            throw ResponseStatusException(
+                HttpStatus.CONFLICT,
+                "유튜브 요약본 생성 작업이 이미 진행 중입니다. 완료된 뒤 다시 시도해 주세요."
+            )
+        }
 
         runAfterCommit {
-            selfProvider.getObject().processYoutubeSummaryJobAsync(job.id)
+            try {
+                selfProvider.getObject().processYoutubeSummaryJobAsync(job.id)
+            } catch (ex: RejectedExecutionException) {
+                logger.warn("유튜브 요약본 작업 제출 거부 jobId={} reason={}", job.id, ex.message)
+                selfProvider.getObject().markYoutubeSummaryJobFailed(job.id, "유튜브 요약본 작업 대기열이 가득 찼습니다. 잠시 후 다시 시도해 주세요.")
+            } catch (ex: Exception) {
+                logger.warn("유튜브 요약본 작업 제출 실패 jobId={} reason={}", job.id, ex.message)
+                selfProvider.getObject().markYoutubeSummaryJobFailed(job.id, "유튜브 요약본 작업 실행을 시작하지 못했습니다.")
+            }
         }
         return job.toResponse()
     }
@@ -366,39 +405,34 @@ class StudentCourseService(
     fun processYoutubeSummaryJobAsync(jobId: Long) {
         runCatching { selfProvider.getObject().processYoutubeSummaryJobSync(jobId) }
             .onFailure { ex ->
+                if (ex is YoutubeSummaryJobCanceledException) {
+                    logger.info("유튜브 요약본 작업 취소 반영 jobId={} reason={}", jobId, ex.message)
+                    return@onFailure
+                }
                 logger.warn("유튜브 요약본 비동기 처리 실패 jobId={} reason={}", jobId, ex.message)
                 selfProvider.getObject().markYoutubeSummaryJobFailed(jobId, ex.message)
             }
     }
 
-    @Transactional
     fun processYoutubeSummaryJobSync(jobId: Long) {
-        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "유튜브 요약본 작업을 찾을 수 없습니다.") }
+        val job = selfProvider.getObject().loadYoutubeSummaryJobForProcessing(jobId)
         if (job.status == StudentCourseYoutubeSummaryJobStatus.READY) return
 
-        job.status = StudentCourseYoutubeSummaryJobStatus.FETCHING_CAPTIONS
-        job.startedAt = job.startedAt ?: OffsetDateTime.now()
-        job.errorMessage = null
-        studentCourseYoutubeSummaryJobRepository.save(job)
+        selfProvider.getObject().markYoutubeSummaryJobFetching(jobId)
 
         val transcript = youTubeTranscriptService.extractTranscript(job.youtubeUrl)
-        job.videoId = transcript.videoId
-        job.videoTitle = transcript.title
-        job.transcriptLanguage = transcript.transcriptLanguage
-        job.autoGeneratedCaption = transcript.autoGenerated
-        studentCourseYoutubeSummaryJobRepository.save(job)
+        selfProvider.getObject().assertYoutubeSummaryJobNotCanceled(jobId)
+        selfProvider.getObject().saveYoutubeSummaryJobTranscript(jobId, transcript)
 
-        job.status = StudentCourseYoutubeSummaryJobStatus.REFINING_TRANSCRIPT
-        studentCourseYoutubeSummaryJobRepository.save(job)
+        selfProvider.getObject().updateYoutubeSummaryJobStatus(jobId, StudentCourseYoutubeSummaryJobStatus.REFINING_TRANSCRIPT)
 
         val refinedTranscript = refineYoutubeTranscript(job, transcript)
         if (refinedTranscript.isBlank()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "영상 자막 후보정 결과가 비어 있습니다.")
         }
+        selfProvider.getObject().assertYoutubeSummaryJobNotCanceled(jobId)
 
-        job.status = StudentCourseYoutubeSummaryJobStatus.GENERATING_SUMMARY
-        studentCourseYoutubeSummaryJobRepository.save(job)
+        selfProvider.getObject().updateYoutubeSummaryJobStatus(jobId, StudentCourseYoutubeSummaryJobStatus.GENERATING_SUMMARY)
 
         val summary = userGeminiApiKeyService.withUserApiKey(job.userId) {
             interviewAiOrchestrator.generateCourseMaterialSummary(
@@ -410,8 +444,8 @@ class StudentCourseService(
                 language = InterviewLanguage.KO
             )
         }
-        job.summaryTitle = summary.title
-        job.summaryJson = objectMapper.writeValueAsString(summary)
+        selfProvider.getObject().assertYoutubeSummaryJobNotCanceled(jobId)
+        selfProvider.getObject().saveYoutubeSummaryJobSummary(jobId, summary)
 
         val course = studentCourseRepository.findById(job.courseId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "과목을 찾을 수 없습니다.") }
@@ -436,6 +470,86 @@ class StudentCourseService(
             bytes = documentBytes,
             storedDisplayFileName = encodeStoredMaterialFileName(displayFileName, StudentCourseMaterialKind.LECTURE_MATERIAL)
         )
+        selfProvider.getObject().assertYoutubeSummaryJobNotCanceled(jobId)
+        try {
+            selfProvider.getObject().completeYoutubeSummaryJob(jobId, course.id, job.userId, userFile.id)
+        } catch (ex: YoutubeSummaryJobCanceledException) {
+            userFileService.deleteOwnedFile(job.userId, userFile.id)
+            throw ex
+        }
+    }
+
+    @Transactional
+    fun markYoutubeSummaryJobFailed(jobId: Long, message: String?) {
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId).orElse(null) ?: return
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) return
+        job.status = StudentCourseYoutubeSummaryJobStatus.FAILED
+        job.errorMessage = message?.trim()?.takeIf { it.isNotBlank() } ?: "유튜브 요약본 생성에 실패했습니다."
+        job.finishedAt = OffsetDateTime.now()
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    fun loadYoutubeSummaryJobForProcessing(jobId: Long): StudentCourseYoutubeSummaryJob {
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId)
+            .orElseThrow { YoutubeSummaryJobCanceledException("유튜브 요약본 작업을 찾을 수 없습니다.") }
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            throw YoutubeSummaryJobCanceledException(job.errorMessage ?: "유튜브 요약본 작업이 취소되었습니다.")
+        }
+        return job
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun markYoutubeSummaryJobFetching(jobId: Long) {
+        val job = loadYoutubeSummaryJobForUpdate(jobId)
+        job.status = StudentCourseYoutubeSummaryJobStatus.FETCHING_CAPTIONS
+        job.startedAt = job.startedAt ?: OffsetDateTime.now()
+        job.finishedAt = null
+        job.errorMessage = null
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun saveYoutubeSummaryJobTranscript(jobId: Long, transcript: ExtractedYouTubeTranscript) {
+        val job = loadYoutubeSummaryJobForUpdate(jobId)
+        job.videoId = transcript.videoId
+        job.videoTitle = transcript.title
+        job.transcriptLanguage = transcript.transcriptLanguage
+        job.autoGeneratedCaption = transcript.autoGenerated
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun updateYoutubeSummaryJobStatus(jobId: Long, status: StudentCourseYoutubeSummaryJobStatus) {
+        val job = loadYoutubeSummaryJobForUpdate(jobId)
+        job.status = status
+        if (job.startedAt == null) {
+            job.startedAt = OffsetDateTime.now()
+        }
+        if (status != StudentCourseYoutubeSummaryJobStatus.FAILED && status != StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            job.errorMessage = null
+            job.finishedAt = null
+        }
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun saveYoutubeSummaryJobSummary(jobId: Long, summary: GeneratedCourseMaterialSummary) {
+        val job = loadYoutubeSummaryJobForUpdate(jobId)
+        job.summaryTitle = summary.title
+        job.summaryJson = objectMapper.writeValueAsString(summary)
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun completeYoutubeSummaryJob(jobId: Long, courseId: Long, userId: Long, userFileId: Long) {
+        val job = loadYoutubeSummaryJobForUpdate(jobId)
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            throw YoutubeSummaryJobCanceledException(job.errorMessage ?: "유튜브 요약본 작업이 취소되었습니다.")
+        }
+        val course = studentCourseRepository.findById(courseId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "과목을 찾을 수 없습니다.") }
+        val userFile = userFileService.loadOwnedFile(userId, userFileId)
         val savedMaterial = studentCourseMaterialRepository.save(
             StudentCourseMaterial(
                 course = course,
@@ -443,20 +557,41 @@ class StudentCourseService(
                 sourceType = StudentCourseMaterialSourceType.AI_GENERATED_SUMMARY
             )
         )
-
         job.generatedMaterialId = savedMaterial.id
         job.status = StudentCourseYoutubeSummaryJobStatus.READY
+        job.finishedAt = OffsetDateTime.now()
+        job.errorMessage = null
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun cancelYoutubeSummaryJob(jobId: Long, message: String?) {
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId).orElse(null) ?: return
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.READY || job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            return
+        }
+        job.status = StudentCourseYoutubeSummaryJobStatus.CANCELED
+        job.errorMessage = message?.trim()?.takeIf { it.isNotBlank() } ?: "유튜브 요약본 작업이 취소되었습니다."
         job.finishedAt = OffsetDateTime.now()
         studentCourseYoutubeSummaryJobRepository.save(job)
     }
 
-    @Transactional
-    fun markYoutubeSummaryJobFailed(jobId: Long, message: String?) {
-        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId).orElse(null) ?: return
-        job.status = StudentCourseYoutubeSummaryJobStatus.FAILED
-        job.errorMessage = message?.trim()?.takeIf { it.isNotBlank() } ?: "유튜브 요약본 생성에 실패했습니다."
-        job.finishedAt = OffsetDateTime.now()
-        studentCourseYoutubeSummaryJobRepository.save(job)
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    fun assertYoutubeSummaryJobNotCanceled(jobId: Long) {
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId)
+            .orElseThrow { YoutubeSummaryJobCanceledException("유튜브 요약본 작업을 찾을 수 없습니다.") }
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            throw YoutubeSummaryJobCanceledException(job.errorMessage ?: "유튜브 요약본 작업이 취소되었습니다.")
+        }
+    }
+
+    private fun loadYoutubeSummaryJobForUpdate(jobId: Long): StudentCourseYoutubeSummaryJob {
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId)
+            .orElseThrow { YoutubeSummaryJobCanceledException("유튜브 요약본 작업을 찾을 수 없습니다.") }
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            throw YoutubeSummaryJobCanceledException(job.errorMessage ?: "유튜브 요약본 작업이 취소되었습니다.")
+        }
+        return job
     }
 
     @Transactional
@@ -1135,7 +1270,7 @@ class StudentCourseService(
         if (chunks.isEmpty()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "후보정된 자막에서 요약 가능한 텍스트를 만들지 못했습니다.")
         }
-        val groupSize = kotlin.math.ceil(chunks.size.toDouble() / YOUTUBE_SUMMARY_MAX_SNIPPETS)
+        val groupSize = ceil(chunks.size.toDouble() / YOUTUBE_SUMMARY_MAX_SNIPPETS)
             .toInt()
             .coerceAtLeast(1)
         return chunks.chunked(groupSize).mapIndexed { index, groupedChunks ->
@@ -1154,12 +1289,36 @@ class StudentCourseService(
         val normalizedLines = text.lineSequence()
             .map(::normalizeDisplayText)
             .filter { it.isNotBlank() }
+            .flatMap { splitTranscriptLine(it, maxChunkChars).asSequence() }
             .toList()
         if (normalizedLines.isEmpty()) return emptyList()
 
+        val normalizedChunks = buildTranscriptChunks(normalizedLines, maxChunkChars)
+        if (maxChunks == null || normalizedChunks.size <= maxChunks) {
+            return normalizedChunks
+        }
+
+        val groupSize = ceil(normalizedChunks.size.toDouble() / maxChunks.toDouble())
+            .toInt()
+            .coerceAtLeast(1)
+        val groupedChunks = mergeTranscriptChunks(normalizedChunks, maxChunkChars, groupSize)
+        if (groupedChunks.size <= maxChunks) {
+            return groupedChunks
+        }
+        return reduceTranscriptChunkCount(groupedChunks, maxChunkChars, maxChunks)
+    }
+
+    private fun splitTranscriptLine(line: String, maxChunkChars: Int): List<String> {
+        if (line.length <= maxChunkChars) return listOf(line)
+        return line.chunked(maxChunkChars)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+    }
+
+    private fun buildTranscriptChunks(lines: List<String>, maxChunkChars: Int): List<String> {
         val chunks = mutableListOf<String>()
         val current = StringBuilder()
-        normalizedLines.forEach { line ->
+        lines.forEach { line ->
             val candidateLength = current.length + if (current.isEmpty()) 0 else 1 + line.length
             if (candidateLength > maxChunkChars && current.isNotEmpty()) {
                 chunks += current.toString().trim()
@@ -1171,17 +1330,50 @@ class StudentCourseService(
         if (current.isNotEmpty()) {
             chunks += current.toString().trim()
         }
-        val normalizedChunks = chunks.filter { it.isNotBlank() }
-        if (maxChunks == null || normalizedChunks.size <= maxChunks) {
-            return normalizedChunks
-        }
+        return chunks.filter { it.isNotBlank() }
+    }
 
-        val groupSize = kotlin.math.ceil(normalizedChunks.size.toDouble() / maxChunks.toDouble())
-            .toInt()
-            .coerceAtLeast(1)
-        return normalizedChunks.chunked(groupSize)
-            .map { group -> group.joinToString("\n\n").trim() }
-            .filter { it.isNotBlank() }
+    private fun mergeTranscriptChunks(
+        chunks: List<String>,
+        maxChunkChars: Int,
+        preferredGroupSize: Int
+    ): List<String> {
+        if (chunks.isEmpty()) return emptyList()
+        val merged = mutableListOf<String>()
+        val current = mutableListOf<String>()
+        chunks.forEach { chunk ->
+            val candidate = (current + chunk).joinToString("\n\n")
+            if (current.isNotEmpty() && (current.size >= preferredGroupSize || candidate.length > maxChunkChars)) {
+                merged += current.joinToString("\n\n").trim()
+                current.clear()
+            }
+            current += chunk
+        }
+        if (current.isNotEmpty()) {
+            merged += current.joinToString("\n\n").trim()
+        }
+        return merged.filter { it.isNotBlank() }
+    }
+
+    private fun reduceTranscriptChunkCount(
+        chunks: List<String>,
+        maxChunkChars: Int,
+        maxChunks: Int
+    ): List<String> {
+        val reduced = chunks.toMutableList()
+        while (reduced.size > maxChunks) {
+            var merged = false
+            for (index in 0 until reduced.lastIndex) {
+                val candidate = "${reduced[index]}\n\n${reduced[index + 1]}".trim()
+                if (candidate.length > maxChunkChars) continue
+                reduced[index] = candidate
+                reduced.removeAt(index + 1)
+                merged = true
+                break
+            }
+            if (!merged) break
+        }
+        return reduced.filter { it.isNotBlank() }
     }
 
     private fun buildAiGeneratedQuestions(

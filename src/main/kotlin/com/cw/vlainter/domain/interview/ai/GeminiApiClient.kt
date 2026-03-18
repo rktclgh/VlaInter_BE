@@ -49,6 +49,7 @@ class GeminiApiClient(
         temperature: Double?,
         maxOutputTokens: Int?
     ): LlmGenerationResult {
+        validateMaxOutputTokens(maxOutputTokens)
         val apiKey = resolveApiKey()
         require(apiKey.isNotBlank()) { "Gemini API key is missing." }
 
@@ -169,6 +170,10 @@ class GeminiApiClient(
         }
     }
 
+    private fun validateMaxOutputTokens(maxOutputTokens: Int?) {
+        require(maxOutputTokens == null || maxOutputTokens > 0) { "maxOutputTokens must be > 0" }
+    }
+
     private fun generateJsonWithModel(
         apiKey: String,
         model: String,
@@ -176,6 +181,7 @@ class GeminiApiClient(
         temperature: Double?,
         maxOutputTokens: Int
     ): LlmGenerationResult {
+        validateMaxOutputTokens(maxOutputTokens)
         val url = "${geminiProperties.baseUrl.trim().trimEnd('/')}/v1beta/models/$model:generateContent"
         val headers = geminiHeaders(apiKey)
 
@@ -292,7 +298,13 @@ private data class GeminiRequestPart(
     val text: String? = null,
     @JsonProperty("file_data")
     val fileData: GeminiFileData? = null
-)
+) {
+    init {
+        require(!text.isNullOrBlank() || fileData != null) {
+            "GeminiRequestPart requires text or fileData."
+        }
+    }
+}
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 private data class GeminiFileData(

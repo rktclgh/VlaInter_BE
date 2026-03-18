@@ -168,11 +168,13 @@ class UserFileService(
         if (bytes.isEmpty()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 파일 내용이 비어 있습니다.")
         }
+        val sanitizedOriginalFileName = extractOriginalFileName(originalFileName)
+        validateBinaryFileMetadata(fileType, sanitizedOriginalFileName, contentType)
         ensureS3Configured()
         return saveOwnedBinaryFile(
             actor = actor,
             fileType = fileType,
-            originalFileName = originalFileName,
+            originalFileName = sanitizedOriginalFileName,
             contentType = contentType,
             bytes = bytes,
             storedDisplayFileName = storedDisplayFileName
@@ -310,6 +312,7 @@ class UserFileService(
 
         enforceFileCountLimit(actor.id, fileType)
         putObject(objectKey, resolvedContentType, bytes)
+        registerRollbackObjectCleanup(objectKey)
 
         return try {
             if (fileType == FileType.PROFILE_IMAGE) {
@@ -346,6 +349,17 @@ class UserFileService(
             deleteObjectQuietly(objectKey)
             throw ex
         }
+    }
+
+    private fun registerRollbackObjectCleanup(objectKey: String) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) return
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCompletion(status: Int) {
+                if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                    deleteObjectQuietly(objectKey)
+                }
+            }
+        })
     }
 
     private fun enforceFileCountLimit(userId: Long, fileType: FileType) {
@@ -410,6 +424,42 @@ class UserFileService(
         if (fileType == FileType.PROFILE_IMAGE) {
             val extensionValid = extension in ALLOWED_PROFILE_IMAGE_EXTENSIONS
             val contentTypeValid = contentType.isNotBlank() && contentType in ALLOWED_PROFILE_IMAGE_CONTENT_TYPES
+            if (!extensionValid || !contentTypeValid) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "프로필 이미지는 PNG/JPG/JPEG/WEBP 형식만 업로드할 수 있습니다."
+                )
+            }
+        }
+    }
+
+    private fun validateBinaryFileMetadata(fileType: FileType, originalFileName: String, contentType: String) {
+        val lowerName = originalFileName.trim().lowercase()
+        val normalizedContentType = contentType.trim().lowercase()
+        val extension = lowerName.substringAfterLast('.', "")
+
+        if (fileType == FileType.RESUME || fileType == FileType.INTRODUCE || fileType == FileType.PORTFOLIO || fileType == FileType.COURSE_MATERIAL) {
+            val targetExtensions = when (fileType) {
+                FileType.COURSE_MATERIAL -> ALLOWED_COURSE_MATERIAL_EXTENSIONS
+                else -> ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS
+            }
+            val targetContentTypes = when (fileType) {
+                FileType.COURSE_MATERIAL -> ALLOWED_COURSE_MATERIAL_CONTENT_TYPES
+                else -> ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES
+            }
+            val extensionValid = extension in targetExtensions
+            val contentTypeValid = normalizedContentType.isNotBlank() && normalizedContentType in targetContentTypes
+            if (!extensionValid || !contentTypeValid) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    buildDocumentTypeErrorMessage(targetExtensions, targetContentTypes)
+                )
+            }
+        }
+
+        if (fileType == FileType.PROFILE_IMAGE) {
+            val extensionValid = extension in ALLOWED_PROFILE_IMAGE_EXTENSIONS
+            val contentTypeValid = normalizedContentType.isNotBlank() && normalizedContentType in ALLOWED_PROFILE_IMAGE_CONTENT_TYPES
             if (!extensionValid || !contentTypeValid) {
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,

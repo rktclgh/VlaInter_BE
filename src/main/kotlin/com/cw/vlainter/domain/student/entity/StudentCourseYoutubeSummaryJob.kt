@@ -105,6 +105,7 @@ enum class StudentCourseYoutubeSummaryJobStatus {
     FETCHING_CAPTIONS,
     REFINING_TRANSCRIPT,
     GENERATING_SUMMARY,
+    CANCELED,
     READY,
     FAILED
 }

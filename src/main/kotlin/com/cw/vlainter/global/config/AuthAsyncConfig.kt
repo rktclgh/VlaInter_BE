@@ -4,6 +4,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor
 import java.util.concurrent.Executor
+import java.util.concurrent.ThreadPoolExecutor
 
 @Configuration
 class AuthAsyncConfig {
@@ -40,6 +41,7 @@ class AuthAsyncConfig {
             maxPoolSize = 2
             queueCapacity = 20
             setThreadNamePrefix("student-course-summary-")
+            setRejectedExecutionHandler(ThreadPoolExecutor.CallerRunsPolicy())
             setWaitForTasksToCompleteOnShutdown(true)
             setAwaitTerminationSeconds(20)
             initialize()
