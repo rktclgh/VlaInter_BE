@@ -7,7 +7,7 @@ import java.nio.charset.StandardCharsets
 @ConfigurationProperties(prefix = "app.jwt")
 data class JwtProperties(
     var issuer: String = "vlainter",
-    var accessTokenExpSeconds: Long = 900,
+    var accessTokenExpSeconds: Long = 7200,
     var refreshTokenExpSeconds: Long = 1209600,
     var accessSecret: String = "",
     var refreshSecret: String = ""

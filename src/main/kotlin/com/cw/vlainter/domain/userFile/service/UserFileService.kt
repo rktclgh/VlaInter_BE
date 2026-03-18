@@ -210,6 +210,69 @@ class UserFileService(
     }
 
     @Transactional
+    fun createOwnedBinaryFile(
+        userId: Long,
+        fileType: FileType,
+        originalFileName: String,
+        contentType: String,
+        bytes: ByteArray,
+        storedDisplayFileName: String? = null
+    ): UserFile {
+        val actor = userRepository.findByIdForUpdate(userId)
+            ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "인증이 필요합니다.")
+        if (actor.status != UserStatus.ACTIVE) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "비활성 상태 계정은 파일 기능을 사용할 수 없습니다.")
+        }
+        if (bytes.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 파일 내용이 비어 있습니다.")
+        }
+        ensureS3Configured()
+
+        val sanitizedOriginalFileName = extractOriginalFileName(originalFileName)
+        val effectiveFileName = sanitizeStoredDisplayFileName(storedDisplayFileName) ?: sanitizedOriginalFileName
+        val storageFileName = buildStorageFileName(sanitizedOriginalFileName)
+        val objectKey = buildObjectKey(actor.id, fileType, storageFileName)
+        val storedPath = buildStoredPath(objectKey)
+
+        if (fileType != FileType.PROFILE_IMAGE) {
+            val currentCount = userFileRepository.countByUser_IdAndFileTypeAndDeletedAtIsNull(actor.id, fileType)
+            val maxFilesPerType = when (fileType) {
+                FileType.COURSE_MATERIAL -> MAX_COURSE_MATERIAL_FILES
+                else -> MAX_DOCUMENT_FILES_PER_TYPE
+            }
+            if (currentCount >= maxFilesPerType) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "${fileType.koreanLabel()} 파일은 최대 ${maxFilesPerType}개까지 보관할 수 있습니다."
+                )
+            }
+        }
+
+        putObject(objectKey, contentType, bytes)
+
+        return try {
+            userFileRepository.save(
+                UserFile(
+                    user = actor,
+                    fileType = fileType,
+                    fileUrl = storedPath,
+                    fileName = effectiveFileName,
+                    originalFileName = sanitizedOriginalFileName,
+                    storageFileName = storageFileName,
+                    storageKey = objectKey,
+                    contentType = contentType,
+                    fileSizeBytes = bytes.size.toLong(),
+                    isActive = true,
+                    updatedAt = OffsetDateTime.now()
+                )
+            )
+        } catch (ex: Exception) {
+            deleteObjectQuietly(objectKey)
+            throw ex
+        }
+    }
+
+    @Transactional
     fun deleteFile(principal: AuthPrincipal, fileId: Long) {
         val actor = loadActiveUser(principal.userId)
         val target = userFileRepository.findById(fileId)

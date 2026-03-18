@@ -1614,6 +1614,7 @@ class DocumentInterviewService(
                 "pdf" -> extractPdfText(bytes)
                 "docx" -> extractDocxText(bytes)
                 "pptx" -> extractPptxText(bytes)
+                "txt" -> extractPlainText(bytes)
                 "jpg", "jpeg", "png" -> extractImageTextWithOcr(bytes, format)
                 else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않는 문서 형식입니다.")
             }
@@ -1715,6 +1716,14 @@ class DocumentInterviewService(
         return ExtractedDocumentText(
             text = normalizeText(text),
             method = "PPTX_POI",
+            ocrLanguages = null
+        )
+    }
+
+    private fun extractPlainText(bytes: ByteArray): ExtractedDocumentText {
+        return ExtractedDocumentText(
+            text = normalizeText(bytes.toString(Charsets.UTF_8)),
+            method = "TXT_RAW",
             ocrLanguages = null
         )
     }
@@ -1989,6 +1998,7 @@ class DocumentInterviewService(
             "application/pdf" -> "pdf"
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> "docx"
             "application/vnd.openxmlformats-officedocument.presentationml.presentation" -> "pptx"
+            "text/plain", "text/plain; charset=utf-8" -> "txt"
             "image/jpeg", "image/jpg" -> "jpg"
             "image/png" -> "png"
             else -> ""
@@ -2000,6 +2010,7 @@ class DocumentInterviewService(
         "OCR_TESSERACT" -> "tesseract"
         "DOCX_POI" -> "poi-xwpf"
         "PPTX_POI" -> "poi-xslf"
+        "TXT_RAW" -> "plain-text"
         else -> "unknown"
     }
 

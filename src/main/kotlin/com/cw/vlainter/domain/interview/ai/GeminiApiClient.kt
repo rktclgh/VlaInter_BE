@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.interview.ai
 
 import com.cw.vlainter.global.config.properties.AiProvider
 import com.cw.vlainter.global.config.properties.GeminiProperties
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -43,7 +44,11 @@ class GeminiApiClient(
 
     override fun isEnabled(): Boolean = resolveApiKey().isNotBlank()
 
-    override fun generateJson(prompt: String, temperature: Double?): LlmGenerationResult {
+    override fun generateJson(
+        prompt: String,
+        temperature: Double?,
+        maxOutputTokens: Int?
+    ): LlmGenerationResult {
         val apiKey = resolveApiKey()
         require(apiKey.isNotBlank()) { "Gemini API key is missing." }
 
@@ -63,13 +68,20 @@ class GeminiApiClient(
                 waitForChatRateLimitSlot()
                 aiRoutingContextHolder.promoteGeminiModelIndex(index)
                 logger.info(
-                    "Gemini 채팅 모델 호출 시도 model={} index={} promptLength={} temperature={}",
+                    "Gemini 채팅 모델 호출 시도 model={} index={} promptLength={} temperature={} maxOutputTokens={}",
                     model,
                     index,
                     prompt.length,
-                    temperature ?: geminiProperties.temperature
+                    temperature ?: geminiProperties.temperature,
+                    maxOutputTokens ?: geminiProperties.chatMaxOutputTokens
                 )
-                return generateJsonWithModel(apiKey, model, prompt, temperature)
+                return generateJsonWithModel(
+                    apiKey = apiKey,
+                    model = model,
+                    prompt = prompt,
+                    temperature = temperature,
+                    maxOutputTokens = maxOutputTokens ?: geminiProperties.chatMaxOutputTokens
+                )
             } catch (ex: GeminiTransientException) {
                 lastTransient = ex
                 if (index < models.lastIndex) {
@@ -98,11 +110,16 @@ class GeminiApiClient(
 
         val payload = GeminiEmbedContentRequest(
             model = "models/$model",
-            content = GeminiContent(parts = listOf(GeminiPart(text = text))),
+            content = GeminiContentRequest(parts = listOf(GeminiRequestPart(text = text))),
             outputDimensionality = geminiProperties.embeddingOutputDimensionality
         )
 
-        val response = post(url, HttpEntity(payload, headers), GeminiEmbedContentResponse::class.java)
+        val response = post(
+            restTemplate = restTemplate,
+            url = url,
+            entity = HttpEntity(payload, headers),
+            responseType = GeminiEmbedContentResponse::class.java
+        )
         val body = response.body ?: error("Gemini 임베딩 응답이 비어 있습니다.")
         val errorMessage = body.error?.get("message")?.asText()?.trim().orEmpty()
         if (errorMessage.isNotBlank()) {
@@ -120,6 +137,7 @@ class GeminiApiClient(
     }
 
     private fun <T> post(
+        restTemplate: RestTemplate,
         url: String,
         entity: HttpEntity<*>,
         responseType: Class<T>
@@ -157,22 +175,29 @@ class GeminiApiClient(
         apiKey: String,
         model: String,
         prompt: String,
-        temperature: Double?
+        temperature: Double?,
+        maxOutputTokens: Int
     ): LlmGenerationResult {
         val url = "${geminiProperties.baseUrl.trim().trimEnd('/')}/v1beta/models/$model:generateContent"
         val headers = geminiHeaders(apiKey)
 
         val payload = GeminiGenerateContentRequest(
             contents = listOf(
-                GeminiContent(parts = listOf(GeminiPart(text = prompt)))
+                GeminiContentRequest(parts = listOf(GeminiRequestPart(text = prompt)))
             ),
             generationConfig = GeminiGenerationConfig(
                 temperature = temperature ?: geminiProperties.temperature,
-                responseMimeType = "application/json"
+                responseMimeType = "application/json",
+                maxOutputTokens = maxOutputTokens
             )
         )
 
-        val response = post(url, HttpEntity(payload, headers), GeminiGenerateContentResponse::class.java)
+        val response = post(
+            restTemplate = restTemplate,
+            url = url,
+            entity = HttpEntity(payload, headers),
+            responseType = GeminiGenerateContentResponse::class.java
+        )
         val body = response.body ?: error("Gemini 응답이 비어 있습니다.")
         val errorMessage = body.error?.get("message")?.asText()?.trim().orEmpty()
         if (errorMessage.isNotBlank()) {
@@ -256,23 +281,37 @@ class GeminiApiClient(
 }
 
 private data class GeminiGenerateContentRequest(
-    val contents: List<GeminiContent>,
+    val contents: List<GeminiContentRequest>,
     @JsonProperty("generationConfig")
     val generationConfig: GeminiGenerationConfig
 )
 
-private data class GeminiContent(
-    val parts: List<GeminiPart>
+private data class GeminiContentRequest(
+    val parts: List<GeminiRequestPart>
 )
 
-private data class GeminiPart(
-    val text: String
+@JsonInclude(JsonInclude.Include.NON_NULL)
+private data class GeminiRequestPart(
+    val text: String? = null,
+    @JsonProperty("file_data")
+    val fileData: GeminiFileData? = null
 )
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
+private data class GeminiFileData(
+    @JsonProperty("file_uri")
+    val fileUri: String,
+    @JsonProperty("mime_type")
+    val mimeType: String? = null
+)
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
 private data class GeminiGenerationConfig(
     val temperature: Double,
     @JsonProperty("responseMimeType")
-    val responseMimeType: String
+    val responseMimeType: String,
+    @JsonProperty("maxOutputTokens")
+    val maxOutputTokens: Int? = null
 )
 
 private data class GeminiGenerateContentResponse(
@@ -282,7 +321,7 @@ private data class GeminiGenerateContentResponse(
 
 private data class GeminiEmbedContentRequest(
     val model: String,
-    val content: GeminiContent,
+    val content: GeminiContentRequest,
     @JsonProperty("outputDimensionality")
     val outputDimensionality: Int? = null
 )
@@ -301,5 +340,9 @@ private data class GeminiCandidate(
 )
 
 private data class GeminiContentResponse(
-    val parts: List<GeminiPart>? = null
+    val parts: List<GeminiResponsePart>? = null
+)
+
+private data class GeminiResponsePart(
+    val text: String? = null
 )

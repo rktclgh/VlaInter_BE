@@ -7,7 +7,11 @@ interface LlmProviderClient {
 
     fun isEnabled(): Boolean
 
-    fun generateJson(prompt: String, temperature: Double? = null): LlmGenerationResult
+    fun generateJson(
+        prompt: String,
+        temperature: Double? = null,
+        maxOutputTokens: Int? = null
+    ): LlmGenerationResult
 }
 
 data class LlmGenerationResult(

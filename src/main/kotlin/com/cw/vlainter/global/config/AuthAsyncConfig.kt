@@ -32,4 +32,17 @@ class AuthAsyncConfig {
             initialize()
         }
     }
+
+    @Bean(name = ["studentCourseSummaryExecutor"])
+    fun studentCourseSummaryExecutor(): Executor {
+        return ThreadPoolTaskExecutor().apply {
+            corePoolSize = 1
+            maxPoolSize = 2
+            queueCapacity = 20
+            setThreadNamePrefix("student-course-summary-")
+            setWaitForTasksToCompleteOnShutdown(true)
+            setAwaitTerminationSeconds(20)
+            initialize()
+        }
+    }
 }
