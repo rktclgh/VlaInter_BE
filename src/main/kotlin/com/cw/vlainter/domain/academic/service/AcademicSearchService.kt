@@ -10,6 +10,7 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.data.domain.PageRequest
 import org.springframework.http.client.SimpleClientHttpRequestFactory
 import org.springframework.scheduling.annotation.Async
@@ -104,9 +105,6 @@ class AcademicSearchService(
         val universityByName = cachedUniversities.associateBy { normalizeKeyword(it.name) }
         val targetUniversity = localUniversity
             ?: universityByName[normalizeKeyword(normalizedUniversityName)]
-            ?: upsertUniversities(
-                listOf(UniversitySearchItemResponse(universityName = normalizedUniversityName))
-            ).firstOrNull()
             ?: return localResults
 
         val quickDepartmentItems = parsedItems
@@ -289,7 +287,7 @@ class AcademicSearchService(
                 target.externalCode = item.universityCode
             }
             target.lastSyncedAt = now
-            academicUniversityRepository.save(target)
+            saveUniversitySafely(target, normalizedName, item.universityCode)
         }
     }
 
@@ -467,6 +465,20 @@ class AcademicSearchService(
 
     private fun normalizeKeyword(value: String): String {
         return value.trim().lowercase()
+    }
+
+    private fun saveUniversitySafely(
+        target: AcademicUniversity,
+        normalizedName: String,
+        externalCode: String?
+    ): AcademicUniversity {
+        return try {
+            academicUniversityRepository.saveAndFlush(target)
+        } catch (ex: DataIntegrityViolationException) {
+            academicUniversityRepository.findByNormalizedName(normalizedName)
+                ?: externalCode?.let { academicUniversityRepository.findByExternalCode(it) }
+                ?: throw ex
+        }
     }
 
     private fun mergeUniversityResults(

@@ -10,10 +10,16 @@ import jakarta.persistence.Id
 import jakarta.persistence.PrePersist
 import jakarta.persistence.PreUpdate
 import jakarta.persistence.Table
+import jakarta.persistence.UniqueConstraint
 import java.time.OffsetDateTime
 
 @Entity
-@Table(name = "academic_universities")
+@Table(
+    name = "academic_universities",
+    uniqueConstraints = [
+        UniqueConstraint(name = "uk_academic_universities_normalized_name", columnNames = ["normalized_name"])
+    ]
+)
 class AcademicUniversity(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

@@ -118,23 +118,19 @@ class UserService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학생 모드에서는 대학교와 학과를 입력해 주세요.")
         }
         if (normalizedUniversity != null) {
-            val resolvedUniversity = runCatching {
+            val resolvedUniversity = resolveAcademicInputOrThrow {
                 academicSearchService.resolveOrCreateUniversity(
                     universityName = normalizedUniversity,
                     universityId = universityId
                 )
-            }.getOrElse {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, it.message ?: "대학교 정보를 저장할 수 없습니다.")
             }
             user.universityName = resolvedUniversity.universityName
-            val resolvedDepartment = runCatching {
+            val resolvedDepartment = resolveAcademicInputOrThrow {
                 academicSearchService.resolveOrCreateDepartment(
                     university = resolvedUniversity,
                     departmentName = normalizedDepartment ?: "",
                     departmentId = departmentId
                 )
-            }.getOrElse {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, it.message ?: "학과 정보를 저장할 수 없습니다.")
             }
             user.departmentName = resolvedDepartment.departmentName
         } else {
@@ -512,6 +508,19 @@ class UserService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "${fieldName}은 120자를 초과할 수 없습니다.")
         }
         return normalized
+    }
+
+    private inline fun <T> resolveAcademicInputOrThrow(action: () -> T): T {
+        return try {
+            action()
+        } catch (ex: IllegalArgumentException) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, ex.message ?: "학적 정보를 저장할 수 없습니다.", ex)
+        } catch (ex: ResponseStatusException) {
+            if (ex.statusCode == HttpStatus.BAD_REQUEST) {
+                throw ex
+            }
+            throw ex
+        }
     }
 
     private fun toAdminMemberSummaryResponse(user: User): AdminMemberSummaryResponse {

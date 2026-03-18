@@ -27,7 +27,8 @@ class AuthAsyncConfig {
             maxPoolSize = 2
             queueCapacity = 50
             setThreadNamePrefix("academic-search-warm-")
-            setWaitForTasksToCompleteOnShutdown(false)
+            setWaitForTasksToCompleteOnShutdown(true)
+            setAwaitTerminationSeconds(10)
             initialize()
         }
     }

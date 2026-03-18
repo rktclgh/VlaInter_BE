@@ -207,12 +207,18 @@ class InterviewAiOrchestrator(
         language: InterviewLanguage = InterviewLanguage.KO
     ): List<GeneratedCourseExamQuestion> {
         require(questionCount > 0) { "questionCount must be positive." }
-        val temperatures = listOf(0.35, 0.5, 0.65, 0.8, 0.95)
-        val collected = linkedMapOf<String, GeneratedCourseExamQuestion>()
         val requestedStyleSet = questionStyles
             .map { it.trim().uppercase() }
             .filter { it.isNotBlank() }
             .toSet()
+        validateCourseExamGenerationInputs(
+            requestedStyleSet = requestedStyleSet,
+            generationMode = generationMode,
+            lectureContextSnippets = lectureContextSnippets,
+            styleReferenceSnippets = styleReferenceSnippets
+        )
+        val temperatures = listOf(0.35, 0.5, 0.65, 0.8, 0.95)
+        val collected = linkedMapOf<String, GeneratedCourseExamQuestion>()
         var lastError: Exception? = null
 
         for ((index, temperature) in temperatures.withIndex()) {
@@ -366,7 +372,12 @@ class InterviewAiOrchestrator(
                     delayMillis,
                     ex.message
                 )
-                Thread.sleep(delayMillis)
+                try {
+                    Thread.sleep(delayMillis)
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw interrupted
+                }
             }
         }
         throw lastError ?: IllegalStateException("강의자료 요약 생성에 실패했습니다.")
@@ -1280,7 +1291,7 @@ class InterviewAiOrchestrator(
             - 학습 조언, 태도, 체크리스트, 시험 요령 같은 메타 조언은 쓰지 말 것
             - "중요하다", "다룬다", "설명한다" 같은 일반론만 쓰지 말고, 발췌에 등장하는 용어를 최대한 그대로 살려 구체적으로 서술할 것
             - 서로 다른 자료에서 같은 개념이 반복되면 하나의 대주제로 묶고, 세부 차이는 소주제/핵심내용에서 구분할 것
-            - 한국어 JSON 객체만 반환하고 코드블록은 금지
+            - ${jsonObjectOnlyRule(language)}
         """.trimIndent()
     }
 
@@ -1371,13 +1382,7 @@ class InterviewAiOrchestrator(
             ?.mapIndexedNotNull { index, item ->
                 val questionText = item.text("questionText").ifBlank { return@mapIndexedNotNull null }
                 val rawMaxScore = item["maxScore"]?.takeIf { it.isNumber }?.asInt()
-                val sanitizedMaxScore = when {
-                    rawMaxScore == null -> 20
-                    rawMaxScore < 0 -> 20
-                    rawMaxScore == 0 -> 0
-                    rawMaxScore > 100 -> 100
-                    else -> rawMaxScore
-                }
+                val sanitizedMaxScore = sanitizeCourseExamMaxScore(rawMaxScore)
                 GeneratedCourseExamQuestion(
                     questionNo = index + 1,
                     questionText = questionText,
@@ -2449,10 +2454,56 @@ class InterviewAiOrchestrator(
         }
     }
 
+    private fun validateCourseExamGenerationInputs(
+        requestedStyleSet: Set<String>,
+        generationMode: String,
+        lectureContextSnippets: List<String>,
+        styleReferenceSnippets: List<String>
+    ) {
+        val normalizedMode = generationMode.trim().uppercase()
+        val hasLectureContext = lectureContextSnippets.any { it.isNotBlank() }
+        val hasStyleReference = styleReferenceSnippets.any { it.isNotBlank() }
+
+        when (normalizedMode) {
+            "PAST_EXAM" -> {
+                require(hasLectureContext) {
+                    "questionStyles/requestedStyleSet=$requestedStyleSet, generationMode=PAST_EXAM requires lectureContextSnippets."
+                }
+                require(hasStyleReference) {
+                    "questionStyles/requestedStyleSet=$requestedStyleSet, generationMode=PAST_EXAM requires styleReferenceSnippets."
+                }
+            }
+
+            "PAST_EXAM_PRACTICE" -> require(hasStyleReference) {
+                "questionStyles/requestedStyleSet=$requestedStyleSet, generationMode=PAST_EXAM_PRACTICE requires styleReferenceSnippets."
+            }
+
+            else -> require(hasLectureContext) {
+                "questionStyles/requestedStyleSet=$requestedStyleSet, generationMode=$normalizedMode requires lectureContextSnippets."
+            }
+        }
+    }
+
     private fun jsonLanguageInstruction(language: InterviewLanguage): String {
         return when (language) {
             InterviewLanguage.KO -> "아래 입력을 바탕으로 한국어 JSON만 출력하세요."
             InterviewLanguage.EN -> "Read the input below and return JSON only. feedback, bestPractice, and evidence must be written in English."
+        }
+    }
+
+    private fun jsonObjectOnlyRule(language: InterviewLanguage): String {
+        return when (language) {
+            InterviewLanguage.KO -> "한국어 JSON 객체만 반환하고 코드블록은 금지"
+            InterviewLanguage.EN -> "Return an English JSON object only and do not use code blocks"
+        }
+    }
+
+    private fun sanitizeCourseExamMaxScore(rawMaxScore: Int?): Int {
+        return when {
+            rawMaxScore == null -> 20
+            rawMaxScore <= 0 -> 20
+            rawMaxScore > 100 -> 100
+            else -> rawMaxScore
         }
     }
 
@@ -2631,7 +2682,7 @@ class InterviewAiOrchestrator(
     ): Map<String, CourseExamEvaluationResult> {
         val normalized = linkedMapOf<String, CourseExamEvaluationResult>()
         items.forEach { item ->
-            val safeMaxScore = maxOf(0, item.maxScore)
+            val safeMaxScore = sanitizeCourseExamMaxScore(item.maxScore)
             val expectedPassScore = (safeMaxScore * 0.6).roundToInt()
             val rawResult = rawResults[item.key]
             if (rawResult == null) {

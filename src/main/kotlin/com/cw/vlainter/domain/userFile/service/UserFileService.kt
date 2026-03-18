@@ -247,7 +247,7 @@ class UserFileService(
     }
 
     @Transactional(readOnly = true)
-    fun loadStoredObjectContent(
+    internal fun loadStoredObjectContent(
         storageKey: String,
         downloadFileName: String,
         fallbackContentType: String? = null

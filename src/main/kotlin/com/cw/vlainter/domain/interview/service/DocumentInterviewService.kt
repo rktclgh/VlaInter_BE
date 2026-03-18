@@ -202,8 +202,11 @@ class DocumentInterviewService(
         target.finishedAt = null
         target.requestedAt = OffsetDateTime.now()
 
+        var shouldSchedule = existing != null
         val job = try {
-            documentIngestionJobRepository.saveAndFlush(target)
+            documentIngestionJobRepository.saveAndFlush(target).also {
+                shouldSchedule = true
+            }
         } catch (ex: DataIntegrityViolationException) {
             val recovered = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(userId, fileId)
             if (recovered != null) {
@@ -213,8 +216,10 @@ class DocumentInterviewService(
             }
         }
 
-        runAfterCommit {
-            selfProvider.getObject().ingestDocumentAsync(job.id)
+        if (shouldSchedule) {
+            runAfterCommit {
+                selfProvider.getObject().ingestDocumentAsync(job.id)
+            }
         }
 
         return toIngestionResponse(job)
@@ -399,9 +404,9 @@ class DocumentInterviewService(
         val now = OffsetDateTime.now()
         return when (job.status) {
             DocumentIngestionStatus.PROCESSING ->
-                job.startedAt?.isBefore(now.minusMinutes(10)) ?: false
+                job.startedAt?.isBefore(now.minusMinutes(10)) ?: true
             DocumentIngestionStatus.QUEUED ->
-                job.requestedAt?.isBefore(now.minusMinutes(10)) ?: false
+                job.requestedAt?.isBefore(now.minusMinutes(10)) ?: true
             else -> false
         }
     }
