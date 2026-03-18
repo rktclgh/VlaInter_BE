@@ -8,6 +8,7 @@ import jakarta.validation.Valid
 import com.cw.vlainter.domain.student.entity.StudentCourseMaterialSourceType
 import com.cw.vlainter.domain.student.entity.StudentExamSessionStatus
 import com.cw.vlainter.domain.student.entity.StudentCourseYoutubeSummaryJobStatus
+import com.cw.vlainter.domain.interview.entity.InterviewLanguage
 import com.cw.vlainter.domain.userFile.entity.FileType
 import java.time.OffsetDateTime
 
@@ -112,12 +113,16 @@ data class CreateStudentCourseSummaryDocumentRequest(
     @field:Size(min = 1, max = 12, message = "요약할 강의자료를 1개 이상 12개 이하로 선택해 주세요.")
     val selectedMaterialIds: List<Long>,
 
+    val language: InterviewLanguage = InterviewLanguage.KO,
+
     val format: StudentCourseSummaryDocumentFormat = StudentCourseSummaryDocumentFormat.DOCX
 )
 
 data class CreateStudentCourseSummaryPreviewRequest(
     @field:Size(min = 1, max = 12, message = "요약할 강의자료를 1개 이상 12개 이하로 선택해 주세요.")
-    val selectedMaterialIds: List<Long>
+    val selectedMaterialIds: List<Long>,
+
+    val language: InterviewLanguage = InterviewLanguage.KO
 )
 
 enum class StudentCourseSummaryDocumentFormat {
@@ -161,7 +166,9 @@ data class CreateStudentExamSessionRequest(
     val questionStyles: List<StudentExamQuestionStyle> = emptyList(),
 
     @field:Size(max = 20, message = "선택 가능한 족보는 최대 20개입니다.")
-    val selectedPastExamMaterialIds: List<Long> = emptyList()
+    val selectedPastExamMaterialIds: List<Long> = emptyList(),
+
+    val language: InterviewLanguage = InterviewLanguage.KO
 )
 
 enum class StudentExamGenerationMode {
@@ -186,6 +193,7 @@ data class StudentExamSessionResponse(
     val title: String,
     val status: StudentExamSessionStatus,
     val generationMode: StudentExamGenerationMode,
+    val language: InterviewLanguage,
     val difficultyLevel: Int?,
     val questionStyles: List<StudentExamQuestionStyle>,
     val questionCount: Int,
@@ -223,6 +231,7 @@ data class StudentExamSessionDetailResponse(
     val title: String,
     val status: StudentExamSessionStatus,
     val generationMode: StudentExamGenerationMode,
+    val language: InterviewLanguage,
     val difficultyLevel: Int?,
     val questionStyles: List<StudentExamQuestionStyle>,
     val questionCount: Int,

@@ -404,8 +404,8 @@ class StudentCourseService(
             format = job.format
         )
         val documentBytes = when (job.format) {
-            StudentCourseSummaryDocumentFormat.DOCX -> createSummaryDocx(summary, course, listOf(transcript.title))
-            StudentCourseSummaryDocumentFormat.PDF -> createSummaryPdf(summary, course, listOf(transcript.title))
+            StudentCourseSummaryDocumentFormat.DOCX -> createSummaryDocx(summary, course, listOf(transcript.title), InterviewLanguage.KO)
+            StudentCourseSummaryDocumentFormat.PDF -> createSummaryPdf(summary, course, listOf(transcript.title), InterviewLanguage.KO)
         }
         val contentType = when (job.format) {
             StudentCourseSummaryDocumentFormat.DOCX -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -506,18 +506,19 @@ class StudentCourseService(
         val (course, selectedMaterials, summary) = createCourseSummary(
             principal = principal,
             courseId = courseId,
-            selectedMaterialIds = request.selectedMaterialIds
+            selectedMaterialIds = request.selectedMaterialIds,
+            language = request.language
         )
         val sourceFileNames = selectedMaterials.map { decodeDisplayMaterialFileName(it.userFile.fileName) }
         val fileName = buildSummaryDocumentFileName(course, selectedMaterials.size, request.format)
         return when (request.format) {
             StudentCourseSummaryDocumentFormat.DOCX -> UserFileService.FileContentResource(
-                bytes = createSummaryDocx(summary, course, sourceFileNames),
+                bytes = createSummaryDocx(summary, course, sourceFileNames, request.language),
                 contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 fileName = fileName
             )
             StudentCourseSummaryDocumentFormat.PDF -> UserFileService.FileContentResource(
-                bytes = createSummaryPdf(summary, course, sourceFileNames),
+                bytes = createSummaryPdf(summary, course, sourceFileNames, request.language),
                 contentType = "application/pdf",
                 fileName = fileName
             )
@@ -533,7 +534,8 @@ class StudentCourseService(
         val (_, selectedMaterials, summary) = createCourseSummary(
             principal = principal,
             courseId = courseId,
-            selectedMaterialIds = request.selectedMaterialIds
+            selectedMaterialIds = request.selectedMaterialIds,
+            language = request.language
         )
         return summary.toPreviewResponse(
             sourceFileNames = selectedMaterials.map { decodeDisplayMaterialFileName(it.userFile.fileName) }
@@ -543,7 +545,8 @@ class StudentCourseService(
     private fun createCourseSummary(
         principal: AuthPrincipal,
         courseId: Long,
-        selectedMaterialIds: List<Long>
+        selectedMaterialIds: List<Long>,
+        language: InterviewLanguage
     ): Triple<StudentCourse, List<StudentCourseMaterial>, GeneratedCourseMaterialSummary> {
         val user = getValidatedStudentUser(principal)
         val course = getOwnedCourse(user.id, courseId)
@@ -592,7 +595,7 @@ class StudentCourseService(
                 courseName = course.courseName,
                 professorName = course.professorName,
                 sources = summarySources,
-                language = InterviewLanguage.KO
+                language = language
             )
         }
         return Triple(course, selectedMaterials, summary)
@@ -693,6 +696,7 @@ class StudentCourseService(
                 userId = user.id,
                 status = StudentExamSessionStatus.READY,
                 generationMode = request.generationMode,
+                language = request.language,
                 difficultyLevel = effectiveDifficultyLevel,
                 questionStylesCsv = questionStylesCsv,
                 questionCount = request.questionCount,
@@ -723,7 +727,8 @@ class StudentCourseService(
                     questionCount = request.questionCount,
                     generationMode = request.generationMode,
                     difficultyLevel = effectiveDifficultyLevel,
-                    questionStyles = effectiveQuestionStyles
+                    questionStyles = effectiveQuestionStyles,
+                    language = request.language
                 )
             }
         } catch (ex: GeminiTransientException) {
@@ -883,12 +888,15 @@ class StudentCourseService(
             if (trimmedAnswer.isBlank()) {
                 question.answerText = null
                 question.score = 0
-                question.feedback = "미응답입니다. 다음 재시험에서는 핵심 개념과 풀이 과정을 꼭 작성해 주세요."
+                question.feedback = when (session.language) {
+                    InterviewLanguage.EN -> "No answer submitted. In the next retest, write the core concept and your reasoning more explicitly."
+                    InterviewLanguage.KO -> "미응답입니다. 다음 재시험에서는 핵심 개념과 풀이 과정을 꼭 작성해 주세요."
+                }
                 question.isCorrect = false
                 question.answeredAt = answeredAt
                 return@forEach
             }
-            val evaluation = evaluationsByQuestionId[question.id] ?: evaluateAnswer(question, trimmedAnswer)
+            val evaluation = evaluationsByQuestionId[question.id] ?: evaluateAnswer(question, trimmedAnswer, session.language)
             question.answerText = trimmedAnswer
             question.score = evaluation.score.coerceIn(0, question.maxScore)
             question.feedback = evaluation.feedback
@@ -1167,7 +1175,8 @@ class StudentCourseService(
         questionCount: Int,
         generationMode: StudentExamGenerationMode,
         difficultyLevel: Int?,
-        questionStyles: List<StudentExamQuestionStyle>
+        questionStyles: List<StudentExamQuestionStyle>,
+        language: InterviewLanguage
     ): List<GeneratedCourseExamQuestion> {
         if (generationMode == StudentExamGenerationMode.PAST_EXAM_PRACTICE) {
             return buildPastExamPracticeQuestions(
@@ -1176,7 +1185,8 @@ class StudentCourseService(
                 departmentName = departmentName,
                 course = course,
                 styleReferenceMaterials = styleReferenceMaterials,
-                questionCount = questionCount
+                questionCount = questionCount,
+                language = language
             )
         }
 
@@ -1214,7 +1224,7 @@ class StudentCourseService(
                 "[족보 스타일 참고 ${index + 1}]\n$snippet"
             },
             generationMode = generationMode.name,
-            language = InterviewLanguage.KO
+            language = language
         )
         val generatedStyleCounts = generatedQuestions.groupingBy { it.questionStyle.trim().uppercase() }.eachCount()
         val generatedMissingReferenceCount = generatedQuestions.count {
@@ -1284,7 +1294,8 @@ class StudentCourseService(
         departmentName: String,
         course: StudentCourse,
         styleReferenceMaterials: List<StudentCourseMaterial>,
-        questionCount: Int
+        questionCount: Int,
+        language: InterviewLanguage
     ): List<GeneratedCourseExamQuestion> {
         val extractedCandidates = extractPastExamPracticeQuestionCandidates(
             userId = userId,
@@ -1324,7 +1335,7 @@ class StudentCourseService(
                     extractionMethod = candidate.extractionMethod
                 )
             },
-            language = InterviewLanguage.KO
+            language = language
         )
 
         logger.info(
@@ -1811,7 +1822,7 @@ class StudentCourseService(
                             userAnswer = answerByQuestionId[question.id]?.answerText?.trim().orEmpty()
                         )
                     },
-                    responseLanguage = InterviewLanguage.KO
+                    responseLanguage = session.language
                 ).mapNotNull { (key, value) ->
                     key.toLongOrNull()?.let { it to value.toEvaluatedAnswer() }
                 }.toMap()
@@ -1820,7 +1831,8 @@ class StudentCourseService(
             answeredQuestions.associate { question ->
                 question.id to evaluateAnswer(
                     question = question,
-                    answerText = answerByQuestionId[question.id]?.answerText?.trim().orEmpty()
+                    answerText = answerByQuestionId[question.id]?.answerText?.trim().orEmpty(),
+                    language = session.language
                 )
             }
         }
@@ -1834,7 +1846,7 @@ class StudentCourseService(
         )
     }
 
-    private fun evaluateAnswer(question: StudentExamQuestion, answerText: String): EvaluatedAnswer {
+    private fun evaluateAnswer(question: StudentExamQuestion, answerText: String, language: InterviewLanguage = InterviewLanguage.KO): EvaluatedAnswer {
         val questionTokens = question.questionText.lowercase()
             .replace(Regex("[^a-z0-9가-힣\\s]"), " ")
             .split(Regex("\\s+"))
@@ -1862,10 +1874,17 @@ class StudentCourseService(
         }
         val normalizedScore = (keywordScore + lengthScore).coerceIn(0, 100)
         val score = ((normalizedScore / 100.0) * question.maxScore.toDouble()).roundToInt().coerceIn(0, question.maxScore)
-        val feedback = when {
-            score >= (question.maxScore * 0.8).roundToInt() -> "핵심 개념과 풀이 흐름이 비교적 잘 드러납니다. 정답 표현을 더 정교하게 다듬으면 좋습니다."
-            score >= (question.maxScore * 0.5).roundToInt() -> "부분적으로 맞지만 핵심 근거, 계산 과정, 구현 세부사항을 더 보강해야 합니다."
-            else -> "핵심 개념 반영이 부족합니다. 정답 예시와 채점 기준을 참고해 다시 정리해 보세요."
+        val feedback = when (language) {
+            InterviewLanguage.EN -> when {
+                score >= (question.maxScore * 0.8).roundToInt() -> "Your answer shows the core concept and reasoning fairly well. Tighten the final wording to make it more precise."
+                score >= (question.maxScore * 0.5).roundToInt() -> "The answer is partially correct, but you need stronger evidence, clearer calculations, or more concrete implementation details."
+                else -> "The core concept is not reflected clearly enough. Review the model answer and grading criteria, then rewrite the answer more precisely."
+            }
+            InterviewLanguage.KO -> when {
+                score >= (question.maxScore * 0.8).roundToInt() -> "핵심 개념과 풀이 흐름이 비교적 잘 드러납니다. 정답 표현을 더 정교하게 다듬으면 좋습니다."
+                score >= (question.maxScore * 0.5).roundToInt() -> "부분적으로 맞지만 핵심 근거, 계산 과정, 구현 세부사항을 더 보강해야 합니다."
+                else -> "핵심 개념 반영이 부족합니다. 정답 예시와 채점 기준을 참고해 다시 정리해 보세요."
+            }
         }
         return EvaluatedAnswer(
             score = score,
@@ -1919,8 +1938,10 @@ class StudentCourseService(
     private fun createSummaryDocx(
         summary: GeneratedCourseMaterialSummary,
         course: StudentCourse,
-        sourceFileNames: List<String>
+        sourceFileNames: List<String>,
+        language: InterviewLanguage
     ): ByteArray {
+        val labels = summaryDocumentLabels(language)
         return ByteArrayOutputStream().use { outputStream ->
             XWPFDocument().use { document ->
                 document.createParagraph().apply {
@@ -1940,12 +1961,12 @@ class StudentCourseService(
                         setText("${course.universityName} · ${course.departmentName} · ${course.courseName}${course.professorName?.let { " · $it" } ?: ""}")
                     }
                 }
-                appendDocxSection(document, "과목 개요", listOf(summary.overview), bullet = false)
-                appendDocxSection(document, "한눈에 보기", summary.coreTakeaways)
+                appendDocxSection(document, labels.overviewTitle, listOf(summary.overview), bullet = false)
+                appendDocxSection(document, labels.keyTakeawaysTitle, summary.coreTakeaways)
                 summary.majorTopics.forEachIndexed { index, topic ->
-                    appendDocxTopicSection(document, index + 1, topic)
+                    appendDocxTopicSection(document, index + 1, topic, labels)
                 }
-                appendDocxSection(document, "참고한 강의자료", sourceFileNames.distinct())
+                appendDocxSection(document, labels.sourceMaterialsTitle, sourceFileNames.distinct())
                 document.write(outputStream)
             }
             outputStream.toByteArray()
@@ -1980,7 +2001,8 @@ class StudentCourseService(
     private fun appendDocxTopicSection(
         document: XWPFDocument,
         topicIndex: Int,
-        topic: GeneratedCourseMaterialSummaryTopic
+        topic: GeneratedCourseMaterialSummaryTopic,
+        labels: SummaryDocumentLabels
     ) {
         document.createParagraph().apply {
             spacingBefore = 120
@@ -2040,7 +2062,7 @@ class StudentCourseService(
                 styleDocxCalloutParagraph(paragraph)
                 paragraph.createRun().apply {
                     fontSize = 10
-                    setText("보충 설명: $note")
+                    setText("${labels.supplementaryPrefix}: $note")
                 }
             }
         }
@@ -2049,8 +2071,10 @@ class StudentCourseService(
     private fun createSummaryPdf(
         summary: GeneratedCourseMaterialSummary,
         course: StudentCourse,
-        sourceFileNames: List<String>
+        sourceFileNames: List<String>,
+        language: InterviewLanguage
     ): ByteArray {
+        val labels = summaryDocumentLabels(language)
         return ByteArrayOutputStream().use { outputStream ->
             PDDocument().use { document ->
                 val font = loadPdfFont(document)
@@ -2134,9 +2158,9 @@ class StudentCourseService(
 
                 writeWrapped(summary.title, fontSize = 17f, spacingAfter = 12f, lineGap = 5.5f)
                 writeWrapped("${course.universityName} · ${course.departmentName} · ${course.courseName}${course.professorName?.let { " · $it" } ?: ""}", fontSize = 10f, spacingAfter = 14f)
-                writeWrapped("과목 개요", fontSize = 13f, spacingAfter = 5f)
+                writeWrapped(labels.overviewTitle, fontSize = 13f, spacingAfter = 5f)
                 writeWrapped(summary.overview, fontSize = 10.4f, spacingAfter = 12f, lineGap = 5.5f)
-                writeWrapped("한눈에 보기", fontSize = 13f, spacingAfter = 5f)
+                writeWrapped(labels.keyTakeawaysTitle, fontSize = 13f, spacingAfter = 5f)
                 summary.coreTakeaways.forEach {
                     writeWrapped("• $it", fontSize = 10.2f, indent = 18f, spacingAfter = 3f, lineGap = 5.2f)
                 }
@@ -2162,19 +2186,43 @@ class StudentCourseService(
                             }
                         }
                         subtopic.supplementaryNotes.forEach { note ->
-                            writeCallout("보충 설명: $note", fontSize = 10.2f, indent = 52f)
+                            writeCallout("${labels.supplementaryPrefix}: $note", fontSize = 10.2f, indent = 52f)
                         }
                         cursorY -= 4f
                     }
                     cursorY -= 8f
                 }
-                writeWrapped("참고한 강의자료", fontSize = 13f, spacingAfter = 5f)
+                writeWrapped(labels.sourceMaterialsTitle, fontSize = 13f, spacingAfter = 5f)
                 sourceFileNames.distinct().forEach { writeWrapped("• $it", fontSize = 10.2f, indent = 18f, spacingAfter = 3f, lineGap = 5.2f) }
 
                 contentStream.close()
                 document.save(outputStream)
             }
             outputStream.toByteArray()
+        }
+    }
+
+    private data class SummaryDocumentLabels(
+        val overviewTitle: String,
+        val keyTakeawaysTitle: String,
+        val sourceMaterialsTitle: String,
+        val supplementaryPrefix: String
+    )
+
+    private fun summaryDocumentLabels(language: InterviewLanguage): SummaryDocumentLabels {
+        return when (language) {
+            InterviewLanguage.EN -> SummaryDocumentLabels(
+                overviewTitle = "Course Overview",
+                keyTakeawaysTitle = "At a Glance",
+                sourceMaterialsTitle = "Source Materials",
+                supplementaryPrefix = "Additional Note"
+            )
+            InterviewLanguage.KO -> SummaryDocumentLabels(
+                overviewTitle = "과목 개요",
+                keyTakeawaysTitle = "한눈에 보기",
+                sourceMaterialsTitle = "참고한 강의자료",
+                supplementaryPrefix = "보충 설명"
+            )
         }
     }
 
@@ -2308,6 +2356,7 @@ class StudentCourseService(
         title = title,
         status = status,
         generationMode = generationMode,
+        language = language,
         difficultyLevel = difficultyLevel,
         questionStyles = decodeQuestionStyles(questionStylesCsv),
         questionCount = questionCount,
@@ -2330,6 +2379,7 @@ class StudentCourseService(
         title = title,
         status = status,
         generationMode = generationMode,
+        language = language,
         difficultyLevel = difficultyLevel,
         questionStyles = decodeQuestionStyles(questionStylesCsv),
         questionCount = questionCount,
