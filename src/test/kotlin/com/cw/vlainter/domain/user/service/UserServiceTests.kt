@@ -1,11 +1,14 @@
 package com.cw.vlainter.domain.user.service
 
 import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
+import com.cw.vlainter.domain.academic.service.AcademicSearchService
 import com.cw.vlainter.domain.user.dto.UpdateMemberByAdminRequest
 import com.cw.vlainter.domain.user.dto.UpdateMyProfileRequest
 import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
+import com.cw.vlainter.domain.user.dto.UpdateMyServiceModeRequest
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserRole
+import com.cw.vlainter.domain.user.entity.UserServiceMode
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
 import com.cw.vlainter.domain.userFile.repository.UserFileRepository
@@ -53,6 +56,9 @@ class UserServiceTests {
 
     @Mock
     private lateinit var userLifecycleEmailService: UserLifecycleEmailService
+
+    @Mock
+    private lateinit var academicSearchService: AcademicSearchService
 
     @Test
     fun updateMyProfileUpdatesName() {
@@ -163,6 +169,22 @@ class UserServiceTests {
 
         assertThat(exception.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
         then(userRepository).should(never()).save(user)
+    }
+
+    @Test
+    fun updateMyServiceModeAllowsStudentWithoutAcademicProfile() {
+        val user = createUser()
+        val principal = createPrincipal(user)
+        val request = UpdateMyServiceModeRequest(serviceMode = UserServiceMode.STUDENT)
+
+        given(userRepository.findById(user.id)).willReturn(Optional.of(user))
+        given(userRepository.save(user)).willReturn(user)
+
+        val response = userService().updateMyServiceMode(principal, request)
+
+        assertThat(user.serviceMode).isEqualTo(UserServiceMode.STUDENT)
+        assertThat(response.serviceMode).isEqualTo(UserServiceMode.STUDENT)
+        then(userRepository).should().save(user)
     }
 
     @Test
@@ -373,7 +395,8 @@ class UserServiceTests {
             loginSessionStore = loginSessionStore,
             userGeminiApiKeyService = userGeminiApiKeyService,
             authAccessAuditService = authAccessAuditService,
-            userLifecycleEmailService = userLifecycleEmailService
+            userLifecycleEmailService = userLifecycleEmailService,
+            academicSearchService = academicSearchService
         )
     }
 

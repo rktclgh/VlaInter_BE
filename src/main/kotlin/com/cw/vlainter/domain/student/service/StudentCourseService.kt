@@ -118,6 +118,7 @@ class StudentCourseService(
         const val DEFAULT_QUESTION_MAX_SCORE = 20
         const val AI_SUMMARY_FILE_NAME_PREFIX = "[AI 요약본] "
         const val SUMMARY_SNIPPET_SAMPLE_SIZE = 8
+        const val EXAM_SNIPPET_SAMPLE_SIZE = 6
         const val YOUTUBE_TRANSCRIPT_REFINE_CHUNK_CHARS = 9000
         const val YOUTUBE_TRANSCRIPT_REFINE_MAX_CHUNKS = 3
         const val YOUTUBE_SUMMARY_CHUNK_CHARS = 5000
@@ -1212,7 +1213,7 @@ class StudentCourseService(
         val lectureSnippets = collectMaterialSnippets(
             userId = userId,
             materials = lectureMaterials,
-            totalLimit = maxOf(questionCount + 5, 10)
+            totalLimit = maxOf(questionCount * 4, 18)
         )
         if (lectureSnippets.isEmpty()) {
             throw IllegalStateException("시험문제 생성에 사용할 강의 자료 발췌가 부족합니다. 자료를 다시 분석해 주세요.")
@@ -1401,13 +1402,30 @@ class StudentCourseService(
     ): List<String> {
         return materials
             .flatMap { material ->
-                docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
-                    .map { it.chunkText.replace(Regex("\\s+"), " ").trim() }
-                    .filter { it.length >= 40 }
-                    .take(3)
+                val fileName = decodeDisplayMaterialFileName(material.userFile.fileName)
+                val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
+                buildExamGenerationSnippets(chunks).map { snippet -> "[$fileName] $snippet" }
             }
             .distinct()
             .take(totalLimit)
+    }
+
+    private fun buildExamGenerationSnippets(chunks: List<DocChunkEmbedding>): List<String> {
+        val normalizedChunks = chunks.mapNotNull { chunk ->
+            val text = normalizeChunkText(chunk.chunkText)
+            text.takeIf { it.length >= 80 }?.let { chunk.chunkNo to it }
+        }
+        if (normalizedChunks.isEmpty()) return emptyList()
+
+        val mergedSegments = normalizedChunks.chunked(2).map { group ->
+            val firstChunkNo = group.first().first
+            val lastChunkNo = group.last().first
+            val mergedText = group.joinToString("\n") { it.second }
+                .let { if (it.length <= 900) it else it.take(900).trimEnd() + "..." }
+            "[문서 구간 ${firstChunkNo}-${lastChunkNo}] $mergedText"
+        }
+
+        return sampleEvenly(mergedSegments.distinct(), EXAM_SNIPPET_SAMPLE_SIZE)
     }
 
     private fun collectSummarySources(
@@ -1453,8 +1471,7 @@ class StudentCourseService(
     private fun normalizeDisplayText(text: String): String =
         Normalizer.normalize(text, Normalizer.Form.NFC)
 
-    private fun <T> sampleEvenly(items: List<T>): List<T> {
-        val limit = SUMMARY_SNIPPET_SAMPLE_SIZE
+    private fun <T> sampleEvenly(items: List<T>, limit: Int = SUMMARY_SNIPPET_SAMPLE_SIZE): List<T> {
         if (items.size <= limit) return items
         val sampled = linkedSetOf<T>()
         val lastIndex = items.lastIndex
