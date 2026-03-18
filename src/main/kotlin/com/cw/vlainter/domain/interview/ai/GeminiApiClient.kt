@@ -115,7 +115,6 @@ class GeminiApiClient(
         )
 
         val response = post(
-            restTemplate = restTemplate,
             url = url,
             entity = HttpEntity(payload, headers),
             responseType = GeminiEmbedContentResponse::class.java
@@ -137,7 +136,6 @@ class GeminiApiClient(
     }
 
     private fun <T> post(
-        restTemplate: RestTemplate,
         url: String,
         entity: HttpEntity<*>,
         responseType: Class<T>
@@ -193,7 +191,6 @@ class GeminiApiClient(
         )
 
         val response = post(
-            restTemplate = restTemplate,
             url = url,
             entity = HttpEntity(payload, headers),
             responseType = GeminiGenerateContentResponse::class.java

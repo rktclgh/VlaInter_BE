@@ -824,6 +824,7 @@ class StudentCourseService(
         val user = getValidatedStudentUser(principal)
         val set = getOwnedWrongAnswerSet(user.id, setId)
         val course = getOwnedCourse(user.id, set.courseId)
+        val sourceSession = getOwnedSession(user.id, set.sessionId)
         val items = studentWrongAnswerItemRepository.findAllBySetIdOrderByQuestionOrderAsc(set.id)
         if (items.isEmpty()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "오답노트에 저장된 문제가 없습니다.")
@@ -835,6 +836,7 @@ class StudentCourseService(
                 userId = user.id,
                 status = StudentExamSessionStatus.READY,
                 generationMode = StudentExamGenerationMode.WRONG_ANSWER_RETEST,
+                language = sourceSession.language,
                 difficultyLevel = null,
                 questionStylesCsv = encodeQuestionStyles(items.map(StudentWrongAnswerItem::questionStyle).distinct()),
                 questionCount = items.size,

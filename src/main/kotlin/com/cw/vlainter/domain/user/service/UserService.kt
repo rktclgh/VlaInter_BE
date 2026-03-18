@@ -111,9 +111,6 @@ class UserService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학생 모드에서는 대학교와 학과를 입력해 주세요.")
         }
         if (normalizedUniversity != null) {
-            if (universityId == null || departmentId == null) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "검색 결과에서 대학교와 학과를 모두 선택해 주세요.")
-            }
             val resolvedUniversity = resolveAcademicInputOrThrow {
                 academicSearchService.resolveOrCreateUniversity(
                     universityName = normalizedUniversity,

@@ -28,6 +28,8 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-mail")
 	implementation("org.springframework.boot:spring-boot-starter-web")
 	implementation("org.springframework.boot:spring-boot-starter-actuator")
+	implementation("org.flywaydb:flyway-core")
+	implementation("org.flywaydb:flyway-database-postgresql")
 	implementation("software.amazon.awssdk:s3:2.33.0") {
 		exclude(group = "commons-logging", module = "commons-logging")
 	}
@@ -79,4 +81,5 @@ tasks.withType<Test> {
 	systemProperty("spring.datasource.password", "")
 	systemProperty("spring.jpa.hibernate.ddl-auto", "create-drop")
 	systemProperty("spring.jpa.show-sql", "false")
+	systemProperty("spring.flyway.enabled", "false")
 }

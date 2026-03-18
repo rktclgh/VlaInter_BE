@@ -1,8 +1,11 @@
 package com.cw.vlainter.domain.user.service
 
+import com.cw.vlainter.domain.academic.dto.DepartmentSearchItemResponse
+import com.cw.vlainter.domain.academic.dto.UniversitySearchItemResponse
 import com.cw.vlainter.domain.auth.service.AuthAccessAuditService
 import com.cw.vlainter.domain.academic.service.AcademicSearchService
 import com.cw.vlainter.domain.user.dto.UpdateMemberByAdminRequest
+import com.cw.vlainter.domain.user.dto.UpdateMyAcademicProfileRequest
 import com.cw.vlainter.domain.user.dto.UpdateMyProfileRequest
 import com.cw.vlainter.domain.user.dto.ChangeMyPasswordRequest
 import com.cw.vlainter.domain.user.dto.UpdateMyServiceModeRequest
@@ -184,6 +187,55 @@ class UserServiceTests {
 
         assertThat(user.serviceMode).isEqualTo(UserServiceMode.STUDENT)
         assertThat(response.serviceMode).isEqualTo(UserServiceMode.STUDENT)
+        then(userRepository).should().save(user)
+    }
+
+    @Test
+    fun updateMyAcademicProfileAllowsFallbackResolutionWithoutIds() {
+        val user = createUser()
+        val principal = createPrincipal(user)
+        val request = UpdateMyAcademicProfileRequest(
+            universityName = "청운대학교",
+            departmentName = "컴퓨터공학과"
+        )
+
+        given(userRepository.findById(user.id)).willReturn(Optional.of(user))
+        given(
+            academicSearchService.resolveOrCreateUniversity(
+                universityName = "청운대학교",
+                universityId = null
+            )
+        ).willReturn(
+            UniversitySearchItemResponse(
+                universityId = 10L,
+                universityName = "청운대학교"
+            )
+        )
+        given(
+            academicSearchService.resolveOrCreateDepartment(
+                university = UniversitySearchItemResponse(
+                    universityId = 10L,
+                    universityName = "청운대학교"
+                ),
+                departmentName = "컴퓨터공학과",
+                departmentId = null
+            )
+        ).willReturn(
+            DepartmentSearchItemResponse(
+                departmentId = 20L,
+                universityId = 10L,
+                universityName = "청운대학교",
+                departmentName = "컴퓨터공학과"
+            )
+        )
+        given(userRepository.save(user)).willReturn(user)
+
+        val response = userService().updateMyAcademicProfile(principal, request)
+
+        assertThat(response.universityName).isEqualTo("청운대학교")
+        assertThat(response.departmentName).isEqualTo("컴퓨터공학과")
+        assertThat(user.universityName).isEqualTo("청운대학교")
+        assertThat(user.departmentName).isEqualTo("컴퓨터공학과")
         then(userRepository).should().save(user)
     }
 
