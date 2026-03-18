@@ -166,6 +166,7 @@ data class CreateStudentExamSessionRequest(
 
 enum class StudentExamGenerationMode {
     STANDARD,
+    FAST_REVIEW,
     PAST_EXAM,
     PAST_EXAM_PRACTICE,
     WRONG_ANSWER_RETEST

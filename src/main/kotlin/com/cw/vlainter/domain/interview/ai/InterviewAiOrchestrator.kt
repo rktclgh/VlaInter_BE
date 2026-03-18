@@ -1197,14 +1197,30 @@ class InterviewAiOrchestrator(
             .filter { it.isNotBlank() }
             .joinToString("\n") { "- $it" }
             .ifBlank { "(없음)" }
-        val difficultyGuide = when (difficultyLevel ?: 3) {
-            1 -> "대학 저학년 기초 수준으로 핵심 개념 확인 위주로 출제합니다."
-            2 -> "기초 개념과 기본 적용을 함께 묻는 수준으로 출제합니다."
-            3 -> "일반적인 대학 중간/기말고사 평균 난이도로 출제합니다."
-            4 -> "풀이 과정, 응용 판단, 개념 연결이 필요한 상위권 수준으로 출제합니다."
-            else -> "대학 교육과정 범위 안에서 변형 응용과 엄밀한 논증이 필요한 어려운 수준으로 출제합니다."
+        val difficultyGuide = when {
+            normalizedMode == "FAST_REVIEW" ->
+                "암기 확인용 초경량 문제로 출제합니다. 한 문제에 한 개념만 묻고, 답안은 1~3문장 또는 짧은 핵심 표현으로 끝낼 수 있어야 합니다."
+            (difficultyLevel ?: 3) == 1 ->
+                "대학 저학년 기초 수준으로 핵심 개념 확인 위주로 출제합니다."
+            (difficultyLevel ?: 3) == 2 ->
+                "기초 개념과 기본 적용을 함께 묻는 수준으로 출제합니다."
+            (difficultyLevel ?: 3) == 3 ->
+                "일반적인 대학 중간/기말고사 평균 난이도로 출제합니다."
+            (difficultyLevel ?: 3) == 4 ->
+                "풀이 과정, 응용 판단, 개념 연결이 필요한 상위권 수준으로 출제합니다."
+            else ->
+                "대학 교육과정 범위 안에서 변형 응용과 엄밀한 논증이 필요한 어려운 수준으로 출제합니다."
         }
         val styleGuide = when (normalizedMode) {
+            "FAST_REVIEW" -> {
+                """
+                - 패스트 모의고사는 암기 확인용 초경량 문제만 만든다
+                - 문제는 OX 퀴즈처럼 빠르게 풀 수 있어야 하며, 한 문제에 하나의 핵심 개념만 묻는다
+                - "정의하시오", "맞으면 이유를 짧게 쓰시오", "틀리면 올바른 용어를 쓰시오", "핵심 개념을 한 줄로 서술하시오" 같은 짧은 개념 서술형 문장을 사용한다
+                - 계산 과정, 긴 논증, 복잡한 구현, 장문의 비교 서술은 금지한다
+                - 강의자료 전 범위를 넓게 훑되, 각 문제는 가볍고 분명해야 한다
+                """.trimIndent()
+            }
             "PAST_EXAM" -> {
                 """
                 - 강의 자료 발췌는 문제 내용의 유일한 근거로 사용하고, 족보 스타일 참고 발췌는 난이도와 문장 스타일을 맞추는 용도로만 사용할 것
@@ -1243,8 +1259,8 @@ class InterviewAiOrchestrator(
         val outputRules = """
             - questionStyle은 반드시 DEFINITION, CODING, CALCULATION, ESSAY, PRACTICAL 중 하나
             - questionText는 시험지에 그대로 넣을 수 있는 문장
-            - canonicalAnswer는 채점 기준이 되는 정답/모범해설을 4~10문장 수준으로 작성
-            - gradingCriteria는 부분점수 기준이 드러나도록 핵심 채점 포인트를 3~6개 정도의 자연어 문장 또는 불릿 느낌 문장으로 작성
+            - canonicalAnswer는 채점 기준이 되는 정답/모범해설을 작성하되, FAST_REVIEW면 1~3문장, 그 외에는 4~10문장 수준으로 작성
+            - gradingCriteria는 부분점수 기준이 드러나도록 핵심 채점 포인트를 작성하되, FAST_REVIEW면 2~4개 정도의 짧은 채점 포인트로 작성
             - referenceExample은 CODING, CALCULATION, PRACTICAL 문제에서는 절대 null이면 안 되며, 입력/출력 예시, 명령어 예시, 계산 전개 예시 중 최소 하나를 반드시 포함
             - referenceExample은 DEFINITION 또는 ESSAY 문제에서만 null 가능
             - CODING 문제의 canonicalAnswer는 실제 코드 또는 언어 중립 의사코드가 아니라, 채점 포인트와 정답 로직 설명을 담은 해설이어야 한다
@@ -1308,6 +1324,7 @@ class InterviewAiOrchestrator(
             - 총 ${questionCount}개 문제 생성
             - 출제 모드가 PAST_EXAM_PRACTICE가 아니라면 모든 문제는 제공된 강의 자료 발췌에서 직접 근거를 찾을 수 있어야 함
             - 출제 모드가 PAST_EXAM_PRACTICE라면 모든 문제는 업로드된 족보 원문 발췌에서 직접 근거를 찾을 수 있어야 함
+            - 출제 모드가 FAST_REVIEW라면 모든 문제는 짧고 즉답 가능한 개념 확인형이어야 하며, 한 문제당 하나의 개념만 물어야 함
             - 업로드된 자료에 없는 개념, 교수 스타일, 외부 족보 내용을 임의로 추가하지 말 것
             - 서로 다른 핵심 주제와 단원을 고르게 반영할 것
             - 모든 문제의 questionStyle은 반드시 요청된 스타일 집합(${normalizedStyles.joinToString(", ").ifBlank { "DEFINITION" }}) 안에 있어야 함
@@ -1326,6 +1343,7 @@ class InterviewAiOrchestrator(
             - 코딩/실습형 문제는 예제나 명령어, 정확한 평가 포인트를 포함해 실제 채점이 가능해야 함
             - 계산형 문제는 식 설정, 변수 의미, 단위 또는 풀이 절차가 정답에 포함되어야 함
             - 정의형/서술형 문제는 핵심 개념 정의, 비교 포인트, 적용 맥락이 정답에 드러나야 함
+            - FAST_REVIEW에서는 DEFINITION 스타일만 사용하고, 답안 길이와 채점 기준을 최대한 간결하게 유지할 것
             - maxScore는 모든 문제에 대해 20으로 설정할 것
             - ${language.displayLanguageName()}로만 작성할 것
             - 반드시 JSON만 출력

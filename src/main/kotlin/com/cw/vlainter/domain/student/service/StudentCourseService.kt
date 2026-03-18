@@ -666,13 +666,11 @@ class StudentCourseService(
         val selectedPastExamMaterials = resolveSelectedPastExamMaterials(request, readyPastExamMaterials)
         validateSessionCreationRequest(request, readyPastExamMaterials.isNotEmpty(), selectedPastExamMaterials.isNotEmpty())
 
-        val effectiveDifficultyLevel = if (
-            request.generationMode == StudentExamGenerationMode.PAST_EXAM ||
-            request.generationMode == StudentExamGenerationMode.PAST_EXAM_PRACTICE
-        ) {
-            null
-        } else {
-            request.difficultyLevel
+        val effectiveDifficultyLevel = when (request.generationMode) {
+            StudentExamGenerationMode.PAST_EXAM,
+            StudentExamGenerationMode.PAST_EXAM_PRACTICE -> null
+            StudentExamGenerationMode.FAST_REVIEW -> 1
+            else -> request.difficultyLevel
         }
         val effectiveQuestionStyles = normalizeRequestedQuestionStyles(request)
         logger.info(
@@ -1674,6 +1672,8 @@ class StudentCourseService(
             request.generationMode == StudentExamGenerationMode.PAST_EXAM_PRACTICE
         ) {
             StudentExamQuestionStyle.entries.toList()
+        } else if (request.generationMode == StudentExamGenerationMode.FAST_REVIEW) {
+            listOf(StudentExamQuestionStyle.DEFINITION)
         } else {
             request.questionStyles.distinct()
         }
@@ -1729,6 +1729,8 @@ class StudentCourseService(
             }
         }
         return when (generationMode) {
+            StudentExamGenerationMode.FAST_REVIEW ->
+                "${course.courseName}$professorSuffix 패스트 모의고사 (${questionCount}문항)"
             StudentExamGenerationMode.PAST_EXAM ->
                 "족보형_${selectedPastExamLabel ?: course.courseName}(${questionCount}문항)"
             StudentExamGenerationMode.PAST_EXAM_PRACTICE ->
