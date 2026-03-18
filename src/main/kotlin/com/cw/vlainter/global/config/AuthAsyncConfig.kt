@@ -19,4 +19,17 @@ class AuthAsyncConfig {
             initialize()
         }
     }
+
+    @Bean(name = ["academicSearchWarmExecutor"])
+    fun academicSearchWarmExecutor(): Executor {
+        return ThreadPoolTaskExecutor().apply {
+            corePoolSize = 1
+            maxPoolSize = 2
+            queueCapacity = 50
+            setThreadNamePrefix("academic-search-warm-")
+            setWaitForTasksToCompleteOnShutdown(true)
+            setAwaitTerminationSeconds(10)
+            initialize()
+        }
+    }
 }

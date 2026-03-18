@@ -43,6 +43,10 @@ import com.cw.vlainter.domain.interview.repository.QaCategoryRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetItemRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetRepository
+import com.cw.vlainter.domain.student.dto.StudentCourseMaterialVisualAssetType
+import com.cw.vlainter.domain.student.entity.StudentCourseMaterialVisualAsset
+import com.cw.vlainter.domain.student.repository.StudentCourseMaterialRepository
+import com.cw.vlainter.domain.student.repository.StudentCourseMaterialVisualAssetRepository
 import com.cw.vlainter.domain.user.entity.User
 import com.cw.vlainter.domain.user.entity.UserStatus
 import com.cw.vlainter.domain.user.repository.UserRepository
@@ -75,16 +79,26 @@ import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException
 import software.amazon.awssdk.services.s3.S3Client
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
+import software.amazon.awssdk.services.s3.model.PutObjectRequest
+import software.amazon.awssdk.core.sync.RequestBody
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.OffsetDateTime
 import java.security.MessageDigest
+import java.awt.Color
+import java.awt.RenderingHints
+import java.awt.image.BufferedImage
+import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.system.measureTimeMillis
 import java.util.concurrent.TimeUnit
+import javax.imageio.ImageIO
 
 @Service
 class DocumentInterviewService(
@@ -102,6 +116,8 @@ class DocumentInterviewService(
     private val questionSetItemRepository: QaQuestionSetItemRepository,
     private val interviewSessionRepository: InterviewSessionRepository,
     private val interviewTurnRepository: InterviewTurnRepository,
+    private val studentCourseMaterialRepository: StudentCourseMaterialRepository,
+    private val studentCourseMaterialVisualAssetRepository: StudentCourseMaterialVisualAssetRepository,
     private val interviewAiOrchestrator: InterviewAiOrchestrator,
     private val aiRoutingContextHolder: AiRoutingContextHolder,
     private val embeddingProviderRouter: EmbeddingProviderRouter,
@@ -116,6 +132,9 @@ class DocumentInterviewService(
         private const val AI_GENERATED_SET_DESCRIPTION = "모의면접 시작 시 자동 생성된 기술 문답"
         private const val INTRO_CATEGORY = INTERVIEW_INTRO_CATEGORY
         private const val INTRO_QUESTION_TEXT = INTERVIEW_INTRO_QUESTION_TEXT
+        private const val MAX_COURSE_VISUAL_ASSETS = 12
+        private const val COURSE_VISUAL_RENDER_DPI = 140f
+        private const val OCR_MIN_RENDER_WIDTH = 1800
     }
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -151,15 +170,29 @@ class DocumentInterviewService(
         val actor = loadActiveUser(principal.userId)
         userGeminiApiKeyService.assertGeminiApiKeyConfigured(actor.id)
         val file = loadOwnedInterviewDocument(actor.id, fileId)
+        return queueIngestion(actor.id, file.id)
+    }
 
-        val existing = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
+    @Transactional
+    fun ingestStudentCourseMaterial(principal: AuthPrincipal, fileId: Long): DocumentIngestionResponse {
+        val actor = loadActiveUser(principal.userId)
+        userGeminiApiKeyService.assertGeminiApiKeyConfigured(actor.id)
+        val file = loadOwnedDocumentForIngestion(actor.id, fileId, setOf(FileType.COURSE_MATERIAL))
+        return queueIngestion(actor.id, file.id)
+    }
+
+    private fun queueIngestion(userId: Long, fileId: Long): DocumentIngestionResponse {
+        val existing = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(userId, fileId)
         if (existing != null && (existing.status == DocumentIngestionStatus.QUEUED || existing.status == DocumentIngestionStatus.PROCESSING)) {
-            return toIngestionResponse(existing)
+            if (!isStaleIngestionJob(existing)) {
+                return toIngestionResponse(existing)
+            }
+            selfProvider.getObject().markIngestionFailed(existing.id, "이전 분석 작업이 중단되었습니다. 다시 시도해 주세요.")
         }
 
         val target = existing ?: DocumentIngestionJob(
-            userId = actor.id,
-            documentFileId = file.id,
+            userId = userId,
+            documentFileId = fileId,
             status = DocumentIngestionStatus.QUEUED
         )
 
@@ -169,10 +202,13 @@ class DocumentInterviewService(
         target.finishedAt = null
         target.requestedAt = OffsetDateTime.now()
 
+        var shouldSchedule = existing != null
         val job = try {
-            documentIngestionJobRepository.saveAndFlush(target)
+            documentIngestionJobRepository.saveAndFlush(target).also {
+                shouldSchedule = true
+            }
         } catch (ex: DataIntegrityViolationException) {
-            val recovered = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
+            val recovered = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(userId, fileId)
             if (recovered != null) {
                 recovered
             } else {
@@ -180,8 +216,10 @@ class DocumentInterviewService(
             }
         }
 
-        runAfterCommit {
-            selfProvider.getObject().ingestDocumentAsync(job.id)
+        if (shouldSchedule) {
+            runAfterCommit {
+                selfProvider.getObject().ingestDocumentAsync(job.id)
+            }
         }
 
         return toIngestionResponse(job)
@@ -206,7 +244,8 @@ class DocumentInterviewService(
         extractionMethod: String,
         ocrLanguages: String?,
         text: String,
-        embeddings: List<DocChunkEmbedding>
+        embeddings: List<DocChunkEmbedding>,
+        visualAssets: List<ExtractedCourseVisualAsset>?
     ) {
         val job = documentIngestionJobRepository.findById(jobId).orElse(null) ?: return
         if (job.status == DocumentIngestionStatus.CANCELLED) return
@@ -218,6 +257,9 @@ class DocumentInterviewService(
 
         docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(userId, fileId)
         docChunkEmbeddingRepository.saveAll(embeddings)
+        if (fileId > 0 && visualAssets != null) {
+            replaceCourseMaterialVisualAssets(fileId, visualAssets)
+        }
 
         val firstEmbedding = embeddings.first()
         job.status = DocumentIngestionStatus.READY
@@ -249,37 +291,77 @@ class DocumentInterviewService(
 
     fun ingestDocumentSync(jobId: Long) {
         val job = selfProvider.getObject().markIngestionProcessing(jobId) ?: return
-        val file = loadOwnedInterviewDocument(job.userId, job.documentFileId)
+        val file = loadOwnedDocumentForIngestion(
+            userId = job.userId,
+            fileId = job.documentFileId,
+            allowedTypes = setOf(FileType.RESUME, FileType.INTRODUCE, FileType.PORTFOLIO, FileType.COURSE_MATERIAL)
+        )
 
         try {
-            val extracted = extractDocumentText(file)
+            val startedAt = System.nanoTime()
+            lateinit var extracted: ExtractedDocumentText
+            val extractionMillis = measureTimeMillis {
+                extracted = extractDocumentText(file)
+            }
             val text = extracted.text
-            val chunks = splitIntoChunks(text)
+            lateinit var chunks: List<String>
+            val chunkingMillis = measureTimeMillis {
+                chunks = splitIntoChunks(text)
+            }
             if (chunks.isEmpty()) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "문서에서 분석 가능한 텍스트를 찾지 못했습니다.")
             }
 
-            val embeddings = userGeminiApiKeyService.withUserApiKey(job.userId) {
-                chunks.mapIndexed { index, chunk ->
-                    val embedded = embeddingProviderRouter.embedText(chunk)
-                    DocChunkEmbedding(
-                        userFileId = file.id,
-                        userId = job.userId,
-                        chunkNo = index + 1,
-                        chunkText = chunk,
-                        tokenCount = estimateTokenCount(chunk),
-                        model = embedded.model,
-                        modelVersion = embedded.modelVersion ?: "unknown",
-                        embedding = embedded.values.toVectorLiteral(),
-                        metadataJson = objectMapper.writeValueAsString(
-                            mapOf(
-                                "fileType" to file.fileType.name,
-                                "originalFileName" to file.originalFileName
+            var visualAssets: List<ExtractedCourseVisualAsset>? = null
+            val visualAssetMillis = if (file.fileType == FileType.COURSE_MATERIAL) {
+                measureTimeMillis {
+                    visualAssets = runCatching { extractCourseMaterialVisualAssets(file) }
+                        .onFailure { ex ->
+                            logger.warn("course visual asset extraction failed fileId={} reason={}", file.id, ex.message)
+                        }
+                        .getOrNull()
+                }
+            } else {
+                0L
+            }
+
+            lateinit var embeddings: List<DocChunkEmbedding>
+            val embeddingMillis = measureTimeMillis {
+                embeddings = userGeminiApiKeyService.withUserApiKey(job.userId) {
+                    chunks.mapIndexed { index, chunk ->
+                        val embedded = embeddingProviderRouter.embedText(chunk)
+                        DocChunkEmbedding(
+                            userFileId = file.id,
+                            userId = job.userId,
+                            chunkNo = index + 1,
+                            chunkText = chunk,
+                            tokenCount = estimateTokenCount(chunk),
+                            model = embedded.model,
+                            modelVersion = embedded.modelVersion ?: "unknown",
+                            embedding = embedded.values.toVectorLiteral(),
+                            metadataJson = objectMapper.writeValueAsString(
+                                mapOf(
+                                    "fileType" to file.fileType.name,
+                                    "originalFileName" to file.originalFileName
+                                )
                             )
                         )
-                    )
+                    }
                 }
             }
+            logger.info(
+                "document ingestion timing fileId={} type={} extractionMs={} chunkingMs={} visualAssetMs={} embeddingMs={} chunks={} chars={} extractionMethod={} totalMs={}",
+                file.id,
+                file.fileType.name,
+                extractionMillis,
+                chunkingMillis,
+                visualAssetMillis,
+                embeddingMillis,
+                chunks.size,
+                text.length,
+                extracted.method,
+                (System.nanoTime() - startedAt) / 1_000_000
+            )
 
             selfProvider.getObject().completeIngestion(
                 jobId = job.id,
@@ -288,7 +370,8 @@ class DocumentInterviewService(
                 extractionMethod = extracted.method,
                 ocrLanguages = extracted.ocrLanguages,
                 text = text,
-                embeddings = embeddings
+                embeddings = embeddings,
+                visualAssets = visualAssets
             )
         } catch (ex: Exception) {
             logger.warn("document ingestion failed fileId={} reason={}", file.id, ex.message)
@@ -301,9 +384,31 @@ class DocumentInterviewService(
         val job = documentIngestionJobRepository.findById(jobId).orElse(null) ?: return
         if (job.status == DocumentIngestionStatus.READY || job.status == DocumentIngestionStatus.CANCELLED) return
         job.status = DocumentIngestionStatus.FAILED
-        job.errorMessage = message?.take(1000)
+        job.errorMessage = normalizeIngestionFailureMessage(message)
         job.finishedAt = OffsetDateTime.now()
         documentIngestionJobRepository.save(job)
+    }
+
+    private fun normalizeIngestionFailureMessage(message: String?): String? {
+        if (message.isNullOrBlank()) return null
+        val normalized = message.trim()
+        return when {
+            normalized.contains("http 429", ignoreCase = true) ||
+                normalized.contains("resource_exhausted", ignoreCase = true) ->
+                "Gemini API 할당량이 초과되었습니다. 잠시 후 다시 시도하거나 Gemini 사용량과 결제 상태를 확인해 주세요."
+            else -> normalized.take(1000)
+        }
+    }
+
+    private fun isStaleIngestionJob(job: DocumentIngestionJob): Boolean {
+        val now = OffsetDateTime.now()
+        return when (job.status) {
+            DocumentIngestionStatus.PROCESSING ->
+                job.startedAt?.isBefore(now.minusMinutes(10)) ?: true
+            DocumentIngestionStatus.QUEUED ->
+                job.requestedAt?.isBefore(now.minusMinutes(10)) ?: true
+            else -> false
+        }
     }
 
     @Transactional
@@ -1495,17 +1600,34 @@ class DocumentInterviewService(
             .bucket(s3Properties.bucket.trim())
             .key(key)
             .build()
-        val bytes = runCatching { s3Client.getObjectAsBytes(request).asByteArray() }
-            .getOrElse {
-                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "문서 파일을 불러오지 못했습니다.")
-            }
-
-        return when (resolveDocumentFormat(file)) {
-            "pdf" -> extractPdfText(bytes)
-            "docx" -> extractDocxText(bytes)
-            "pptx" -> extractPptxText(bytes)
-            else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않는 문서 형식입니다.")
+        lateinit var bytes: ByteArray
+        val downloadMillis = measureTimeMillis {
+            bytes = runCatching { s3Client.getObjectAsBytes(request).asByteArray() }
+                .getOrElse {
+                    throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "문서 파일을 불러오지 못했습니다.")
+                }
         }
+        val format = resolveDocumentFormat(file)
+        lateinit var extracted: ExtractedDocumentText
+        val parsingMillis = measureTimeMillis {
+            extracted = when (format) {
+                "pdf" -> extractPdfText(bytes)
+                "docx" -> extractDocxText(bytes)
+                "pptx" -> extractPptxText(bytes)
+                "jpg", "jpeg", "png" -> extractImageTextWithOcr(bytes, format)
+                else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않는 문서 형식입니다.")
+            }
+        }
+        logger.info(
+            "document extraction source fileId={} format={} bytes={} downloadMs={} parsingMs={} method={}",
+            file.id,
+            format,
+            bytes.size,
+            downloadMillis,
+            parsingMillis,
+            extracted.method
+        )
+        return extracted
     }
 
     private fun extractPdfText(bytes: ByteArray): ExtractedDocumentText {
@@ -1519,8 +1641,23 @@ class DocumentInterviewService(
                 )
             }
 
-            val ocrResult = extractPdfTextWithOcr(document)
+            logger.info(
+                "pdf extraction fallback to OCR pages={} pdfTextChars={} threshold={}",
+                document.numberOfPages,
+                pdfText.length,
+                ocrProperties.fallbackMinTextLength
+            )
+            lateinit var ocrResult: OcrExtractionResult
+            val ocrMillis = measureTimeMillis {
+                ocrResult = extractPdfTextWithOcr(document)
+            }
             val finalText = if (ocrResult.text.isNotBlank()) ocrResult.text else pdfText
+            logger.info(
+                "pdf OCR fallback finished pages={} ocrChars={} durationMs={}",
+                document.numberOfPages,
+                ocrResult.text.length,
+                ocrMillis
+            )
             ExtractedDocumentText(
                 text = finalText,
                 method = if (ocrResult.text.isNotBlank()) "OCR_TESSERACT" else "PDFBOX",
@@ -1582,6 +1719,268 @@ class DocumentInterviewService(
         )
     }
 
+    private fun extractImageTextWithOcr(bytes: ByteArray, format: String): ExtractedDocumentText {
+        val languages = resolveOcrLanguages()
+            ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "이미지 문서 분석에 필요한 OCR을 사용할 수 없습니다.")
+        val imagePath = Files.createTempFile("vlainter-image-ocr-", ".$format")
+        val outputBase = imagePath.resolveSibling(imagePath.fileName.toString().removeSuffix(".$format"))
+        return try {
+            val image = ByteArrayInputStream(bytes).use(ImageIO::read)
+            if (image != null) {
+                writePreparedImageForOcr(image, imagePath)
+            } else {
+                Files.write(imagePath, bytes)
+            }
+            val text = runTesseract(imagePath, outputBase, languages)
+            ExtractedDocumentText(
+                text = normalizeText(text),
+                method = "OCR_TESSERACT",
+                ocrLanguages = languages
+            )
+        } finally {
+            Files.deleteIfExists(imagePath)
+            Files.deleteIfExists(outputBase.resolveSibling("${outputBase.fileName}.txt"))
+        }
+    }
+
+    private fun extractCourseMaterialVisualAssets(file: UserFile): List<ExtractedCourseVisualAsset> {
+        if (s3Properties.bucket.isBlank()) return emptyList()
+        val key = file.storageKey.takeIf { it.isNotBlank() } ?: return emptyList()
+        val request = GetObjectRequest.builder()
+            .bucket(s3Properties.bucket.trim())
+            .key(key)
+            .build()
+        val bytes = runCatching { s3Client.getObjectAsBytes(request).asByteArray() }
+            .getOrElse {
+                logger.warn("course visual asset source download failed fileId={} reason={}", file.id, it.message)
+                throw it
+            }
+        return when (resolveDocumentFormat(file)) {
+            "pdf" -> extractPdfVisualAssets(bytes)
+            "pptx" -> extractPptxVisualAssets(bytes)
+            "docx" -> extractDocxVisualAssets(bytes)
+            "jpg", "jpeg", "png" -> listOf(extractOriginalImageVisualAsset(bytes, file))
+            else -> emptyList()
+        }
+    }
+
+    private fun extractPdfVisualAssets(bytes: ByteArray): List<ExtractedCourseVisualAsset> {
+        return PDDocument.load(ByteArrayInputStream(bytes)).use { document ->
+            val renderer = PDFRenderer(document)
+            (0 until min(document.numberOfPages, MAX_COURSE_VISUAL_ASSETS)).map { pageIndex ->
+                val image = renderer.renderImageWithDPI(pageIndex, COURSE_VISUAL_RENDER_DPI)
+                ExtractedCourseVisualAsset(
+                    assetType = StudentCourseMaterialVisualAssetType.PDF_PAGE_RENDER,
+                    assetOrder = pageIndex + 1,
+                    label = "PDF 페이지 ${pageIndex + 1}",
+                    pageNo = pageIndex + 1,
+                    contentType = "image/png",
+                    width = image.width,
+                    height = image.height,
+                    bytes = bufferedImageToBytes(image),
+                    extension = "png"
+                )
+            }
+        }
+    }
+
+    private fun extractPptxVisualAssets(bytes: ByteArray): List<ExtractedCourseVisualAsset> {
+        return XMLSlideShow(ByteArrayInputStream(bytes)).use { slideShow ->
+            val pageSize = slideShow.pageSize
+            slideShow.slides.take(MAX_COURSE_VISUAL_ASSETS).mapIndexed { index, slide ->
+                val image = BufferedImage(pageSize.width, pageSize.height, BufferedImage.TYPE_INT_RGB)
+                val graphics = image.createGraphics()
+                try {
+                    graphics.color = Color.WHITE
+                    graphics.fillRect(0, 0, pageSize.width, pageSize.height)
+                    graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+                    slide.draw(graphics)
+                } finally {
+                    graphics.dispose()
+                }
+                ExtractedCourseVisualAsset(
+                    assetType = StudentCourseMaterialVisualAssetType.PPT_SLIDE_RENDER,
+                    assetOrder = index + 1,
+                    label = "PPT 슬라이드 ${index + 1}",
+                    slideNo = index + 1,
+                    contentType = "image/png",
+                    width = image.width,
+                    height = image.height,
+                    bytes = bufferedImageToBytes(image),
+                    extension = "png"
+                )
+            }
+        }
+    }
+
+    private fun extractDocxVisualAssets(bytes: ByteArray): List<ExtractedCourseVisualAsset> {
+        return XWPFDocument(ByteArrayInputStream(bytes)).use { document ->
+            document.allPictures
+                .asSequence()
+                .mapNotNull { picture ->
+                    val contentType = picture.suggestFileExtension()
+                        ?.lowercase()
+                        ?.let { extensionToImageContentType(it) }
+                        ?: picture.packagePart.contentType?.lowercase()
+                    val extension = contentTypeToExtension(contentType)
+                    if (contentType == null || extension == null || !contentType.startsWith("image/")) {
+                        return@mapNotNull null
+                    }
+                    val imageBytes = picture.data ?: return@mapNotNull null
+                    val dimensions = decodeImageDimensions(imageBytes)
+                    ExtractedCourseVisualAsset(
+                        assetType = StudentCourseMaterialVisualAssetType.DOCX_EMBEDDED_IMAGE,
+                        assetOrder = 0,
+                        label = "DOCX 이미지",
+                        contentType = contentType,
+                        width = dimensions?.first,
+                        height = dimensions?.second,
+                        bytes = imageBytes,
+                        extension = extension
+                    )
+                }
+                .take(MAX_COURSE_VISUAL_ASSETS)
+                .mapIndexed { index, asset ->
+                    asset.copy(
+                        assetOrder = index + 1,
+                        label = "DOCX 이미지 ${index + 1}"
+                    )
+                }
+                .toList()
+        }
+    }
+
+    private fun extractOriginalImageVisualAsset(bytes: ByteArray, file: UserFile): ExtractedCourseVisualAsset {
+        val contentType = file.contentType?.lowercase()
+            ?: extensionToImageContentType(resolveDocumentFormat(file))
+            ?: "image/png"
+        val extension = contentTypeToExtension(contentType) ?: "png"
+        val dimensions = decodeImageDimensions(bytes)
+        return ExtractedCourseVisualAsset(
+            assetType = StudentCourseMaterialVisualAssetType.ORIGINAL_IMAGE,
+            assetOrder = 1,
+            label = "원본 이미지",
+            contentType = contentType,
+            width = dimensions?.first,
+            height = dimensions?.second,
+            bytes = bytes,
+            extension = extension
+        )
+    }
+
+    private fun replaceCourseMaterialVisualAssets(fileId: Long, visualAssets: List<ExtractedCourseVisualAsset>) {
+        val material = studentCourseMaterialRepository.findByUserFile_Id(fileId) ?: return
+        val existingAssets = studentCourseMaterialVisualAssetRepository.findAllByMaterial_IdOrderByAssetOrderAsc(material.id)
+        val staleKeys = existingAssets.mapNotNull { it.storageKey.takeIf(String::isNotBlank) }
+        if (existingAssets.isNotEmpty()) {
+            studentCourseMaterialVisualAssetRepository.deleteAll(existingAssets)
+        }
+        if (visualAssets.isEmpty()) {
+            runAfterCommit {
+                staleKeys.forEach(::deleteObjectQuietly)
+            }
+            return
+        }
+
+        val uploadedKeys = mutableListOf<String>()
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                override fun afterCompletion(status: Int) {
+                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                        uploadedKeys.forEach(::deleteObjectQuietly)
+                    }
+                }
+            })
+        }
+        try {
+            val savedAssets = visualAssets.map { asset ->
+                val storageKey = uploadCourseVisualAsset(material.userFile.user.id, fileId, asset)
+                uploadedKeys += storageKey
+                StudentCourseMaterialVisualAsset(
+                    material = material,
+                    userFile = material.userFile,
+                    assetType = asset.assetType,
+                    assetOrder = asset.assetOrder,
+                    label = asset.label,
+                    storageKey = storageKey,
+                    contentType = asset.contentType,
+                    pageNo = asset.pageNo,
+                    slideNo = asset.slideNo,
+                    width = asset.width,
+                    height = asset.height
+                )
+            }
+            studentCourseMaterialVisualAssetRepository.saveAll(savedAssets)
+        } catch (ex: Exception) {
+            uploadedKeys.forEach(::deleteObjectQuietly)
+            throw ex
+        }
+        runAfterCommit {
+            staleKeys.forEach(::deleteObjectQuietly)
+        }
+    }
+
+    private fun uploadCourseVisualAsset(userId: Long, fileId: Long, asset: ExtractedCourseVisualAsset): String {
+        val prefix = s3Properties.keyPrefix.trim().trim('/')
+        val now = OffsetDateTime.now()
+        val month = now.monthValue.toString().padStart(2, '0')
+        val storageKey =
+            "$prefix/users/$userId/course-material-visual/${now.year}/$month/${fileId}-${asset.assetOrder}-${asset.assetType.name.lowercase()}-${UUID.randomUUID()}.${asset.extension}"
+        val request = PutObjectRequest.builder()
+            .bucket(s3Properties.bucket.trim())
+            .key(storageKey)
+            .contentType(asset.contentType)
+            .build()
+        s3Client.putObject(request, RequestBody.fromBytes(asset.bytes))
+        return storageKey
+    }
+
+    private fun deleteObjectQuietly(storageKey: String?) {
+        if (storageKey.isNullOrBlank() || s3Properties.bucket.isBlank()) return
+        runCatching {
+            s3Client.deleteObject(
+                DeleteObjectRequest.builder()
+                    .bucket(s3Properties.bucket.trim())
+                    .key(storageKey)
+                    .build()
+            )
+        }.onFailure { ex ->
+            logger.warn("course visual asset delete skipped key={} reason={}", storageKey, ex.message)
+        }
+    }
+
+    private fun bufferedImageToBytes(image: BufferedImage): ByteArray {
+        val output = ByteArrayOutputStream()
+        ImageIO.write(image, "png", output)
+        return output.toByteArray()
+    }
+
+    private fun decodeImageDimensions(bytes: ByteArray): Pair<Int, Int>? {
+        return runCatching {
+            ByteArrayInputStream(bytes).use { input ->
+                ImageIO.read(input)?.let { image -> image.width to image.height }
+            }
+        }.getOrNull()
+    }
+
+    private fun extensionToImageContentType(extension: String): String? = when (extension.lowercase()) {
+        "jpg", "jpeg" -> "image/jpeg"
+        "png" -> "image/png"
+        "webp" -> "image/webp"
+        "gif" -> "image/gif"
+        else -> null
+    }
+
+    private fun contentTypeToExtension(contentType: String?): String? = when (contentType?.lowercase()) {
+        "image/jpeg" -> "jpg"
+        "image/jpg" -> "jpg"
+        "image/png" -> "png"
+        "image/webp" -> "webp"
+        "image/gif" -> "gif"
+        else -> null
+    }
+
     private fun resolveDocumentFormat(file: UserFile): String {
         val fromName = file.originalFileName.substringAfterLast('.', "").trim().lowercase()
         if (fromName.isNotBlank()) return fromName
@@ -1590,6 +1989,8 @@ class DocumentInterviewService(
             "application/pdf" -> "pdf"
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> "docx"
             "application/vnd.openxmlformats-officedocument.presentationml.presentation" -> "pptx"
+            "image/jpeg", "image/jpg" -> "jpg"
+            "image/png" -> "png"
             else -> ""
         }
     }
@@ -1636,6 +2037,7 @@ class DocumentInterviewService(
         FileType.INTRODUCE -> "자기소개서"
         FileType.PORTFOLIO -> "포트폴리오"
         FileType.PROFILE_IMAGE -> "프로필 이미지"
+        FileType.COURSE_MATERIAL -> "과목 자료"
     }
 
     private fun splitIntoChunks(text: String, maxChars: Int = 1200, overlapChars: Int = 200): List<String> {
@@ -1666,10 +2068,18 @@ class DocumentInterviewService(
     }
 
     private fun loadOwnedInterviewDocument(userId: Long, fileId: Long): UserFile {
+        return loadOwnedDocumentForIngestion(
+            userId = userId,
+            fileId = fileId,
+            allowedTypes = setOf(FileType.RESUME, FileType.INTRODUCE, FileType.PORTFOLIO)
+        )
+    }
+
+    private fun loadOwnedDocumentForIngestion(userId: Long, fileId: Long, allowedTypes: Set<FileType>): UserFile {
         val file = userFileRepository.findByIdAndUser_IdAndDeletedAtIsNull(fileId, userId)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "문서를 찾을 수 없습니다.")
-        if (!file.fileType.isInterviewDocument()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "문서 기반 면접에는 이력서/자기소개서/포트폴리오만 사용할 수 있습니다.")
+        if (file.fileType !in allowedTypes) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "허용되지 않은 문서 유형입니다.")
         }
         return file
     }
@@ -1725,9 +2135,7 @@ class DocumentInterviewService(
             val outputBase = imagePath.resolveSibling(imagePath.fileName.toString().removeSuffix(".png"))
             try {
                 val image = renderer.renderImageWithDPI(pageIndex, ocrProperties.renderDpi)
-                imagePath.toFile().outputStream().use { output ->
-                    javax.imageio.ImageIO.write(image, "png", output)
-                }
+                writePreparedImageForOcr(image, imagePath)
                 val text = runTesseract(imagePath, outputBase, languages)
                 if (text.isNotBlank()) {
                     pageTexts += text
@@ -1753,8 +2161,12 @@ class DocumentInterviewService(
             outputBase.toString(),
             "-l",
             languages,
+            "--oem",
+            "1",
             "--psm",
             "6",
+            "-c",
+            "preserve_interword_spaces=1",
             "txt"
         )
             .redirectErrorStream(true)
@@ -1776,6 +2188,55 @@ class DocumentInterviewService(
             return ""
         }
         return Files.readString(outputTextFile)
+    }
+
+    private fun writePreparedImageForOcr(image: BufferedImage, targetPath: Path) {
+        val prepared = prepareImageForOcr(image)
+        targetPath.toFile().outputStream().use { output ->
+            ImageIO.write(prepared, "png", output)
+        }
+    }
+
+    private fun prepareImageForOcr(source: BufferedImage): BufferedImage {
+        val scale = if (source.width >= OCR_MIN_RENDER_WIDTH) 1.0 else OCR_MIN_RENDER_WIDTH.toDouble() / source.width.toDouble()
+        val targetWidth = max(1, (source.width * scale).roundToInt())
+        val targetHeight = max(1, (source.height * scale).roundToInt())
+        val scaled = BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_BYTE_GRAY)
+        val graphics = scaled.createGraphics()
+        try {
+            graphics.color = Color.WHITE
+            graphics.fillRect(0, 0, targetWidth, targetHeight)
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            graphics.drawImage(source, 0, 0, targetWidth, targetHeight, null)
+        } finally {
+            graphics.dispose()
+        }
+
+        val threshold = estimateOcrThreshold(scaled)
+        val binarized = BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_BYTE_BINARY)
+        for (y in 0 until targetHeight) {
+            for (x in 0 until targetWidth) {
+                val gray = scaled.raster.getSample(x, y, 0)
+                val rgb = if (gray < threshold) Color.BLACK.rgb else Color.WHITE.rgb
+                binarized.setRGB(x, y, rgb)
+            }
+        }
+        return binarized
+    }
+
+    private fun estimateOcrThreshold(image: BufferedImage): Int {
+        var sum = 0L
+        var count = 0L
+        for (y in 0 until image.height step 2) {
+            for (x in 0 until image.width step 2) {
+                sum += image.raster.getSample(x, y, 0)
+                count += 1
+            }
+        }
+        if (count == 0L) return 180
+        val average = (sum / count).toInt()
+        return average.coerceIn(140, 205)
     }
 
     private fun resolveOcrLanguages(): String? {
@@ -1833,7 +2294,12 @@ class DocumentInterviewService(
 
     private fun normalizeText(text: String): String {
         return text.replace("\u0000", " ")
-            .replace(Regex("\\s+"), " ")
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .lineSequence()
+            .map { line -> line.replace(Regex("[ \\t]+"), " ").trim() }
+            .joinToString("\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
             .trim()
     }
 
@@ -1846,5 +2312,19 @@ class DocumentInterviewService(
     private data class OcrExtractionResult(
         val text: String,
         val languages: String?
+    )
+
+    @Suppress("ArrayInDataClass")
+    data class ExtractedCourseVisualAsset(
+        val assetType: StudentCourseMaterialVisualAssetType,
+        val assetOrder: Int,
+        val label: String,
+        val bytes: ByteArray,
+        val contentType: String,
+        val extension: String,
+        val pageNo: Int? = null,
+        val slideNo: Int? = null,
+        val width: Int? = null,
+        val height: Int? = null
     )
 }

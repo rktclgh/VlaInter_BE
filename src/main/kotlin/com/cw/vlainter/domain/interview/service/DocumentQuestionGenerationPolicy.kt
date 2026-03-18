@@ -97,6 +97,7 @@ internal object DocumentQuestionGenerationPolicy {
         FileType.PORTFOLIO -> max(3, min(questionCount + 2, 6))
         FileType.RESUME -> max(3, min(questionCount + 1, 5))
         FileType.PROFILE_IMAGE -> max(2, min(questionCount + 1, 4))
+        FileType.COURSE_MATERIAL -> max(3, min(questionCount + 2, 6))
     }
 
     fun retrievalQueryLimit(fileType: FileType, questionCount: Int): Int = when (fileType) {
@@ -104,6 +105,7 @@ internal object DocumentQuestionGenerationPolicy {
         FileType.PORTFOLIO -> max(3, min(questionCount + 1, 4))
         FileType.RESUME -> max(2, min(questionCount, 3))
         FileType.PROFILE_IMAGE -> 2
+        FileType.COURSE_MATERIAL -> max(3, min(questionCount + 1, 4))
     }
 
     fun prioritizeSnippets(fileType: FileType, snippets: List<String>): List<String> {
@@ -165,6 +167,7 @@ internal object DocumentQuestionGenerationPolicy {
         FileType.PORTFOLIO -> 1.3
         FileType.RESUME -> 1.0
         FileType.PROFILE_IMAGE -> 0.5
+        FileType.COURSE_MATERIAL -> 1.2
     }
 
     private fun promptSnippetScore(fileType: FileType, snippet: String): Int {
@@ -186,6 +189,11 @@ internal object DocumentQuestionGenerationPolicy {
                 val signalHits = resumeRoleSignals.count { lowered.contains(it) } * 15
                 val numberBonus = if (Regex("""\d+[%건명배회]""").containsMatchIn(snippet)) 10 else 0
                 signalHits + numberBonus + min(18, snippet.length / 45)
+            }
+            FileType.COURSE_MATERIAL -> {
+                val conceptHits = resumeRoleSignals.count { lowered.contains(it) } * 8
+                val numberBonus = if (Regex("""\d+[%건명배회]""").containsMatchIn(snippet)) 8 else 0
+                conceptHits + numberBonus + min(18, snippet.length / 45)
             }
             FileType.PROFILE_IMAGE -> snippet.length / 10
         }

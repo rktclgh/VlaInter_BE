@@ -1,0 +1,9 @@
+[vlainter-probe]
+enabled = true
+filter = vlainter-probe
+logpath = /var/log/nginx/probe-access.log
+backend = auto
+port = http,https
+findtime = 600
+maxretry = 1
+bantime = 3600

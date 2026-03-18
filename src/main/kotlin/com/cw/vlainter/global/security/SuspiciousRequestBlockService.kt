@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Service
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 
 @Service
 class SuspiciousRequestBlockService(
@@ -14,6 +15,7 @@ class SuspiciousRequestBlockService(
     private val docsEnabled: Boolean
 ) {
     private val logger = LoggerFactory.getLogger(SuspiciousRequestBlockService::class.java)
+    private val auditLogWindows = ConcurrentHashMap<String, Long>()
 
     fun isBlocked(clientIp: String): Boolean {
         return redisTemplate.hasKey(blockKey(clientIp)) == true
@@ -51,6 +53,15 @@ class SuspiciousRequestBlockService(
         return true
     }
 
+    fun shouldLogBlockedRequest(clientIp: String): Boolean =
+        shouldLogWithinWindow("blocked:${SensitiveValueSanitizer.hash(clientIp)}", BLOCKED_LOG_WINDOW)
+
+    fun shouldLogUnresolvedClientIp(clientIp: String, requestUri: String): Boolean =
+        shouldLogWithinWindow(
+            "unresolved:${SensitiveValueSanitizer.hash(clientIp)}:${requestUri.lowercase()}",
+            UNRESOLVED_LOG_WINDOW
+        )
+
     internal fun isSuspiciousRequest(method: String, requestUri: String): Boolean {
         val lowered = requestUri.lowercase()
         if (".env" in lowered || ".git" in lowered || "phpmyadmin" in lowered) {
@@ -77,9 +88,30 @@ class SuspiciousRequestBlockService(
 
     private fun blockKey(clientIp: String): String = "security:probe:block:${SensitiveValueSanitizer.hash(clientIp)}"
 
+    private fun shouldLogWithinWindow(key: String, window: Duration): Boolean {
+        val now = System.currentTimeMillis()
+        val windowMs = window.toMillis()
+        var shouldLog = false
+        auditLogWindows.compute(key) { _, previous ->
+            if (previous == null || now - previous >= windowMs) {
+                shouldLog = true
+                now
+            } else {
+                previous
+            }
+        }
+        if (auditLogWindows.size > 4096) {
+            val cutoff = now - windowMs
+            auditLogWindows.entries.removeIf { it.value < cutoff }
+        }
+        return shouldLog
+    }
+
     private companion object {
         const val PROBE_THRESHOLD = 5L
         val PROBE_WINDOW: Duration = Duration.ofMinutes(10)
         val BLOCK_WINDOW: Duration = Duration.ofMinutes(30)
+        val BLOCKED_LOG_WINDOW: Duration = Duration.ofMinutes(5)
+        val UNRESOLVED_LOG_WINDOW: Duration = Duration.ofMinutes(5)
     }
 }

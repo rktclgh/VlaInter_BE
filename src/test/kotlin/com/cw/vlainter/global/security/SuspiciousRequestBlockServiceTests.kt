@@ -92,4 +92,20 @@ class SuspiciousRequestBlockServiceTests {
 
         assertFalse(service().isBlocked("127.0.0.1"))
     }
+
+    @Test
+    fun `blocked request audit log is sampled within window`() {
+        val service = service()
+
+        assertTrue(service.shouldLogBlockedRequest("127.0.0.1"))
+        assertFalse(service.shouldLogBlockedRequest("127.0.0.1"))
+    }
+
+    @Test
+    fun `unresolved client ip audit log is sampled within window`() {
+        val service = service()
+
+        assertTrue(service.shouldLogUnresolvedClientIp("127.0.0.1", "/.env"))
+        assertFalse(service.shouldLogUnresolvedClientIp("127.0.0.1", "/.env"))
+    }
 }
