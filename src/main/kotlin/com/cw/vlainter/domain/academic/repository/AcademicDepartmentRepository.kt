@@ -9,11 +9,13 @@ import org.springframework.data.repository.query.Param
 interface AcademicDepartmentRepository : JpaRepository<AcademicDepartment, Long> {
     fun findByUniversityIdAndExternalCode(universityId: Long, externalCode: String): AcademicDepartment?
     fun findByUniversityIdAndNormalizedName(universityId: Long, normalizedName: String): AcademicDepartment?
+    fun findAllByUniversityId(universityId: Long): List<AcademicDepartment>
 
     @Query(
         """
         select d
         from AcademicDepartment d
+        join fetch d.university u
         where d.university.id = :universityId
           and d.normalizedName like concat('%', :keyword, '%')
         order by d.name asc

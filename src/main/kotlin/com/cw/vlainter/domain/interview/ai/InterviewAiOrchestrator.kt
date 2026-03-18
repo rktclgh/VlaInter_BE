@@ -2631,23 +2631,24 @@ class InterviewAiOrchestrator(
     ): Map<String, CourseExamEvaluationResult> {
         val normalized = linkedMapOf<String, CourseExamEvaluationResult>()
         items.forEach { item ->
-            val expectedPassScore = (item.maxScore * 0.6).roundToInt()
+            val safeMaxScore = maxOf(0, item.maxScore)
+            val expectedPassScore = (safeMaxScore * 0.6).roundToInt()
             val rawResult = rawResults[item.key]
             if (rawResult == null) {
-                logger.warn("과목 시험문제 채점 결과 누락 key={} maxScore={}", item.key, item.maxScore)
+                logger.warn("과목 시험문제 채점 결과 누락 key={} maxScore={}", item.key, safeMaxScore)
             }
             val effectiveResult = rawResult ?: CourseExamEvaluationResult(
                 score = 0,
                 passScore = expectedPassScore,
                 feedback = "채점 결과가 누락되어 0점으로 처리했습니다."
             )
-            val normalizedScore = effectiveResult.score.coerceIn(0, item.maxScore)
+            val normalizedScore = effectiveResult.score.coerceIn(0, safeMaxScore)
             if (effectiveResult.score != normalizedScore) {
                 logger.warn(
                     "과목 시험문제 채점 점수 범위 보정 key={} rawScore={} maxScore={}",
                     item.key,
                     effectiveResult.score,
-                    item.maxScore
+                    safeMaxScore
                 )
             }
             if (effectiveResult.passScore != expectedPassScore) {

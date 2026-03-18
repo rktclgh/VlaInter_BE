@@ -1969,6 +1969,7 @@ class DocumentInterviewService(
 
     private fun contentTypeToExtension(contentType: String?): String? = when (contentType?.lowercase()) {
         "image/jpeg" -> "jpg"
+        "image/jpg" -> "jpg"
         "image/png" -> "png"
         "image/webp" -> "webp"
         "image/gif" -> "gif"

@@ -6,29 +6,45 @@ import com.cw.vlainter.domain.academic.entity.AcademicDepartment
 import com.cw.vlainter.domain.academic.entity.AcademicUniversity
 import com.cw.vlainter.domain.academic.repository.AcademicDepartmentRepository
 import com.cw.vlainter.domain.academic.repository.AcademicUniversityRepository
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.data.domain.PageRequest
+import org.springframework.http.client.SimpleClientHttpRequestFactory
+import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.client.RestClient
-import java.io.ByteArrayInputStream
 import java.time.OffsetDateTime
-import javax.xml.parsers.DocumentBuilderFactory
+import java.util.concurrent.ConcurrentHashMap
 
 @Service
 class AcademicSearchService(
     restClientBuilder: RestClient.Builder,
     private val academicUniversityRepository: AcademicUniversityRepository,
     private val academicDepartmentRepository: AcademicDepartmentRepository,
-    @Value("\${academyinfo.api.base-url:https://openapi.academyinfo.go.kr/openapi/service/rest}") private val academyInfoBaseUrl: String,
+    private val selfProvider: ObjectProvider<AcademicSearchService>,
+    @Value("\${academyinfo.api.base-url:http://api.data.go.kr}") private val academyInfoBaseUrl: String,
     @Value("\${academyinfo.api.service-key:}") private val academyInfoServiceKey: String,
-    @Value("\${academyinfo.api.university-path:/BasicInformationService/getUniversityCode}") private val universitySearchPath: String,
-    @Value("\${academyinfo.api.department-path:/SchoolMajorInfoService/getSchoolMajorInfo}") private val departmentSearchPath: String,
+    @Value("\${academyinfo.api.university-path:/openapi/tn_pubr_public_univ_major_api}") private val universitySearchPath: String,
+    @Value("\${academyinfo.api.department-path:/openapi/tn_pubr_public_univ_major_api}") private val departmentSearchPath: String,
     @Value("\${academyinfo.api.survey-year:2024}") private val surveyYear: Int
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
-    private val restClient: RestClient = restClientBuilder.baseUrl(academyInfoBaseUrl).build()
+    private val restClient: RestClient = restClientBuilder
+        .baseUrl(academyInfoBaseUrl)
+        .requestFactory(
+            SimpleClientHttpRequestFactory().apply {
+                setConnectTimeout(5_000)
+                setReadTimeout(5_000)
+            }
+        )
+        .build()
+    private val objectMapper = jacksonObjectMapper()
+    private val inFlightWarmKeys = ConcurrentHashMap.newKeySet<String>()
 
+    @Transactional
     fun searchUniversities(keyword: String): List<UniversitySearchItemResponse> {
         val normalizedKeyword = keyword.trim()
         if (normalizedKeyword.length < MIN_QUERY_LENGTH) return emptyList()
@@ -36,26 +52,23 @@ class AcademicSearchService(
         val localResults = academicUniversityRepository.searchByKeyword(normalizeKeyword(normalizedKeyword))
             .map { it.toResponse() }
             .take(MAX_RESULT_SIZE)
-        if (localResults.isNotEmpty()) return localResults
-        if (academyInfoServiceKey.isBlank()) return emptyList()
+        if (localResults.isNotEmpty() || academyInfoServiceKey.isBlank()) return localResults
 
-        val responseBody = requestUniversitySearch(normalizedKeyword) ?: return emptyList()
-        val parsedItems = parseItems(responseBody)
-        val fetchedItems = parsedItems
-            .mapNotNull { item ->
-                val universityName = item.valueOf("schlKrnNm").ifBlank { item.valueOf("schoolName") }
-                if (universityName.isBlank()) return@mapNotNull null
-                UniversitySearchItemResponse(
-                    universityName = universityName,
-                    universityCode = item.valueOf("schlId").ifBlank { item.valueOf("schoolCode") }.takeIf { it.isNotBlank() }
-                )
-            }
+        val quickRemoteCandidates = requestUniversitySearch(
+            keyword = normalizedKeyword,
+            maxPages = QUICK_REMOTE_UNIVERSITY_PAGES
+        )
+            .mapNotNull { item -> item.toUniversityResponse() }
+            .distinctBy { normalizeKeyword(it.universityName) }
+        val remoteResults = upsertUniversities(quickRemoteCandidates)
+            .map { it.toResponse() }
             .filter { it.universityName.contains(normalizedKeyword, ignoreCase = true) }
-            .distinctBy { it.universityName }
             .take(MAX_RESULT_SIZE)
-        return upsertUniversities(fetchedItems).map { it.toResponse() }
+        triggerUniversityWarmAsync(normalizedKeyword)
+        return mergeUniversityResults(localResults, remoteResults)
     }
 
+    @Transactional
     fun searchDepartments(universityId: Long?, universityName: String, keyword: String): List<DepartmentSearchItemResponse> {
         val normalizedUniversityName = universityName.trim()
         val normalizedKeyword = keyword.trim()
@@ -67,70 +80,61 @@ class AcademicSearchService(
         }
 
         val localUniversity = resolveUniversityEntity(universityId, normalizedUniversityName)
-        if (localUniversity != null) {
-            val localResults = academicDepartmentRepository.searchByUniversityAndKeyword(
+        val localResults = if (localUniversity != null) {
+            academicDepartmentRepository.searchByUniversityAndKeyword(
                 universityId = localUniversity.id,
                 keyword = normalizeKeyword(normalizedKeyword),
                 pageable = PageRequest.of(0, MAX_RESULT_SIZE)
             ).map { it.toResponse() }
-            if (localResults.isNotEmpty()) return localResults
+        } else {
+            emptyList()
         }
-        if (academyInfoServiceKey.isBlank()) return emptyList()
+        if (localResults.isNotEmpty() || academyInfoServiceKey.isBlank()) return localResults
 
-        val normalizedUniversityKey = normalizeKeyword(normalizedUniversityName)
         val parsedItems = requestDepartmentSearch(
-            universityCode = localUniversity?.externalCode,
             universityName = normalizedUniversityName,
-            normalizedUniversityName = normalizedUniversityKey,
-            departmentKeyword = normalizedKeyword
+            maxPages = QUICK_REMOTE_DEPARTMENT_PAGES
         )
-        if (parsedItems.isEmpty()) return emptyList()
-        val matchingUniversityItems = parsedItems.filter { item ->
-            item.matchesUniversity(
-                expectedUniversityCode = localUniversity?.externalCode,
-                normalizedUniversityName = normalizedUniversityKey
-            )
-        }
-        val university = localUniversity ?: matchingUniversityItems.firstOrNull()
-            ?.let { item ->
-                upsertUniversities(
-                    listOf(
-                        UniversitySearchItemResponse(
-                            universityName = item.departmentUniversityName().ifBlank { normalizedUniversityName },
-                            universityCode = item.departmentUniversityCode()
-                        )
-                    )
-                ).firstOrNull()
-            }
-            ?: return emptyList()
+        if (parsedItems.isEmpty()) return localResults
 
-        val fetchedItems = matchingUniversityItems
+        val cachedUniversities = upsertUniversities(
+            parsedItems.mapNotNull { item -> item.toUniversityResponse() }
+                .distinctBy { normalizeKeyword(it.universityName) }
+        )
+        val universityByName = cachedUniversities.associateBy { normalizeKeyword(it.name) }
+        val targetUniversity = localUniversity
+            ?: universityByName[normalizeKeyword(normalizedUniversityName)]
+            ?: upsertUniversities(
+                listOf(UniversitySearchItemResponse(universityName = normalizedUniversityName))
+            ).firstOrNull()
+            ?: return localResults
+
+        val quickDepartmentItems = parsedItems
             .mapNotNull { item ->
-                val departmentName = item.valueOf("korMjrNm").ifBlank { item.valueOf("majorNm") }
-                val responseUniversityName = item.valueOf("korSchlNm")
-                    .ifBlank { item.valueOf("schlKrnNm") }
-                    .ifBlank { normalizedUniversityName }
-                if (departmentName.isBlank() || responseUniversityName.isBlank()) return@mapNotNull null
-                DepartmentSearchItemResponse(
-                    universityName = responseUniversityName,
-                    departmentName = departmentName,
-                    departmentCode = item.valueOf("kediMjrId").ifBlank {
-                        item.valueOf("kediMjrCd").ifBlank { item.valueOf("mjrCd") }
-                    }.takeIf { it.isNotBlank() }
-                )
+                val department = item.toDepartmentResponse() ?: return@mapNotNull null
+                val responseUniversityName = item.valueOf("schlNm").ifBlank { normalizedUniversityName }
+                val university = universityByName[normalizeKeyword(responseUniversityName)] ?: return@mapNotNull null
+                if (university.id != targetUniversity.id) return@mapNotNull null
+                if (!department.departmentName.contains(normalizedKeyword, ignoreCase = true)) return@mapNotNull null
+                department
             }
-            .filter { it.departmentName.contains(normalizedKeyword, ignoreCase = true) }
-            .distinctBy { "${it.universityName}|${it.departmentName}" }
+            .distinctBy { normalizeKeyword(it.departmentName) }
             .take(MAX_RESULT_SIZE)
-        return upsertDepartments(university, fetchedItems).map { it.toResponse() }
+
+        val remoteResults = upsertDepartments(targetUniversity, quickDepartmentItems)
+            .map { it.toResponse() }
+        triggerDepartmentWarmAsync(normalizedUniversityName)
+        return mergeDepartmentResults(localResults, remoteResults)
     }
 
+    @Transactional(readOnly = true)
     fun resolveVerifiedUniversity(universityId: Long, universityName: String): UniversitySearchItemResponse? {
         val entity = academicUniversityRepository.findById(universityId).orElse(null) ?: return null
         if (entity.name != universityName.trim()) return null
         return entity.toResponse()
     }
 
+    @Transactional(readOnly = true)
     fun resolveVerifiedDepartment(
         universityId: Long,
         departmentId: Long,
@@ -145,21 +149,145 @@ class AcademicSearchService(
         return entity.toResponse()
     }
 
+    @Transactional(readOnly = true)
+    fun findUniversityByName(universityName: String): UniversitySearchItemResponse? {
+        val normalizedUniversityName = universityName.trim().takeIf { it.isNotBlank() } ?: return null
+        return academicUniversityRepository.findByNormalizedName(normalizeKeyword(normalizedUniversityName))?.toResponse()
+    }
+
+    @Transactional(readOnly = true)
+    fun findDepartmentByName(universityId: Long, departmentName: String): DepartmentSearchItemResponse? {
+        val normalizedDepartmentName = departmentName.trim().takeIf { it.isNotBlank() } ?: return null
+        return academicDepartmentRepository.findByUniversityIdAndNormalizedName(
+            universityId,
+            normalizeKeyword(normalizedDepartmentName)
+        )?.toResponse()
+    }
+
+    @Transactional
+    fun resolveOrCreateUniversity(universityName: String, universityId: Long? = null): UniversitySearchItemResponse {
+        val normalizedUniversityName = universityName.trim()
+        require(normalizedUniversityName.isNotBlank()) { "universityName must not be blank" }
+
+        if (universityId != null) {
+            return resolveVerifiedUniversity(universityId, normalizedUniversityName)
+                ?: throw IllegalArgumentException("검색 결과에서 선택한 대학교만 저장할 수 있습니다.")
+        }
+
+        val normalizedKey = normalizeKeyword(normalizedUniversityName)
+        academicUniversityRepository.findByNormalizedName(normalizedKey)?.let { return it.toResponse() }
+
+        val remoteMatch = searchUniversities(normalizedUniversityName)
+            .firstOrNull { normalizeKeyword(it.universityName) == normalizedKey }
+        if (remoteMatch != null) {
+            return remoteMatch
+        }
+
+        return upsertUniversities(
+            listOf(UniversitySearchItemResponse(universityName = normalizedUniversityName))
+        ).first().toResponse()
+    }
+
+    @Transactional
+    fun resolveOrCreateDepartment(
+        university: UniversitySearchItemResponse,
+        departmentName: String,
+        departmentId: Long? = null
+    ): DepartmentSearchItemResponse {
+        val normalizedDepartmentName = departmentName.trim()
+        require(normalizedDepartmentName.isNotBlank()) { "departmentName must not be blank" }
+
+        val universityEntity = university.universityId
+            ?.let { academicUniversityRepository.findById(it).orElse(null) }
+            ?: academicUniversityRepository.findByNormalizedName(normalizeKeyword(university.universityName))
+            ?: throw IllegalArgumentException("대학교 정보를 찾을 수 없습니다.")
+
+        if (departmentId != null) {
+            return resolveVerifiedDepartment(
+                universityId = universityEntity.id,
+                departmentId = departmentId,
+                departmentName = normalizedDepartmentName,
+                universityName = universityEntity.name
+            ) ?: throw IllegalArgumentException("검색 결과에서 선택한 학과만 저장할 수 있습니다.")
+        }
+
+        val normalizedKey = normalizeKeyword(normalizedDepartmentName)
+        academicDepartmentRepository.findByUniversityIdAndNormalizedName(universityEntity.id, normalizedKey)
+            ?.let { return it.toResponse() }
+
+        val remoteMatch = searchDepartments(
+            universityId = universityEntity.id,
+            universityName = universityEntity.name,
+            keyword = normalizedDepartmentName
+        ).firstOrNull { normalizeKeyword(it.departmentName) == normalizedKey }
+        if (remoteMatch != null) {
+            return remoteMatch
+        }
+
+        return upsertDepartments(
+            university = universityEntity,
+            items = listOf(
+                DepartmentSearchItemResponse(
+                    universityId = universityEntity.id,
+                    universityName = universityEntity.name,
+                    departmentName = normalizedDepartmentName
+                )
+            )
+        ).first().toResponse()
+    }
+
+    @Transactional
+    fun deleteDepartmentsByExactNames(universityName: String, departmentNames: Collection<String>): Int {
+        val university = academicUniversityRepository.findByNormalizedName(normalizeKeyword(universityName)) ?: return 0
+        val targets = academicDepartmentRepository.findAllByUniversityId(university.id)
+            .filter { department -> departmentNames.any { normalizeKeyword(it) == department.normalizedName } }
+        if (targets.isEmpty()) return 0
+        academicDepartmentRepository.deleteAll(targets)
+        return targets.size
+    }
+
+    @Transactional
+    fun deleteUniversityIfEmpty(universityName: String): Boolean {
+        val university = academicUniversityRepository.findByNormalizedName(normalizeKeyword(universityName)) ?: return false
+        if (academicDepartmentRepository.findAllByUniversityId(university.id).isNotEmpty()) return false
+        if (!university.externalCode.isNullOrBlank()) return false
+        academicUniversityRepository.delete(university)
+        return true
+    }
+
     fun upsertUniversities(items: List<UniversitySearchItemResponse>): List<AcademicUniversity> {
         if (items.isEmpty()) return emptyList()
         val now = OffsetDateTime.now()
         return items.map { item ->
             val normalizedName = normalizeKeyword(item.universityName)
-            val existing = item.universityCode?.let { academicUniversityRepository.findByExternalCode(it) }
-                ?: academicUniversityRepository.findByNormalizedName(normalizedName)
-            val target = existing ?: AcademicUniversity(
+            val existingByName = academicUniversityRepository.findByNormalizedName(normalizedName)
+            val existingByCode = item.universityCode?.let { academicUniversityRepository.findByExternalCode(it) }
+            val target = existingByName ?: existingByCode ?: AcademicUniversity(
                 externalCode = item.universityCode,
                 name = item.universityName,
                 normalizedName = normalizedName
             )
-            target.externalCode = item.universityCode ?: target.externalCode
+            val hasIdentityConflict = existingByName != null &&
+                existingByCode != null &&
+                existingByName.id != existingByCode.id
+
+            if (hasIdentityConflict) {
+                val nameMatchedUniversity = requireNotNull(existingByName)
+                val codeMatchedUniversity = requireNotNull(existingByCode)
+                logger.warn(
+                    "대학교 캐시 중복 데이터 감지 normalizedName={} incomingCode={} nameId={} codeId={}",
+                    normalizedName,
+                    item.universityCode,
+                    nameMatchedUniversity.id,
+                    codeMatchedUniversity.id
+                )
+            }
+
             target.name = item.universityName
             target.normalizedName = normalizedName
+            if (!item.universityCode.isNullOrBlank() && (existingByCode == null || existingByCode.id == target.id)) {
+                target.externalCode = item.universityCode
+            }
             target.lastSyncedAt = now
             academicUniversityRepository.save(target)
         }
@@ -173,144 +301,139 @@ class AcademicSearchService(
         val now = OffsetDateTime.now()
         return items.map { item ->
             val normalizedName = normalizeKeyword(item.departmentName)
-            val existing = item.departmentCode?.let { academicDepartmentRepository.findByUniversityIdAndExternalCode(university.id, it) }
-                ?: academicDepartmentRepository.findByUniversityIdAndNormalizedName(university.id, normalizedName)
-            val target = existing ?: AcademicDepartment(
+            val existingByName = academicDepartmentRepository.findByUniversityIdAndNormalizedName(university.id, normalizedName)
+            val existingByCode = item.departmentCode?.let {
+                academicDepartmentRepository.findByUniversityIdAndExternalCode(university.id, it)
+            }
+            val target = existingByName ?: existingByCode ?: AcademicDepartment(
                 university = university,
                 externalCode = item.departmentCode,
                 name = item.departmentName,
                 normalizedName = normalizedName
             )
+            val hasIdentityConflict = existingByName != null &&
+                existingByCode != null &&
+                existingByName.id != existingByCode.id
+
+            if (hasIdentityConflict) {
+                val nameMatchedDepartment = requireNotNull(existingByName)
+                val codeMatchedDepartment = requireNotNull(existingByCode)
+                logger.warn(
+                    "학과 캐시 중복 데이터 감지 universityId={} normalizedName={} incomingCode={} nameId={} codeId={}",
+                    university.id,
+                    normalizedName,
+                    item.departmentCode,
+                    nameMatchedDepartment.id,
+                    codeMatchedDepartment.id
+                )
+            }
+
             target.university = university
-            target.externalCode = item.departmentCode ?: target.externalCode
             target.name = item.departmentName
             target.normalizedName = normalizedName
+            if (!item.departmentCode.isNullOrBlank() && (existingByCode == null || existingByCode.id == target.id)) {
+                target.externalCode = item.departmentCode
+            }
             target.lastSyncedAt = now
             academicDepartmentRepository.save(target)
         }
     }
 
-    private fun parseItems(xmlBody: String): List<XmlItemNode> {
-        if (xmlBody.isBlank()) return emptyList()
-        return runCatching {
-            val documentBuilderFactory = DocumentBuilderFactory.newInstance()
-            documentBuilderFactory.isNamespaceAware = false
-            documentBuilderFactory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            documentBuilderFactory.setFeature("http://xml.org/sax/features/external-general-entities", false)
-            documentBuilderFactory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-            documentBuilderFactory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
-            documentBuilderFactory.isXIncludeAware = false
-            documentBuilderFactory.isExpandEntityReferences = false
-            val documentBuilder = documentBuilderFactory.newDocumentBuilder()
-            val document = documentBuilder.parse(ByteArrayInputStream(xmlBody.toByteArray(Charsets.UTF_8)))
-            val itemNodes = document.getElementsByTagName("item")
-            buildList {
-                for (index in 0 until itemNodes.length) {
-                    val node = itemNodes.item(index)
-                    if (node != null) add(XmlItemNode(node))
-                }
-            }
-        }.onFailure { ex ->
-            logger.warn("대학교/학과 XML 응답 파싱 실패", ex)
-        }.getOrElse { emptyList() }
-    }
-
-    private fun requestUniversitySearch(keyword: String): String? {
-        return runCatching {
-            restClient.get()
-                .uri { builder ->
-                    builder.path(universitySearchPath)
-                        .queryParam("serviceKey", academyInfoServiceKey)
-                        .queryParam("pageNo", 1)
-                        .queryParam("numOfRows", MAX_RESULT_SIZE)
-                        .queryParam("svyYr", surveyYear)
-                        .queryParam("schlKrnNm", keyword)
-                        .build()
-                }
-                .retrieve()
-                .body(String::class.java)
-                .orEmpty()
-        }.onFailure { ex ->
-            logger.warn("대학교 검색 API 호출 실패 keyword={}", keyword, ex)
-        }.getOrElse { null }
+    private fun requestUniversitySearch(
+        keyword: String,
+        maxPages: Int = MAX_REMOTE_SEARCH_PAGES
+    ): List<ApiItemNode> {
+        return requestPublicUniversityMajorApi(
+            path = universitySearchPath,
+            pageSize = REMOTE_UNIVERSITY_PAGE_SIZE,
+            maxPages = maxPages
+        ) { uriBuilder ->
+            uriBuilder.queryParam("SCHL_NM", keyword)
+        }
     }
 
     private fun requestDepartmentSearch(
-        universityCode: String?,
         universityName: String,
-        normalizedUniversityName: String,
-        departmentKeyword: String
-    ): List<XmlItemNode> {
-        val primaryItems = requestDepartmentSearchFromPath(
+        maxPages: Int = MAX_REMOTE_SEARCH_PAGES
+    ): List<ApiItemNode> {
+        return requestPublicUniversityMajorApi(
             path = departmentSearchPath,
-            universityCode = universityCode,
-            universityName = universityName,
-            normalizedUniversityName = normalizedUniversityName,
-            departmentKeyword = departmentKeyword,
-            fallback = false
-        )
-        if (
-            countMatchingDepartmentItems(primaryItems, universityCode, normalizedUniversityName, departmentKeyword) > 0 ||
-            departmentSearchPath == FALLBACK_DEPARTMENT_SEARCH_PATH
-        ) {
-            return primaryItems
+            pageSize = REMOTE_DEPARTMENT_PAGE_SIZE,
+            maxPages = maxPages
+        ) { uriBuilder ->
+            uriBuilder.queryParam("SCHL_NM", universityName)
         }
-        return requestDepartmentSearchFromPath(
-            path = FALLBACK_DEPARTMENT_SEARCH_PATH,
-            universityCode = universityCode,
-            universityName = universityName,
-            normalizedUniversityName = normalizedUniversityName,
-            departmentKeyword = departmentKeyword,
-            fallback = true
-        )
     }
 
-    private fun requestDepartmentSearchFromPath(
+    private fun requestPublicUniversityMajorApi(
         path: String,
-        universityCode: String?,
-        universityName: String,
-        normalizedUniversityName: String,
-        departmentKeyword: String,
-        fallback: Boolean
-    ): List<XmlItemNode> {
-        val collected = mutableListOf<XmlItemNode>()
+        pageSize: Int,
+        maxPages: Int,
+        extraParams: (org.springframework.web.util.UriBuilder) -> org.springframework.web.util.UriBuilder
+    ): List<ApiItemNode> {
+        val collected = mutableListOf<ApiItemNode>()
         var pageNo = 1
-        while (pageNo <= MAX_REMOTE_SEARCH_PAGES) {
+        while (pageNo <= maxPages) {
             val responseBody = runCatching {
                 restClient.get()
                     .uri { builder ->
-                        val uriBuilder = builder.path(path)
-                            .queryParam("serviceKey", academyInfoServiceKey)
-                            .queryParam("pageNo", pageNo)
-                            .queryParam("numOfRows", REMOTE_DEPARTMENT_PAGE_SIZE)
-                            .queryParam("svyYr", surveyYear)
-                            .queryParam("schlKrnNm", universityName)
-                        if (!universityCode.isNullOrBlank()) {
-                            uriBuilder.queryParam("schlId", universityCode)
-                        }
-                        uriBuilder.build()
+                        extraParams(
+                            builder.path(path)
+                                .queryParam("serviceKey", academyInfoServiceKey)
+                                .queryParam("pageNo", pageNo)
+                                .queryParam("numOfRows", pageSize)
+                                .queryParam("type", "json")
+                                .queryParam("YR", surveyYear)
+                        ).build()
                     }
                     .retrieve()
                     .body(String::class.java)
                     .orEmpty()
             }.onFailure { ex ->
-                if (fallback) {
-                    logger.warn("학과 검색 API fallback 호출 실패 university={} universityCode={} page={}", universityName, universityCode, pageNo, ex)
-                } else {
-                    logger.warn("학과 검색 API 호출 실패 university={} universityCode={} page={}", universityName, universityCode, pageNo, ex)
-                }
+                logger.warn(
+                    "대학교/학과 공공데이터 API 호출 실패 path={} page={} reason={}",
+                    path,
+                    pageNo,
+                    ex.rootMessage()
+                )
             }.getOrElse { null } ?: break
 
             val pageItems = parseItems(responseBody)
             if (pageItems.isEmpty()) break
             collected += pageItems
-            if (countMatchingDepartmentItems(collected, universityCode, normalizedUniversityName, departmentKeyword) >= MAX_RESULT_SIZE) {
-                break
-            }
-            if (pageItems.size < REMOTE_DEPARTMENT_PAGE_SIZE) break
+            if (pageItems.size < pageSize) break
             pageNo += 1
         }
         return collected
+    }
+
+    private fun parseItems(jsonBody: String): List<ApiItemNode> {
+        if (jsonBody.isBlank()) return emptyList()
+        val trimmedBody = jsonBody.trimStart()
+        if (trimmedBody.startsWith("<")) {
+            logger.warn("대학교/학과 공공데이터 API가 JSON 대신 HTML을 반환했습니다. baseUrl/path 설정을 확인하세요.")
+            return emptyList()
+        }
+        return runCatching {
+            val root = objectMapper.readTree(trimmedBody)
+            val header = root.path("response").path("header")
+            val resultCode = header.path("resultCode").asText()
+            if (resultCode.isNotBlank() && resultCode != "00") {
+                if (resultCode != "03") {
+                    logger.warn(
+                        "대학교/학과 공공데이터 API 비정상 응답 code={} message={}",
+                        resultCode,
+                        header.path("resultMsg").asText()
+                    )
+                }
+                return emptyList()
+            }
+            val itemsNode = root.path("response").path("body").path("items")
+            if (!itemsNode.isArray) return emptyList()
+            itemsNode.map { node -> ApiItemNode(node) }
+        }.onFailure { ex ->
+            logger.warn("대학교/학과 JSON 응답 파싱 실패: {}", ex.message)
+        }.getOrElse { emptyList() }
     }
 
     private fun resolveUniversityEntity(universityId: Long?, universityName: String): AcademicUniversity? {
@@ -346,59 +469,131 @@ class AcademicSearchService(
         return value.trim().lowercase()
     }
 
-    private fun XmlItemNode.departmentUniversityCode(): String? {
-        return valueOf("schlId")
-            .ifBlank { valueOf("schoolCode") }
-            .takeIf { it.isNotBlank() }
-    }
-
-    private fun XmlItemNode.departmentUniversityName(): String {
-        return valueOf("korSchlNm")
-            .ifBlank { valueOf("schlKrnNm") }
-            .ifBlank { valueOf("schoolName") }
-    }
-
-    private fun XmlItemNode.matchesUniversity(expectedUniversityCode: String?, normalizedUniversityName: String): Boolean {
-        val responseUniversityCode = departmentUniversityCode()
-        if (!expectedUniversityCode.isNullOrBlank() && !responseUniversityCode.isNullOrBlank()) {
-            return responseUniversityCode == expectedUniversityCode
-        }
-        val responseUniversityName = departmentUniversityName()
-        return responseUniversityName.isNotBlank() && normalizeKeyword(responseUniversityName) == normalizedUniversityName
-    }
-
-    private fun countMatchingDepartmentItems(
-        items: List<XmlItemNode>,
-        expectedUniversityCode: String?,
-        normalizedUniversityName: String,
-        departmentKeyword: String
-    ): Int {
-        return items.asSequence()
-            .filter { item -> item.matchesUniversity(expectedUniversityCode, normalizedUniversityName) }
-            .mapNotNull { item -> item.valueOf("korMjrNm").ifBlank { item.valueOf("majorNm") }.takeIf { it.isNotBlank() } }
-            .filter { departmentName -> departmentName.contains(departmentKeyword, ignoreCase = true) }
-            .distinct()
-            .count()
-    }
-
-    private class XmlItemNode(private val node: org.w3c.dom.Node) {
-        fun valueOf(tagName: String): String {
-            val childNodes = node.childNodes ?: return ""
-            for (index in 0 until childNodes.length) {
-                val child = childNodes.item(index) ?: continue
-                if (child.nodeName == tagName) {
-                    return child.textContent?.trim().orEmpty()
-                }
+    private fun mergeUniversityResults(
+        localResults: List<UniversitySearchItemResponse>,
+        remoteResults: List<UniversitySearchItemResponse>
+    ): List<UniversitySearchItemResponse> {
+        return (localResults + remoteResults)
+            .distinctBy { item ->
+                item.universityId?.toString()
+                    ?: item.universityCode
+                    ?: normalizeKeyword(item.universityName)
             }
-            return ""
+            .take(MAX_RESULT_SIZE)
+    }
+
+    private fun mergeDepartmentResults(
+        localResults: List<DepartmentSearchItemResponse>,
+        remoteResults: List<DepartmentSearchItemResponse>
+    ): List<DepartmentSearchItemResponse> {
+        return (localResults + remoteResults)
+            .distinctBy { item ->
+                item.departmentId?.toString()
+                    ?: item.departmentCode
+                    ?: "${item.universityId}:${normalizeKeyword(item.departmentName)}"
+            }
+            .take(MAX_RESULT_SIZE)
+    }
+
+    private class ApiItemNode(private val node: com.fasterxml.jackson.databind.JsonNode) {
+        fun valueOf(tagName: String): String {
+            return node.path(tagName).asText("").trim()
+        }
+
+        fun toUniversityResponse(): UniversitySearchItemResponse? {
+            val universityName = valueOf("schlNm")
+            if (universityName.isBlank()) return null
+            return UniversitySearchItemResponse(
+                universityName = universityName,
+                universityCode = valueOf("insttCode").takeIf { it.isNotBlank() }
+            )
+        }
+
+        fun toDepartmentResponse(): DepartmentSearchItemResponse? {
+            val universityName = valueOf("schlNm")
+            val departmentName = valueOf("scsbjtNm")
+            if (universityName.isBlank() || departmentName.isBlank()) return null
+            return DepartmentSearchItemResponse(
+                universityName = universityName,
+                departmentName = departmentName,
+                departmentCode = valueOf("scsbjtCdNm").takeIf { it.isNotBlank() }
+            )
+        }
+    }
+
+    private fun Throwable.rootMessage(): String {
+        return generateSequence(this) { it.cause }
+            .lastOrNull()
+            ?.message
+            ?.takeIf { it.isNotBlank() }
+            ?: this.message.orEmpty()
+    }
+
+    private fun triggerUniversityWarmAsync(keyword: String) {
+        val warmKey = "university:${normalizeKeyword(keyword)}"
+        if (!inFlightWarmKeys.add(warmKey)) return
+        selfProvider.getObject().warmUniversitySearchCacheAsync(keyword, warmKey)
+    }
+
+    private fun triggerDepartmentWarmAsync(universityName: String) {
+        val warmKey = "department:${normalizeKeyword(universityName)}"
+        if (!inFlightWarmKeys.add(warmKey)) return
+        selfProvider.getObject().warmDepartmentSearchCacheAsync(universityName, warmKey)
+    }
+
+    @Async("academicSearchWarmExecutor")
+    fun warmUniversitySearchCacheAsync(keyword: String, warmKey: String) {
+        try {
+            val remoteCandidates = requestUniversitySearch(keyword)
+                .mapNotNull { item -> item.toUniversityResponse() }
+                .distinctBy { normalizeKeyword(it.universityName) }
+            if (remoteCandidates.isNotEmpty()) {
+                upsertUniversities(remoteCandidates)
+            }
+        } catch (ex: Exception) {
+            logger.warn("대학교 검색 캐시 워밍 실패 keyword={} reason={}", keyword, ex.rootMessage())
+        } finally {
+            inFlightWarmKeys.remove(warmKey)
+        }
+    }
+
+    @Async("academicSearchWarmExecutor")
+    fun warmDepartmentSearchCacheAsync(universityName: String, warmKey: String) {
+        try {
+            val parsedItems = requestDepartmentSearch(universityName)
+            if (parsedItems.isEmpty()) return
+
+            val cachedUniversities = upsertUniversities(
+                parsedItems.mapNotNull { item -> item.toUniversityResponse() }
+                    .distinctBy { normalizeKeyword(it.universityName) }
+            )
+            val universityByName = cachedUniversities.associateBy { normalizeKeyword(it.name) }
+
+            parsedItems
+                .mapNotNull { item ->
+                    val department = item.toDepartmentResponse() ?: return@mapNotNull null
+                    val responseUniversityName = item.valueOf("schlNm").ifBlank { universityName }
+                    val university = universityByName[normalizeKeyword(responseUniversityName)] ?: return@mapNotNull null
+                    university to department
+                }
+                .groupBy(keySelector = { it.first }, valueTransform = { it.second })
+                .forEach { (university, departments) ->
+                    upsertDepartments(university, departments.distinctBy { normalizeKeyword(it.departmentName) })
+                }
+        } catch (ex: Exception) {
+            logger.warn("학과 검색 캐시 워밍 실패 universityName={} reason={}", universityName, ex.rootMessage())
+        } finally {
+            inFlightWarmKeys.remove(warmKey)
         }
     }
 
     companion object {
         private const val MIN_QUERY_LENGTH = 2
         private const val MAX_RESULT_SIZE = 20
-        private const val REMOTE_DEPARTMENT_PAGE_SIZE = 50
+        private const val REMOTE_UNIVERSITY_PAGE_SIZE = 50
+        private const val REMOTE_DEPARTMENT_PAGE_SIZE = 100
         private const val MAX_REMOTE_SEARCH_PAGES = 5
-        private const val FALLBACK_DEPARTMENT_SEARCH_PATH = "/BasicInformationService/getUniversityMajorCode"
+        private const val QUICK_REMOTE_UNIVERSITY_PAGES = 1
+        private const val QUICK_REMOTE_DEPARTMENT_PAGES = 1
     }
 }

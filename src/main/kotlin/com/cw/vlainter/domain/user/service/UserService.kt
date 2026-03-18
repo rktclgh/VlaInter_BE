@@ -118,30 +118,25 @@ class UserService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학생 모드에서는 대학교와 학과를 입력해 주세요.")
         }
         if (normalizedUniversity != null) {
-            if (universityId == null) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학교는 검색 결과에서 선택해 주세요.")
+            val resolvedUniversity = runCatching {
+                academicSearchService.resolveOrCreateUniversity(
+                    universityName = normalizedUniversity,
+                    universityId = universityId
+                )
+            }.getOrElse {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, it.message ?: "대학교 정보를 저장할 수 없습니다.")
             }
-            val verifiedUniversity = academicSearchService.resolveVerifiedUniversity(
-                universityId = universityId,
-                universityName = normalizedUniversity
-            ) ?: throw ResponseStatusException(
-                HttpStatus.BAD_REQUEST,
-                "검색 결과에서 선택한 대학교만 저장할 수 있습니다."
-            )
-            user.universityName = verifiedUniversity.universityName
-            if (departmentId == null) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "학과가 검색 결과에서 선택되지 않았습니다.")
+            user.universityName = resolvedUniversity.universityName
+            val resolvedDepartment = runCatching {
+                academicSearchService.resolveOrCreateDepartment(
+                    university = resolvedUniversity,
+                    departmentName = normalizedDepartment ?: "",
+                    departmentId = departmentId
+                )
+            }.getOrElse {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, it.message ?: "학과 정보를 저장할 수 없습니다.")
             }
-            val verifiedDepartment = academicSearchService.resolveVerifiedDepartment(
-                universityId = universityId,
-                departmentId = departmentId,
-                departmentName = normalizedDepartment ?: "",
-                universityName = verifiedUniversity.universityName
-            ) ?: throw ResponseStatusException(
-                HttpStatus.BAD_REQUEST,
-                "검색 결과에서 선택한 학과만 저장할 수 있습니다."
-            )
-            user.departmentName = verifiedDepartment.departmentName
+            user.departmentName = resolvedDepartment.departmentName
         } else {
             user.universityName = null
             user.departmentName = null
@@ -485,6 +480,12 @@ class UserService(
     private fun toProfileResponse(user: User): UserProfileResponse {
         val normalizedUniversity = user.universityName?.trim()?.takeIf { it.isNotBlank() }
         val normalizedDepartment = user.departmentName?.trim()?.takeIf { it.isNotBlank() }
+        val university = normalizedUniversity?.let { academicSearchService.findUniversityByName(it) }
+        val department = if (university != null && normalizedDepartment != null) {
+            university.universityId?.let { academicSearchService.findDepartmentByName(it, normalizedDepartment) }
+        } else {
+            null
+        }
         return UserProfileResponse(
             email = user.email,
             name = user.name,
@@ -492,7 +493,9 @@ class UserService(
             status = user.status,
             point = user.point,
             serviceMode = user.serviceMode,
+            universityId = university?.universityId,
             universityName = normalizedUniversity,
+            departmentId = department?.departmentId,
             departmentName = normalizedDepartment,
             hasAcademicProfile = normalizedUniversity != null && normalizedDepartment != null,
             hasGeminiApiKey = userGeminiApiKeyService.hasGeminiApiKey(user),

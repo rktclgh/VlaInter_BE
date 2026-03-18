@@ -56,11 +56,14 @@ class UserFileService(
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
-        val ALLOWED_PAST_EXAM_EXTENSIONS = setOf("pdf", "docx", "pptx", "jpg", "jpeg", "png")
-        val ALLOWED_PAST_EXAM_CONTENT_TYPES = ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES + setOf(
+        val ALLOWED_COURSE_MATERIAL_EXTENSIONS = setOf("pdf", "docx", "pptx", "jpg", "jpeg", "png")
+        val ALLOWED_COURSE_MATERIAL_CONTENT_TYPES = ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES + setOf(
             "image/jpeg",
+            "image/jpg",
             "image/png"
         )
+        val ALLOWED_PAST_EXAM_EXTENSIONS = setOf("pdf", "docx", "pptx", "jpg", "jpeg", "png")
+        val ALLOWED_PAST_EXAM_CONTENT_TYPES = ALLOWED_COURSE_MATERIAL_CONTENT_TYPES
         const val MAX_DOCUMENT_FILES_PER_TYPE = 5L
         const val MAX_COURSE_MATERIAL_FILES = 20L
     }
@@ -145,7 +148,7 @@ class UserFileService(
         ensureS3Configured()
 
         val originalFileName = extractOriginalFileName(file.originalFilename)
-        val effectiveFileName = storedDisplayFileName?.trim()?.takeIf { it.isNotBlank() } ?: originalFileName
+        val effectiveFileName = sanitizeStoredDisplayFileName(storedDisplayFileName) ?: originalFileName
         val storageFileName = buildStorageFileName(originalFileName)
         val objectKey = buildObjectKey(actor.id, fileType, storageFileName)
         val storedPath = buildStoredPath(objectKey)
@@ -332,8 +335,16 @@ class UserFileService(
         val extension = lowerName.substringAfterLast('.', "")
 
         if (fileType == FileType.RESUME || fileType == FileType.INTRODUCE || fileType == FileType.PORTFOLIO || fileType == FileType.COURSE_MATERIAL) {
-            val targetExtensions = allowedExtensions ?: ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS
-            val targetContentTypes = allowedContentTypes ?: ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES
+            val defaultExtensions = when (fileType) {
+                FileType.COURSE_MATERIAL -> ALLOWED_COURSE_MATERIAL_EXTENSIONS
+                else -> ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS
+            }
+            val defaultContentTypes = when (fileType) {
+                FileType.COURSE_MATERIAL -> ALLOWED_COURSE_MATERIAL_CONTENT_TYPES
+                else -> ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES
+            }
+            val targetExtensions = allowedExtensions ?: defaultExtensions
+            val targetContentTypes = allowedContentTypes ?: defaultContentTypes
             val extensionValid = extension in targetExtensions
             val contentTypeValid = contentType.isNotBlank() && contentType in targetContentTypes
             if (!extensionValid || !contentTypeValid) {
@@ -398,16 +409,23 @@ class UserFileService(
     }
 
     private fun extractOriginalFileName(originalFileName: String?): String {
-        val candidate = originalFileName?.trim().orEmpty()
+        return sanitizeFileName(originalFileName) ?: "file"
+    }
+
+    private fun sanitizeStoredDisplayFileName(fileName: String?): String? {
+        return sanitizeFileName(fileName)
+    }
+
+    private fun sanitizeFileName(fileName: String?): String? {
+        val candidate = fileName?.trim().orEmpty()
         val withoutPath = candidate.substringAfterLast('/').substringAfterLast('\\')
         val normalizedWhitespace = withoutPath
-            .replace(Regex("[\\r\\n\\t]"), " ")
+            .replace(Regex("[\\p{Cntrl}]"), " ")
             .replace(Regex("\\s+"), " ")
-            .replace("\u0000", "")
             .trim()
+            .take(originalFileNameMaxLength)
 
-        val safeName = normalizedWhitespace.ifBlank { "file" }
-        return safeName.take(originalFileNameMaxLength)
+        return normalizedWhitespace.ifBlank { null }
     }
 
     private fun buildStorageFileName(originalFileName: String): String {
