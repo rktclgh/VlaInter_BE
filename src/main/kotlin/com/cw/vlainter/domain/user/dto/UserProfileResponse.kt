@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.user.dto
 
 import com.cw.vlainter.domain.user.entity.UserRole
+import com.cw.vlainter.domain.user.entity.UserServiceMode
 import com.cw.vlainter.domain.user.entity.UserStatus
 
 data class UserProfileResponse(
@@ -9,6 +10,12 @@ data class UserProfileResponse(
     val role: UserRole,
     val status: UserStatus,
     val point: Long,
+    val serviceMode: UserServiceMode?,
+    val universityId: Long? = null,
+    val universityName: String?,
+    val departmentId: Long? = null,
+    val departmentName: String?,
+    val hasAcademicProfile: Boolean,
     val hasGeminiApiKey: Boolean,
     val hasProfileImage: Boolean
 )

@@ -76,6 +76,8 @@ jobs:
           cache: gradle
 
       - name: Build Spring Boot jar
+        env:
+          GRADLE_OPTS: -Dorg.gradle.vfs.watch=false
         run: |
           chmod +x gradlew
           ./gradlew clean bootJar --no-daemon

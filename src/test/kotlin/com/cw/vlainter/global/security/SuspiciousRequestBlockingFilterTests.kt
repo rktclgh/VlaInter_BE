@@ -98,6 +98,35 @@ class SuspiciousRequestBlockingFilterTests {
     }
 
     @Test
+    fun `allows blocked client to fetch favicon asset`() {
+        val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
+        val request = MockHttpServletRequest("GET", "/favicon.ico").apply { remoteAddr = "127.0.0.1" }
+        val response = MockHttpServletResponse()
+
+        filter.doFilter(request, response, filterChain)
+
+        then(filterChain).should().doFilter(request, response)
+        then(clientIpResolver).shouldHaveNoInteractions()
+        then(suspiciousRequestBlockService).shouldHaveNoInteractions()
+    }
+
+    @Test
+    fun `allows blocked preview bot to fetch landing page`() {
+        val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
+        val request = MockHttpServletRequest("GET", "/").apply {
+            remoteAddr = "127.0.0.1"
+            addHeader("User-Agent", "facebookexternalhit/1.1")
+        }
+        val response = MockHttpServletResponse()
+
+        filter.doFilter(request, response, filterChain)
+
+        then(filterChain).should().doFilter(request, response)
+        then(clientIpResolver).shouldHaveNoInteractions()
+        then(suspiciousRequestBlockService).shouldHaveNoInteractions()
+    }
+
+    @Test
     fun `skips block decisions when trusted proxy client ip is unresolved`() {
         val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
         val request = MockHttpServletRequest("GET", "/.env").apply { remoteAddr = "172.18.0.5" }
