@@ -1747,7 +1747,7 @@ class DocumentInterviewService(
         val bytes = runCatching { s3Client.getObjectAsBytes(request).asByteArray() }
             .getOrElse {
                 logger.warn("course visual asset source download failed fileId={} reason={}", file.id, it.message)
-                return emptyList()
+                throw it
             }
         return when (resolveDocumentFormat(file)) {
             "pdf" -> extractPdfVisualAssets(bytes)
@@ -1878,6 +1878,15 @@ class DocumentInterviewService(
         }
 
         val uploadedKeys = mutableListOf<String>()
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                override fun afterCompletion(status: Int) {
+                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                        uploadedKeys.forEach(::deleteObjectQuietly)
+                    }
+                }
+            })
+        }
         try {
             val savedAssets = visualAssets.map { asset ->
                 val storageKey = uploadCourseVisualAsset(material.userFile.user.id, fileId, asset)

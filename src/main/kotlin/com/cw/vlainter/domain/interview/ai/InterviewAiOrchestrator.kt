@@ -72,6 +72,7 @@ class InterviewAiOrchestrator(
     private val resultIntentHints = setOf("성과", "결과", "효과", "개선", "impact", "result", "outcome", "improvement")
     private val challengeIntentHints = setOf("문제", "난관", "도전", "어려움", "해결", "트러블", "challenge", "problem", "issue", "solve")
     private val collaborationIntentHints = setOf("협업", "조율", "갈등", "커뮤니케이션", "collaboration", "communication", "conflict")
+    private val courseMaterialSummaryRetryDelaysMs = listOf(400L, 900L)
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -346,8 +347,29 @@ class InterviewAiOrchestrator(
             sources = sources,
             language = language
         )
-        val generated = llmProviderRouter.generateJson(prompt, temperature = 0.2)
-        return parseGeneratedCourseMaterialSummary(generated.text)
+        val temperatures = listOf(0.2, 0.2, 0.2)
+        var lastError: Exception? = null
+        for ((index, temperature) in temperatures.withIndex()) {
+            try {
+                val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
+                return parseGeneratedCourseMaterialSummary(generated.text)
+            } catch (ex: Exception) {
+                lastError = ex
+                if (!shouldRetryCourseMaterialSummary(ex) || index == temperatures.lastIndex) {
+                    throw ex
+                }
+                val delayMillis = courseMaterialSummaryRetryDelaysMs[index]
+                logger.warn(
+                    "강의자료 요약 생성 재시도(provider={}, round={}, delayMs={}): {}",
+                    aiProperties.provider,
+                    index + 1,
+                    delayMillis,
+                    ex.message
+                )
+                Thread.sleep(delayMillis)
+            }
+        }
+        throw lastError ?: IllegalStateException("강의자료 요약 생성에 실패했습니다.")
     }
 
     fun refinePastExamPracticeQuestions(
@@ -2186,7 +2208,7 @@ class InterviewAiOrchestrator(
             .lowercase()
             .split(Regex("\\s+"))
             .filter { it.length >= 2 }
-        return courseTokens.isEmpty() || courseTokens.any { lowered.contains(it) } || normalized.length >= 20
+        return courseTokens.any { lowered.contains(it) } || normalized.length >= 50
     }
 
     private fun preservePastExamQuestionText(original: String, corrected: String): String {
@@ -2603,28 +2625,35 @@ class InterviewAiOrchestrator(
         items.forEach { item ->
             val expectedPassScore = (item.maxScore * 0.6).roundToInt()
             val rawResult = rawResults[item.key]
-                ?: throw IllegalStateException("과목 시험문제 채점 결과에 key=${item.key}가 누락되었습니다.")
-            val normalizedScore = rawResult.score.coerceIn(0, item.maxScore)
-            if (rawResult.score != normalizedScore) {
+            if (rawResult == null) {
+                logger.warn("과목 시험문제 채점 결과 누락 key={} maxScore={}", item.key, item.maxScore)
+            }
+            val effectiveResult = rawResult ?: CourseExamEvaluationResult(
+                score = 0,
+                passScore = expectedPassScore,
+                feedback = "채점 결과가 누락되어 0점으로 처리했습니다."
+            )
+            val normalizedScore = effectiveResult.score.coerceIn(0, item.maxScore)
+            if (effectiveResult.score != normalizedScore) {
                 logger.warn(
                     "과목 시험문제 채점 점수 범위 보정 key={} rawScore={} maxScore={}",
                     item.key,
-                    rawResult.score,
+                    effectiveResult.score,
                     item.maxScore
                 )
             }
-            if (rawResult.passScore != expectedPassScore) {
+            if (effectiveResult.passScore != expectedPassScore) {
                 logger.warn(
                     "과목 시험문제 채점 통과점수 무시 key={} rawPassScore={} expectedPassScore={}",
                     item.key,
-                    rawResult.passScore,
+                    effectiveResult.passScore,
                     expectedPassScore
                 )
             }
             normalized[item.key] = CourseExamEvaluationResult(
                 score = normalizedScore,
                 passScore = expectedPassScore,
-                feedback = rawResult.feedback.ifBlank { "채점 근거를 생성하지 못했습니다." }
+                feedback = effectiveResult.feedback.ifBlank { "채점 근거를 생성하지 못했습니다." }
             )
         }
 
@@ -2633,6 +2662,10 @@ class InterviewAiOrchestrator(
             logger.warn("과목 시험문제 채점 결과에 예상하지 못한 key가 포함되었습니다. keys={}", unexpectedKeys.joinToString(","))
         }
         return normalized
+    }
+
+    private fun shouldRetryCourseMaterialSummary(ex: Exception): Boolean {
+        return ex is GeminiTransientException && (ex.statusCode == 429 || ex.statusCode == 503)
     }
 
     private fun parseBatchEvaluationJson(raw: String): Map<String, AiTurnEvaluation> {

@@ -136,7 +136,11 @@ class UserFileService(
         allowedContentTypes: Set<String>? = null,
         invalidTypeMessage: String? = null
     ): UserFileResponse {
-        val actor = loadActiveUser(principal.userId)
+        val actor = userRepository.findByIdForUpdate(principal.userId)
+            ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "인증이 필요합니다.")
+        if (actor.status != UserStatus.ACTIVE) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "비활성 상태 계정은 파일 기능을 사용할 수 없습니다.")
+        }
         validateUploadFile(fileType, file, allowedExtensions, allowedContentTypes, invalidTypeMessage)
         ensureS3Configured()
 

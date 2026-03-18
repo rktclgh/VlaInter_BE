@@ -77,12 +77,14 @@ class AcademicSearchService(
         }
         if (academyInfoServiceKey.isBlank()) return emptyList()
 
-        val responseBody = requestDepartmentSearch(
-            universityCode = localUniversity?.externalCode,
-            universityName = normalizedUniversityName
-        ) ?: return emptyList()
-        val parsedItems = parseItems(responseBody)
         val normalizedUniversityKey = normalizeKeyword(normalizedUniversityName)
+        val parsedItems = requestDepartmentSearch(
+            universityCode = localUniversity?.externalCode,
+            universityName = normalizedUniversityName,
+            normalizedUniversityName = normalizedUniversityKey,
+            departmentKeyword = normalizedKeyword
+        )
+        if (parsedItems.isEmpty()) return emptyList()
         val matchingUniversityItems = parsedItems.filter { item ->
             item.matchesUniversity(
                 expectedUniversityCode = localUniversity?.externalCode,
@@ -233,54 +235,79 @@ class AcademicSearchService(
         }.getOrElse { null }
     }
 
-    private fun requestDepartmentSearch(universityCode: String?, universityName: String): String? {
-        val primaryResponse = runCatching {
-            restClient.get()
-                .uri { builder ->
-                    val uriBuilder = builder.path(departmentSearchPath)
-                        .queryParam("serviceKey", academyInfoServiceKey)
-                        .queryParam("pageNo", 1)
-                        .queryParam("numOfRows", MAX_RESULT_SIZE)
-                        .queryParam("svyYr", surveyYear)
-                        .queryParam("schlKrnNm", universityName)
-                    if (!universityCode.isNullOrBlank()) {
-                        uriBuilder.queryParam("schlId", universityCode)
-                    }
-                    uriBuilder.build()
-                }
-                .retrieve()
-                .body(String::class.java)
-                .orEmpty()
-        }.onFailure { ex ->
-            logger.warn("학과 검색 API 호출 실패 university={} universityCode={}", universityName, universityCode, ex)
-        }.getOrElse { null }
-        if (!primaryResponse.isNullOrBlank() && parseItems(primaryResponse).isNotEmpty()) {
-            return primaryResponse
+    private fun requestDepartmentSearch(
+        universityCode: String?,
+        universityName: String,
+        normalizedUniversityName: String,
+        departmentKeyword: String
+    ): List<XmlItemNode> {
+        val primaryItems = requestDepartmentSearchFromPath(
+            path = departmentSearchPath,
+            universityCode = universityCode,
+            universityName = universityName,
+            normalizedUniversityName = normalizedUniversityName,
+            departmentKeyword = departmentKeyword,
+            fallback = false
+        )
+        if (primaryItems.isNotEmpty() || departmentSearchPath == FALLBACK_DEPARTMENT_SEARCH_PATH) {
+            return primaryItems
         }
+        return requestDepartmentSearchFromPath(
+            path = FALLBACK_DEPARTMENT_SEARCH_PATH,
+            universityCode = universityCode,
+            universityName = universityName,
+            normalizedUniversityName = normalizedUniversityName,
+            departmentKeyword = departmentKeyword,
+            fallback = true
+        )
+    }
 
-        val fallbackPath = FALLBACK_DEPARTMENT_SEARCH_PATH
-        if (departmentSearchPath == fallbackPath) return primaryResponse
-
-        return runCatching {
-            restClient.get()
-                .uri { builder ->
-                    val uriBuilder = builder.path(fallbackPath)
-                        .queryParam("serviceKey", academyInfoServiceKey)
-                        .queryParam("pageNo", 1)
-                        .queryParam("numOfRows", MAX_RESULT_SIZE)
-                        .queryParam("svyYr", surveyYear)
-                        .queryParam("schlKrnNm", universityName)
-                    if (!universityCode.isNullOrBlank()) {
-                        uriBuilder.queryParam("schlId", universityCode)
+    private fun requestDepartmentSearchFromPath(
+        path: String,
+        universityCode: String?,
+        universityName: String,
+        normalizedUniversityName: String,
+        departmentKeyword: String,
+        fallback: Boolean
+    ): List<XmlItemNode> {
+        val collected = mutableListOf<XmlItemNode>()
+        var pageNo = 1
+        while (pageNo <= MAX_REMOTE_SEARCH_PAGES) {
+            val responseBody = runCatching {
+                restClient.get()
+                    .uri { builder ->
+                        val uriBuilder = builder.path(path)
+                            .queryParam("serviceKey", academyInfoServiceKey)
+                            .queryParam("pageNo", pageNo)
+                            .queryParam("numOfRows", REMOTE_DEPARTMENT_PAGE_SIZE)
+                            .queryParam("svyYr", surveyYear)
+                            .queryParam("schlKrnNm", universityName)
+                        if (!universityCode.isNullOrBlank()) {
+                            uriBuilder.queryParam("schlId", universityCode)
+                        }
+                        uriBuilder.build()
                     }
-                    uriBuilder.build()
+                    .retrieve()
+                    .body(String::class.java)
+                    .orEmpty()
+            }.onFailure { ex ->
+                if (fallback) {
+                    logger.warn("학과 검색 API fallback 호출 실패 university={} universityCode={} page={}", universityName, universityCode, pageNo, ex)
+                } else {
+                    logger.warn("학과 검색 API 호출 실패 university={} universityCode={} page={}", universityName, universityCode, pageNo, ex)
                 }
-                .retrieve()
-                .body(String::class.java)
-                .orEmpty()
-        }.onFailure { ex ->
-            logger.warn("학과 검색 API fallback 호출 실패 university={} universityCode={}", universityName, universityCode, ex)
-        }.getOrElse { primaryResponse }
+            }.getOrElse { null } ?: break
+
+            val pageItems = parseItems(responseBody)
+            if (pageItems.isEmpty()) break
+            collected += pageItems
+            if (countMatchingDepartmentItems(collected, universityCode, normalizedUniversityName, departmentKeyword) >= MAX_RESULT_SIZE) {
+                break
+            }
+            if (pageItems.size < REMOTE_DEPARTMENT_PAGE_SIZE) break
+            pageNo += 1
+        }
+        return collected
     }
 
     private fun resolveUniversityEntity(universityId: Long?, universityName: String): AcademicUniversity? {
@@ -337,6 +364,20 @@ class AcademicSearchService(
         return responseUniversityName.isNotBlank() && normalizeKeyword(responseUniversityName) == normalizedUniversityName
     }
 
+    private fun countMatchingDepartmentItems(
+        items: List<XmlItemNode>,
+        expectedUniversityCode: String?,
+        normalizedUniversityName: String,
+        departmentKeyword: String
+    ): Int {
+        return items.asSequence()
+            .filter { item -> item.matchesUniversity(expectedUniversityCode, normalizedUniversityName) }
+            .mapNotNull { item -> item.valueOf("korMjrNm").ifBlank { item.valueOf("majorNm") }.takeIf { it.isNotBlank() } }
+            .filter { departmentName -> departmentName.contains(departmentKeyword, ignoreCase = true) }
+            .distinct()
+            .count()
+    }
+
     private class XmlItemNode(private val node: org.w3c.dom.Node) {
         fun valueOf(tagName: String): String {
             val childNodes = node.childNodes ?: return ""
@@ -353,6 +394,8 @@ class AcademicSearchService(
     companion object {
         private const val MIN_QUERY_LENGTH = 2
         private const val MAX_RESULT_SIZE = 20
+        private const val REMOTE_DEPARTMENT_PAGE_SIZE = 50
+        private const val MAX_REMOTE_SEARCH_PAGES = 5
         private const val FALLBACK_DEPARTMENT_SEARCH_PATH = "/BasicInformationService/getUniversityMajorCode"
     }
 }

@@ -81,6 +81,13 @@ class UserService(
         val user = userRepository.findById(principal.userId)
             .orElseThrow { unauthorizedException() }
         ensureActiveUser(user.status)
+        if (request.serviceMode == UserServiceMode.STUDENT) {
+            val universityName = user.universityName?.trim().orEmpty()
+            val departmentName = user.departmentName?.trim().orEmpty()
+            if (universityName.isBlank() || departmentName.isBlank()) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학생 모드로 전환하려면 대학교와 학과를 먼저 저장해 주세요.")
+            }
+        }
 
         user.serviceMode = request.serviceMode
         val saved = userRepository.save(user)

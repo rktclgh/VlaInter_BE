@@ -26,11 +26,12 @@ class SuspiciousRequestBlockingFilter(
     ) {
         val requestMethod = request.method
         val requestUri = request.requestURI
+        val userAgent = request.getHeader("User-Agent")
         val suspiciousRequest = suspiciousRequestBlockService.isSuspiciousRequest(requestMethod, requestUri)
         val resolution = clientIpResolver.resolveDetail(request)
         val clientIp = resolution.clientIp
         if (!resolution.isReliableForSecurity) {
-            if (isAlwaysAllowedPublicAsset(requestUri) || isPreviewBotAllowedRequest(requestMethod, requestUri, request.getHeader("User-Agent"))) {
+            if (isAlwaysAllowedPublicAsset(requestUri) || isPreviewBotAllowedRequest(requestMethod, requestUri, userAgent)) {
                 filterChain.doFilter(request, response)
                 return
             }
@@ -60,7 +61,7 @@ class SuspiciousRequestBlockingFilter(
             return
         }
 
-        if (isAlwaysAllowedPublicAsset(requestUri) || isPreviewBotAllowedRequest(requestMethod, requestUri, request.getHeader("User-Agent"))) {
+        if (isAlwaysAllowedPublicAsset(requestUri) || isPreviewBotAllowedRequest(requestMethod, requestUri, userAgent)) {
             filterChain.doFilter(request, response)
             return
         }
@@ -103,7 +104,7 @@ class SuspiciousRequestBlockingFilter(
             normalized == "/robots.txt" ||
             normalized == "/manifest.webmanifest" ||
             normalized == "/site.webmanifest" ||
-            normalized.startsWith("/apple-touch-icon")
+            APPLE_TOUCH_ICON_REGEX.matches(normalized)
     }
 
     private fun isPreviewBotAllowedRequest(method: String, requestUri: String, userAgent: String?): Boolean {
@@ -119,6 +120,7 @@ class SuspiciousRequestBlockingFilter(
     }
 
     private companion object {
+        private val APPLE_TOUCH_ICON_REGEX = Regex("^/apple-touch-icon(?:-precomposed)?(?:-\\d+x\\d+)?\\.png$")
         val PREVIEW_BOT_MARKERS = listOf(
             "facebookexternalhit",
             "facebot",
