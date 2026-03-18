@@ -71,7 +71,6 @@ import org.springframework.core.io.ClassPathResource
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.multipart.MultipartFile
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder
 import org.springframework.web.server.ResponseStatusException
 import kotlin.math.roundToInt
 import java.awt.Color
@@ -2113,17 +2112,11 @@ class StudentCourseService(
     }
 
     private fun buildCourseMaterialContentUrl(courseId: Long, materialId: Long): String {
-        return ServletUriComponentsBuilder.fromCurrentContextPath()
-            .path("/api/student/courses/{courseId}/materials/{materialId}/content")
-            .buildAndExpand(courseId, materialId)
-            .toUriString()
+        return "/api/student/courses/$courseId/materials/$materialId/content"
     }
 
     private fun buildVisualAssetContentUrl(assetId: Long): String {
-        return ServletUriComponentsBuilder.fromCurrentContextPath()
-            .path("/api/student/courses/material-visual-assets/{assetId}/content")
-            .buildAndExpand(assetId)
-            .toUriString()
+        return "/api/student/courses/material-visual-assets/$assetId/content"
     }
 
     private fun buildVisualAssetDownloadFileName(
