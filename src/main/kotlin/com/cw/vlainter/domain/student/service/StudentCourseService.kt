@@ -286,9 +286,6 @@ class StudentCourseService(
         if (job.courseId != course.id || job.userId != user.id) {
             throw ResponseStatusException(HttpStatus.NOT_FOUND, "유튜브 요약본 작업을 찾을 수 없습니다.")
         }
-        if (job.status != StudentCourseYoutubeSummaryJobStatus.READY) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "완료된 유튜브 요약본 작업만 목록에서 삭제할 수 있습니다.")
-        }
         studentCourseYoutubeSummaryJobRepository.delete(job)
     }
 
