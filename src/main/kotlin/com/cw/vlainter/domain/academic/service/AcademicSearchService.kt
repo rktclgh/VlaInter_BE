@@ -20,7 +20,7 @@ class AcademicSearchService(
     restClientBuilder: RestClient.Builder,
     private val academicUniversityRepository: AcademicUniversityRepository,
     private val academicDepartmentRepository: AcademicDepartmentRepository,
-    @Value("\${academyinfo.api.base-url:http://openapi.academyinfo.go.kr/openapi/service/rest}") private val academyInfoBaseUrl: String,
+    @Value("\${academyinfo.api.base-url:https://openapi.academyinfo.go.kr/openapi/service/rest}") private val academyInfoBaseUrl: String,
     @Value("\${academyinfo.api.service-key:}") private val academyInfoServiceKey: String,
     @Value("\${academyinfo.api.university-path:/BasicInformationService/getUniversityCode}") private val universitySearchPath: String,
     @Value("\${academyinfo.api.department-path:/SchoolMajorInfoService/getSchoolMajorInfo}") private val departmentSearchPath: String,
@@ -249,7 +249,10 @@ class AcademicSearchService(
             departmentKeyword = departmentKeyword,
             fallback = false
         )
-        if (primaryItems.isNotEmpty() || departmentSearchPath == FALLBACK_DEPARTMENT_SEARCH_PATH) {
+        if (
+            countMatchingDepartmentItems(primaryItems, universityCode, normalizedUniversityName, departmentKeyword) > 0 ||
+            departmentSearchPath == FALLBACK_DEPARTMENT_SEARCH_PATH
+        ) {
             return primaryItems
         }
         return requestDepartmentSearchFromPath(

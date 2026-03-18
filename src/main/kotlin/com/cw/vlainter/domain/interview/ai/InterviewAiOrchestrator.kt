@@ -1370,6 +1370,14 @@ class InterviewAiOrchestrator(
             ?.takeIf { it.isArray }
             ?.mapIndexedNotNull { index, item ->
                 val questionText = item.text("questionText").ifBlank { return@mapIndexedNotNull null }
+                val rawMaxScore = item["maxScore"]?.takeIf { it.isNumber }?.asInt()
+                val sanitizedMaxScore = when {
+                    rawMaxScore == null -> 20
+                    rawMaxScore < 0 -> 20
+                    rawMaxScore == 0 -> 0
+                    rawMaxScore > 100 -> 100
+                    else -> rawMaxScore
+                }
                 GeneratedCourseExamQuestion(
                     questionNo = index + 1,
                     questionText = questionText,
@@ -1377,7 +1385,7 @@ class InterviewAiOrchestrator(
                     canonicalAnswer = item.text("canonicalAnswer").ifBlank { "" },
                     gradingCriteria = item.text("gradingCriteria").ifBlank { "" },
                     referenceExample = item.text("referenceExample").ifBlank { null },
-                    maxScore = item["maxScore"]?.asInt() ?: 20
+                    maxScore = sanitizedMaxScore
                 )
             }
             .orEmpty()

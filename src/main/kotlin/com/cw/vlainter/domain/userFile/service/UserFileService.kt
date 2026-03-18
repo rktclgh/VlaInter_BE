@@ -337,9 +337,10 @@ class UserFileService(
             val extensionValid = extension in targetExtensions
             val contentTypeValid = contentType.isNotBlank() && contentType in targetContentTypes
             if (!extensionValid || !contentTypeValid) {
+                val dynamicInvalidTypeMessage = buildDocumentTypeErrorMessage(targetExtensions, targetContentTypes)
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    invalidTypeMessage ?: "문서 자료는 PDF, DOCX, PPTX 파일만 업로드할 수 있습니다."
+                    invalidTypeMessage ?: dynamicInvalidTypeMessage
                 )
             }
         }
@@ -474,6 +475,20 @@ class UserFileService(
                 action()
             }
         })
+    }
+
+    private fun buildDocumentTypeErrorMessage(
+        targetExtensions: Set<String>,
+        targetContentTypes: Set<String>
+    ): String {
+        val extensionPart = targetExtensions
+            .map { it.uppercase() }
+            .sorted()
+            .joinToString(", ")
+        val contentTypePart = targetContentTypes
+            .sorted()
+            .joinToString(", ")
+        return "문서 자료는 다음 형식만 업로드할 수 있습니다. 확장자: $extensionPart / MIME: $contentTypePart"
     }
 
     private fun toResponse(file: UserFile): UserFileResponse {

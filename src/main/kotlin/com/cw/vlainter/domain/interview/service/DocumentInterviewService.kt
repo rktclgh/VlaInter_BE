@@ -388,7 +388,8 @@ class DocumentInterviewService(
         if (message.isNullOrBlank()) return null
         val normalized = message.trim()
         return when {
-            "HTTP 429" in normalized || "RESOURCE_EXHAUSTED" in normalized ->
+            normalized.contains("http 429", ignoreCase = true) ||
+                normalized.contains("resource_exhausted", ignoreCase = true) ->
                 "Gemini API 할당량이 초과되었습니다. 잠시 후 다시 시도하거나 Gemini 사용량과 결제 상태를 확인해 주세요."
             else -> normalized.take(1000)
         }

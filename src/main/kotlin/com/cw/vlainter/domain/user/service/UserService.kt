@@ -104,6 +104,12 @@ class UserService(
         val normalizedDepartment = request.departmentName.normalizeAcademicText("학과")
         val universityId = request.universityId
         val departmentId = request.departmentId
+        if (universityId != null && normalizedUniversity == null) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학교 이름 없이 대학교 ID만 보낼 수 없습니다.")
+        }
+        if (departmentId != null && normalizedDepartment == null) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "학과 이름 없이 학과 ID만 보낼 수 없습니다.")
+        }
 
         if ((normalizedUniversity == null) != (normalizedDepartment == null)) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "대학교와 학과는 함께 입력하거나 함께 비워 주세요.")
