@@ -99,6 +99,16 @@ class StudentCourseController(
         return ResponseEntity.ok(studentCourseService.getYoutubeCourseMaterialJobs(principal, courseId))
     }
 
+    @DeleteMapping("/{courseId}/youtube-materials/{jobId}")
+    fun deleteYoutubeCourseMaterialJob(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable courseId: Long,
+        @PathVariable jobId: Long
+    ): ResponseEntity<Void> {
+        studentCourseService.deleteYoutubeCourseMaterialJob(principal, courseId, jobId)
+        return ResponseEntity.noContent().build()
+    }
+
     @DeleteMapping("/{courseId}/materials/{materialId}")
     fun deleteCourseMaterial(
         @AuthenticationPrincipal principal: AuthPrincipal,

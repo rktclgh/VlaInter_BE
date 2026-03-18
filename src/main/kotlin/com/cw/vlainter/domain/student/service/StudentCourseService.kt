@@ -273,6 +273,25 @@ class StudentCourseService(
     }
 
     @Transactional
+    fun deleteYoutubeCourseMaterialJob(
+        principal: AuthPrincipal,
+        courseId: Long,
+        jobId: Long
+    ) {
+        val user = getValidatedStudentUser(principal)
+        val course = getOwnedCourse(user.id, courseId)
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "유튜브 요약본 작업을 찾을 수 없습니다.") }
+        if (job.courseId != course.id || job.userId != user.id) {
+            throw ResponseStatusException(HttpStatus.NOT_FOUND, "유튜브 요약본 작업을 찾을 수 없습니다.")
+        }
+        if (job.status != StudentCourseYoutubeSummaryJobStatus.READY) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "완료된 유튜브 요약본 작업만 목록에서 삭제할 수 있습니다.")
+        }
+        studentCourseYoutubeSummaryJobRepository.delete(job)
+    }
+
+    @Transactional
     fun uploadCourseMaterial(
         principal: AuthPrincipal,
         courseId: Long,
@@ -1634,7 +1653,7 @@ class StudentCourseService(
         hasSelectedPastExamReference: Boolean
     ) {
         if (request.generationMode == StudentExamGenerationMode.STANDARD && request.difficultyLevel == null) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "일반형 모의고사는 난이도를 선택해 주세요.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의고사는 난이도를 선택해 주세요.")
         }
         if (
             (request.generationMode == StudentExamGenerationMode.PAST_EXAM ||
