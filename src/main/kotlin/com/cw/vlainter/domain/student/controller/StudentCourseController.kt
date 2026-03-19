@@ -1,13 +1,16 @@
 package com.cw.vlainter.domain.student.controller
 
 import com.cw.vlainter.domain.student.dto.CreateStudentCourseRequest
+import com.cw.vlainter.domain.student.dto.CreateStudentCourseSummaryPreviewRequest
 import com.cw.vlainter.domain.student.dto.CreateStudentCourseSummaryDocumentRequest
 import com.cw.vlainter.domain.student.dto.CreateStudentExamSessionRequest
+import com.cw.vlainter.domain.student.dto.CreateStudentCourseYoutubeMaterialRequest
 import com.cw.vlainter.domain.student.dto.CreateStudentWrongAnswerSetRequest
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialKind
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialDownloadResponse
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialResponse
 import com.cw.vlainter.domain.student.dto.StudentCourseResponse
+import com.cw.vlainter.domain.student.dto.StudentCourseYoutubeSummaryJobResponse
 import com.cw.vlainter.domain.student.dto.StudentExamSessionDetailResponse
 import com.cw.vlainter.domain.student.dto.StudentExamSessionResponse
 import com.cw.vlainter.domain.student.dto.StudentWrongAnswerSetDetailResponse
@@ -77,6 +80,33 @@ class StudentCourseController(
         @RequestParam(defaultValue = "LECTURE_MATERIAL") materialKind: StudentCourseMaterialKind
     ): ResponseEntity<StudentCourseMaterialResponse> {
         return ResponseEntity.ok(studentCourseService.uploadCourseMaterial(principal, courseId, file, materialKind))
+    }
+
+    @PostMapping("/{courseId}/youtube-materials")
+    fun uploadYoutubeCourseMaterial(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable courseId: Long,
+        @Valid @RequestBody request: CreateStudentCourseYoutubeMaterialRequest
+    ): ResponseEntity<StudentCourseYoutubeSummaryJobResponse> {
+        return ResponseEntity.ok(studentCourseService.uploadYoutubeCourseMaterial(principal, courseId, request))
+    }
+
+    @GetMapping("/{courseId}/youtube-materials")
+    fun getYoutubeCourseMaterialJobs(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable courseId: Long
+    ): ResponseEntity<List<StudentCourseYoutubeSummaryJobResponse>> {
+        return ResponseEntity.ok(studentCourseService.getYoutubeCourseMaterialJobs(principal, courseId))
+    }
+
+    @DeleteMapping("/{courseId}/youtube-materials/{jobId}")
+    fun deleteYoutubeCourseMaterialJob(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable courseId: Long,
+        @PathVariable jobId: Long
+    ): ResponseEntity<Void> {
+        studentCourseService.deleteYoutubeCourseMaterialJob(principal, courseId, jobId)
+        return ResponseEntity.noContent().build()
     }
 
     @DeleteMapping("/{courseId}/materials/{materialId}")
@@ -153,6 +183,13 @@ class StudentCourseController(
             )
             .body(resource.bytes)
     }
+
+    @PostMapping("/{courseId}/summary-preview")
+    fun generateCourseSummaryPreview(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable courseId: Long,
+        @Valid @RequestBody request: CreateStudentCourseSummaryPreviewRequest
+    ) = ResponseEntity.ok(studentCourseService.generateCourseSummaryPreview(principal, courseId, request))
 
     @GetMapping("/{courseId}/sessions")
     fun getCourseSessions(

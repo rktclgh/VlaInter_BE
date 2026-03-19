@@ -139,74 +139,52 @@ class UserFileService(
         allowedContentTypes: Set<String>? = null,
         invalidTypeMessage: String? = null
     ): UserFileResponse {
-        val actor = userRepository.findByIdForUpdate(principal.userId)
-            ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "인증이 필요합니다.")
-        if (actor.status != UserStatus.ACTIVE) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "비활성 상태 계정은 파일 기능을 사용할 수 없습니다.")
-        }
+        val actor = loadActiveUser(principal.userId)
         validateUploadFile(fileType, file, allowedExtensions, allowedContentTypes, invalidTypeMessage)
         ensureS3Configured()
-
-        val originalFileName = extractOriginalFileName(file.originalFilename)
-        val effectiveFileName = sanitizeStoredDisplayFileName(storedDisplayFileName) ?: originalFileName
-        val storageFileName = buildStorageFileName(originalFileName)
-        val objectKey = buildObjectKey(actor.id, fileType, storageFileName)
-        val storedPath = buildStoredPath(objectKey)
         val contentType = file.contentType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
-
-        if (fileType != FileType.PROFILE_IMAGE) {
-            val currentCount = userFileRepository.countByUser_IdAndFileTypeAndDeletedAtIsNull(actor.id, fileType)
-            val maxFilesPerType = when (fileType) {
-                FileType.COURSE_MATERIAL -> MAX_COURSE_MATERIAL_FILES
-                else -> MAX_DOCUMENT_FILES_PER_TYPE
-            }
-            if (currentCount >= maxFilesPerType) {
-                throw ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "${fileType.koreanLabel()} 파일은 최대 ${maxFilesPerType}개까지 보관할 수 있습니다."
-                )
-            }
-        }
-
-        putObject(objectKey, contentType, file.bytes)
-
-        val saved = try {
-            if (fileType == FileType.PROFILE_IMAGE) {
-                val existing = userFileRepository
-                    .findTopByUser_IdAndFileTypeAndIsActiveTrueAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id, fileType)
-                if (existing != null) {
-                    val oldDeletionKey = resolveDeletionKey(existing.storageKey, existing.fileUrl)
-                    userFileRepository.delete(existing)
-                    userFileRepository.flush()
-                    if (!oldDeletionKey.isNullOrBlank() && oldDeletionKey != objectKey) {
-                        runAfterCommit {
-                            deleteObjectQuietly(oldDeletionKey)
-                        }
-                    }
-                }
-            }
-
-            userFileRepository.save(
-                UserFile(
-                    user = actor,
-                    fileType = fileType,
-                    fileUrl = storedPath,
-                    fileName = effectiveFileName,
-                    originalFileName = originalFileName,
-                    storageFileName = storageFileName,
-                    storageKey = objectKey,
-                    contentType = contentType,
-                    fileSizeBytes = file.size,
-                    isActive = true,
-                    updatedAt = OffsetDateTime.now()
-                )
+        return toResponse(
+            saveOwnedBinaryFile(
+                actor = actor,
+                fileType = fileType,
+                originalFileName = file.originalFilename,
+                contentType = contentType,
+                bytes = file.bytes,
+                storedDisplayFileName = storedDisplayFileName
             )
-        } catch (ex: Exception) {
-            deleteObjectQuietly(objectKey)
-            throw ex
-        }
+        )
+    }
 
-        return toResponse(saved)
+    @Transactional
+    fun createOwnedBinaryFile(
+        userId: Long,
+        fileType: FileType,
+        originalFileName: String,
+        contentType: String,
+        bytes: ByteArray,
+        storedDisplayFileName: String? = null
+    ): UserFile {
+        val actor = loadActiveUser(userId)
+        if (bytes.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 파일 내용이 비어 있습니다.")
+        }
+        if (bytes.size.toLong() > s3Properties.maxFileSizeBytes) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "파일 크기는 ${s3Properties.maxFileSizeBytes} bytes 이하여야 합니다."
+            )
+        }
+        val sanitizedOriginalFileName = extractOriginalFileName(originalFileName)
+        validateBinaryFileMetadata(fileType, sanitizedOriginalFileName, contentType)
+        ensureS3Configured()
+        return saveOwnedBinaryFile(
+            actor = actor,
+            fileType = fileType,
+            originalFileName = sanitizedOriginalFileName,
+            contentType = contentType,
+            bytes = bytes,
+            storedDisplayFileName = storedDisplayFileName
+        )
     }
 
     @Transactional
@@ -313,6 +291,93 @@ class UserFileService(
         return user
     }
 
+    private fun saveOwnedBinaryFile(
+        actor: User,
+        fileType: FileType,
+        originalFileName: String?,
+        contentType: String,
+        bytes: ByteArray,
+        storedDisplayFileName: String? = null
+    ): UserFile {
+        val sanitizedOriginalFileName = originalFileName?.trim()?.takeIf { it.isNotBlank() }
+            ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "원본 파일명이 비어 있습니다.")
+        val effectiveFileName = sanitizeStoredDisplayFileName(storedDisplayFileName) ?: sanitizedOriginalFileName
+        val storageFileName = buildStorageFileName(sanitizedOriginalFileName)
+        val objectKey = buildObjectKey(actor.id, fileType, storageFileName)
+        val storedPath = buildStoredPath(objectKey)
+        val resolvedContentType = contentType.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+
+        enforceFileCountLimit(actor.id, fileType)
+        putObject(objectKey, resolvedContentType, bytes)
+        registerRollbackObjectCleanup(objectKey)
+
+        return try {
+            if (fileType == FileType.PROFILE_IMAGE) {
+                val existing = userFileRepository
+                    .findTopByUser_IdAndFileTypeAndIsActiveTrueAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id, fileType)
+                if (existing != null) {
+                    val oldDeletionKey = resolveDeletionKey(existing.storageKey, existing.fileUrl)
+                    userFileRepository.delete(existing)
+                    userFileRepository.flush()
+                    if (!oldDeletionKey.isNullOrBlank() && oldDeletionKey != objectKey) {
+                        runAfterCommit {
+                            deleteObjectQuietly(oldDeletionKey)
+                        }
+                    }
+                }
+            }
+
+            userFileRepository.save(
+                UserFile(
+                    user = actor,
+                    fileType = fileType,
+                    fileUrl = storedPath,
+                    fileName = effectiveFileName,
+                    originalFileName = sanitizedOriginalFileName,
+                    storageFileName = storageFileName,
+                    storageKey = objectKey,
+                    contentType = resolvedContentType,
+                    fileSizeBytes = bytes.size.toLong(),
+                    isActive = true,
+                    updatedAt = OffsetDateTime.now()
+                )
+            )
+        } catch (ex: Exception) {
+            deleteObjectQuietly(objectKey)
+            throw ex
+        }
+    }
+
+    private fun registerRollbackObjectCleanup(objectKey: String) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            logger.warn("transaction synchronization not active, skipping rollback cleanup for objectKey={}", objectKey)
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCompletion(status: Int) {
+                if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                    deleteObjectQuietly(objectKey)
+                }
+            }
+        })
+    }
+
+    private fun enforceFileCountLimit(userId: Long, fileType: FileType) {
+        if (fileType == FileType.PROFILE_IMAGE) return
+
+        val currentCount = userFileRepository.countByUser_IdAndFileTypeAndDeletedAtIsNull(userId, fileType)
+        val maxFilesPerType = when (fileType) {
+            FileType.COURSE_MATERIAL -> MAX_COURSE_MATERIAL_FILES
+            else -> MAX_DOCUMENT_FILES_PER_TYPE
+        }
+        if (currentCount >= maxFilesPerType) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "${fileType.koreanLabel()} 파일은 최대 ${maxFilesPerType}개까지 보관할 수 있습니다."
+            )
+        }
+    }
+
     private fun validateUploadFile(
         fileType: FileType,
         file: MultipartFile,
@@ -359,6 +424,42 @@ class UserFileService(
         if (fileType == FileType.PROFILE_IMAGE) {
             val extensionValid = extension in ALLOWED_PROFILE_IMAGE_EXTENSIONS
             val contentTypeValid = contentType.isNotBlank() && contentType in ALLOWED_PROFILE_IMAGE_CONTENT_TYPES
+            if (!extensionValid || !contentTypeValid) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "프로필 이미지는 PNG/JPG/JPEG/WEBP 형식만 업로드할 수 있습니다."
+                )
+            }
+        }
+    }
+
+    private fun validateBinaryFileMetadata(fileType: FileType, originalFileName: String, contentType: String) {
+        val lowerName = originalFileName.trim().lowercase()
+        val normalizedContentType = contentType.trim().lowercase()
+        val extension = lowerName.substringAfterLast('.', "")
+
+        if (fileType == FileType.RESUME || fileType == FileType.INTRODUCE || fileType == FileType.PORTFOLIO || fileType == FileType.COURSE_MATERIAL) {
+            val targetExtensions = when (fileType) {
+                FileType.COURSE_MATERIAL -> ALLOWED_COURSE_MATERIAL_EXTENSIONS
+                else -> ALLOWED_INTERVIEW_DOCUMENT_EXTENSIONS
+            }
+            val targetContentTypes = when (fileType) {
+                FileType.COURSE_MATERIAL -> ALLOWED_COURSE_MATERIAL_CONTENT_TYPES
+                else -> ALLOWED_INTERVIEW_DOCUMENT_CONTENT_TYPES
+            }
+            val extensionValid = extension in targetExtensions
+            val contentTypeValid = normalizedContentType.isNotBlank() && normalizedContentType in targetContentTypes
+            if (!extensionValid || !contentTypeValid) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    buildDocumentTypeErrorMessage(targetExtensions, targetContentTypes)
+                )
+            }
+        }
+
+        if (fileType == FileType.PROFILE_IMAGE) {
+            val extensionValid = extension in ALLOWED_PROFILE_IMAGE_EXTENSIONS
+            val contentTypeValid = normalizedContentType.isNotBlank() && normalizedContentType in ALLOWED_PROFILE_IMAGE_CONTENT_TYPES
             if (!extensionValid || !contentTypeValid) {
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,

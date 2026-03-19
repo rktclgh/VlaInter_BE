@@ -12,6 +12,7 @@ data class GeminiProperties(
     val chatMaxRequestsPerMinute: Int = 30,
     val embeddingOutputDimensionality: Int = 768,
     val temperature: Double = 0.2,
+    val chatMaxOutputTokens: Int = 8192,
     val connectTimeoutSeconds: Long = 5,
     val readTimeoutSeconds: Long = 45
 )

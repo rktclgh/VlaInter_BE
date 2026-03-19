@@ -5,6 +5,8 @@ package com.cw.vlainter.domain.student.entity
 import com.cw.vlainter.domain.userFile.entity.UserFile
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
+import jakarta.persistence.EnumType
+import jakarta.persistence.Enumerated
 import jakarta.persistence.FetchType
 import jakarta.persistence.GeneratedValue
 import jakarta.persistence.GenerationType
@@ -31,6 +33,10 @@ class StudentCourseMaterial(
     @JoinColumn(name = "user_file_id", nullable = false)
     var userFile: UserFile,
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "source_type", nullable = false, length = 40)
+    var sourceType: StudentCourseMaterialSourceType = StudentCourseMaterialSourceType.UPLOAD,
+
     @Column(name = "created_at", nullable = false)
     var createdAt: OffsetDateTime = OffsetDateTime.now()
 ) {
@@ -38,4 +44,9 @@ class StudentCourseMaterial(
     fun prePersist() {
         createdAt = OffsetDateTime.now()
     }
+}
+
+enum class StudentCourseMaterialSourceType {
+    UPLOAD,
+    AI_GENERATED_SUMMARY
 }

@@ -7,7 +7,7 @@ import java.nio.charset.StandardCharsets
 @ConfigurationProperties(prefix = "app.jwt")
 data class JwtProperties(
     var issuer: String = "vlainter",
-    var accessTokenExpSeconds: Long = 900,
+    var accessTokenExpSeconds: Long = 7200,
     var refreshTokenExpSeconds: Long = 1209600,
     var accessSecret: String = "",
     var refreshSecret: String = ""
@@ -15,6 +15,8 @@ data class JwtProperties(
     @PostConstruct
     fun validate() {
         require(issuer.isNotBlank()) { "app.jwt.issuer 는 비어 있을 수 없습니다." }
+        require(accessTokenExpSeconds > 0) { "app.jwt.access-token-exp-seconds 는 0보다 커야 합니다." }
+        require(refreshTokenExpSeconds > 0) { "app.jwt.refresh-token-exp-seconds 는 0보다 커야 합니다." }
         require(accessSecret.isNotBlank()) { "app.jwt.access-secret 는 필수입니다." }
         require(refreshSecret.isNotBlank()) { "app.jwt.refresh-secret 는 필수입니다." }
         require(accessSecret.toByteArray(StandardCharsets.UTF_8).size >= 32) {

@@ -39,7 +39,7 @@ class User (
     @Column(nullable = false)
     var point: Long = 0,
 
-    @Enumerated(EnumType.STRING)
+    @Convert(converter = UserServiceModeConverter::class)
     @Column(name = "service_mode", length = 20)
     var serviceMode: UserServiceMode? = null,
 

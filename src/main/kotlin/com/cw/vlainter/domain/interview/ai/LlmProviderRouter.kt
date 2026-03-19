@@ -15,18 +15,23 @@ class LlmProviderRouter(
     private val providersByType: Map<AiProvider, LlmProviderClient> =
         providers.associateBy { it.provider }
 
-    fun generateJson(prompt: String, temperature: Double? = null): LlmGenerationResult {
+    fun generateJson(
+        prompt: String,
+        temperature: Double? = null,
+        maxOutputTokens: Int? = null
+    ): LlmGenerationResult {
         val targetProvider = providersByType[aiProperties.provider]
             ?: error("등록되지 않은 AI provider 입니다: ${aiProperties.provider}")
         check(targetProvider.isEnabled()) { "AI provider(${aiProperties.provider}) 설정이 비활성화되어 있습니다." }
         val bedrockProvider = providersByType[AiProvider.BEDROCK]
         logger.info(
-            "AI provider 라우팅 시작 primary={} geminiExhausted={} bedrockEnabled={} promptLength={} temperature={}",
+            "AI provider 라우팅 시작 primary={} geminiExhausted={} bedrockEnabled={} promptLength={} temperature={} maxOutputTokens={}",
             targetProvider.provider,
             aiRoutingContextHolder.isGeminiExhausted(),
             bedrockProvider?.isEnabled() == true,
             prompt.length,
-            temperature
+            temperature,
+            maxOutputTokens
         )
         if (targetProvider.provider == AiProvider.GEMINI &&
             aiRoutingContextHolder.isGeminiExhausted() &&
@@ -35,12 +40,12 @@ class LlmProviderRouter(
         ) {
             logger.warn("AI provider direct fallback 실행: gemini exhausted -> BEDROCK")
             aiRoutingContextHolder.markUsed(bedrockProvider.provider)
-            return bedrockProvider.generateJson(prompt, temperature)
+            return bedrockProvider.generateJson(prompt, temperature, maxOutputTokens)
         }
 
         aiRoutingContextHolder.markUsed(targetProvider.provider)
         return try {
-            targetProvider.generateJson(prompt, temperature)
+            targetProvider.generateJson(prompt, temperature, maxOutputTokens)
         } catch (ex: GeminiTransientException) {
             val fallbackProvider = bedrockProvider
             if (targetProvider.provider != AiProvider.GEMINI || fallbackProvider == null || !fallbackProvider.isEnabled()) {
@@ -55,7 +60,7 @@ class LlmProviderRouter(
                 ex.message
             )
             aiRoutingContextHolder.markUsed(fallbackProvider.provider)
-            fallbackProvider.generateJson(prompt, temperature)
+            fallbackProvider.generateJson(prompt, temperature, maxOutputTokens)
         } catch (ex: AiProviderAuthorizationException) {
             logger.error(
                 "AI provider 권한 오류 provider={} status={} reason={}",

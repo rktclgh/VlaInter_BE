@@ -29,7 +29,7 @@ class BedrockLlmProviderClient(
 
     override fun isEnabled(): Boolean = bedrockProperties.enabled
 
-    override fun generateJson(prompt: String, temperature: Double?): LlmGenerationResult {
+    override fun generateJson(prompt: String, temperature: Double?, maxOutputTokens: Int?): LlmGenerationResult {
         val modelId = bedrockProperties.modelId.trim()
         require(modelId.isNotBlank()) { "BEDROCK modelId is missing." }
         logger.info(
@@ -51,7 +51,7 @@ class BedrockLlmProviderClient(
                 )
             ),
             "inferenceConfig" to mapOf(
-                "maxTokens" to bedrockProperties.maxTokens,
+                "maxTokens" to (maxOutputTokens ?: bedrockProperties.maxTokens),
                 "temperature" to (temperature ?: bedrockProperties.temperature),
                 "topP" to bedrockProperties.topP
             )

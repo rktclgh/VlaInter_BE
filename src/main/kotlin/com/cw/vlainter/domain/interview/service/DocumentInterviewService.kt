@@ -85,6 +85,8 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest
 import software.amazon.awssdk.core.sync.RequestBody
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.OffsetDateTime
@@ -1352,7 +1354,7 @@ class DocumentInterviewService(
 
     private fun difficultyToRating(difficulty: QuestionDifficulty?): Int? {
         return when (difficulty) {
-            QuestionDifficulty.EASY -> 2
+            QuestionDifficulty.EASY -> 1
             QuestionDifficulty.MEDIUM -> 3
             QuestionDifficulty.HARD -> 5
             null -> null
@@ -1614,6 +1616,7 @@ class DocumentInterviewService(
                 "pdf" -> extractPdfText(bytes)
                 "docx" -> extractDocxText(bytes)
                 "pptx" -> extractPptxText(bytes)
+                "txt" -> extractPlainText(bytes, resolveDeclaredCharset(file.contentType))
                 "jpg", "jpeg", "png" -> extractImageTextWithOcr(bytes, format)
                 else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않는 문서 형식입니다.")
             }
@@ -1717,6 +1720,25 @@ class DocumentInterviewService(
             method = "PPTX_POI",
             ocrLanguages = null
         )
+    }
+
+    private fun extractPlainText(bytes: ByteArray, charset: Charset = StandardCharsets.UTF_8): ExtractedDocumentText {
+        return ExtractedDocumentText(
+            text = normalizeText(bytes.toString(charset)),
+            method = "TXT_RAW",
+            ocrLanguages = null
+        )
+    }
+
+    private fun resolveDeclaredCharset(contentType: String?): Charset {
+        val declaredCharset = contentType
+            ?.substringAfter("charset=", missingDelimiterValue = "")
+            ?.substringBefore(';')
+            ?.trim()
+            ?.trim('"', '\'')
+            .orEmpty()
+        if (declaredCharset.isBlank()) return StandardCharsets.UTF_8
+        return runCatching { Charset.forName(declaredCharset) }.getOrDefault(StandardCharsets.UTF_8)
     }
 
     private fun extractImageTextWithOcr(bytes: ByteArray, format: String): ExtractedDocumentText {
@@ -1985,10 +2007,12 @@ class DocumentInterviewService(
         val fromName = file.originalFileName.substringAfterLast('.', "").trim().lowercase()
         if (fromName.isNotBlank()) return fromName
 
-        return when (file.contentType?.trim()?.lowercase()) {
+        val mediaType = file.contentType?.substringBefore(';')?.trim()?.lowercase()
+        return when (mediaType) {
             "application/pdf" -> "pdf"
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> "docx"
             "application/vnd.openxmlformats-officedocument.presentationml.presentation" -> "pptx"
+            "text/plain" -> "txt"
             "image/jpeg", "image/jpg" -> "jpg"
             "image/png" -> "png"
             else -> ""
@@ -2000,6 +2024,7 @@ class DocumentInterviewService(
         "OCR_TESSERACT" -> "tesseract"
         "DOCX_POI" -> "poi-xwpf"
         "PPTX_POI" -> "poi-xslf"
+        "TXT_RAW" -> "plain-text"
         else -> "unknown"
     }
 
