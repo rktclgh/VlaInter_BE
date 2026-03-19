@@ -372,6 +372,30 @@ class AcademicSearchService(
         val collected = mutableListOf<ApiItemNode>()
         var pageNo = 1
         while (pageNo <= maxPages) {
+            val responseBody = fetchPublicUniversityMajorApiPage(
+                path = path,
+                pageNo = pageNo,
+                pageSize = pageSize,
+                extraParams = extraParams
+            ) ?: break
+
+            val pageItems = parseItems(responseBody)
+            if (pageItems.isEmpty()) break
+            collected += pageItems
+            if (pageItems.size < pageSize) break
+            pageNo += 1
+        }
+        return collected
+    }
+
+    private fun fetchPublicUniversityMajorApiPage(
+        path: String,
+        pageNo: Int,
+        pageSize: Int,
+        extraParams: (org.springframework.web.util.UriBuilder) -> org.springframework.web.util.UriBuilder
+    ): String? {
+        var attempt = 1
+        while (attempt <= MAX_REMOTE_REQUEST_ATTEMPTS) {
             val responseBody = runCatching {
                 restClient.get()
                     .uri { builder ->
@@ -389,20 +413,30 @@ class AcademicSearchService(
                     .orEmpty()
             }.onFailure { ex ->
                 logger.warn(
-                    "대학교/학과 공공데이터 API 호출 실패 path={} page={} reason={}",
+                    "대학교/학과 공공데이터 API 호출 실패 path={} page={} attempt={}/{} reason={}",
                     path,
                     pageNo,
+                    attempt,
+                    MAX_REMOTE_REQUEST_ATTEMPTS,
                     ex.rootMessage()
                 )
-            }.getOrElse { null } ?: break
+            }.getOrElse { null }
 
-            val pageItems = parseItems(responseBody)
-            if (pageItems.isEmpty()) break
-            collected += pageItems
-            if (pageItems.size < pageSize) break
-            pageNo += 1
+            if (responseBody != null) {
+                return responseBody
+            }
+
+            if (attempt < MAX_REMOTE_REQUEST_ATTEMPTS) {
+                try {
+                    Thread.sleep(REMOTE_RETRY_DELAY_MS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return null
+                }
+            }
+            attempt += 1
         }
-        return collected
+        return null
     }
 
     private fun parseItems(jsonBody: String): List<ApiItemNode> {
@@ -607,5 +641,7 @@ class AcademicSearchService(
         private const val MAX_REMOTE_SEARCH_PAGES = 5
         private const val QUICK_REMOTE_UNIVERSITY_PAGES = 1
         private const val QUICK_REMOTE_DEPARTMENT_PAGES = 1
+        private const val MAX_REMOTE_REQUEST_ATTEMPTS = 3
+        private const val REMOTE_RETRY_DELAY_MS = 250L
     }
 }

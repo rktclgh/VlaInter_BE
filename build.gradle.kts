@@ -44,6 +44,7 @@ dependencies {
 	implementation("org.apache.commons:commons-lang3:3.18.0")
 	implementation("io.jsonwebtoken:jjwt-api:0.12.6")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
+	implementation("io.github.thoroldvix:youtube-transcript-api:0.4.0")
 	developmentOnly("org.springframework.boot:spring-boot-devtools")
 	runtimeOnly("com.h2database:h2")
 	runtimeOnly("org.postgresql:postgresql")

@@ -1,8 +1,10 @@
 package com.cw.vlainter.domain.student.service
 
 import com.cw.vlainter.domain.student.dto.CreateStudentCourseRequest
+import com.cw.vlainter.domain.student.dto.CreateStudentCourseSummaryPreviewRequest
 import com.cw.vlainter.domain.student.dto.CreateStudentCourseSummaryDocumentRequest
 import com.cw.vlainter.domain.student.dto.CreateStudentExamSessionRequest
+import com.cw.vlainter.domain.student.dto.CreateStudentCourseYoutubeMaterialRequest
 import com.cw.vlainter.domain.student.dto.CreateStudentWrongAnswerSetRequest
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialDownloadResponse
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialKind
@@ -10,7 +12,11 @@ import com.cw.vlainter.domain.student.dto.StudentCourseMaterialResponse
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialVisualAssetResponse
 import com.cw.vlainter.domain.student.dto.StudentCourseResponse
 import com.cw.vlainter.domain.student.dto.StudentCourseSummaryDocumentFormat
+import com.cw.vlainter.domain.student.dto.StudentCourseSummaryPreviewResponse
+import com.cw.vlainter.domain.student.dto.StudentCourseSummaryPreviewSubtopic
+import com.cw.vlainter.domain.student.dto.StudentCourseSummaryPreviewTopic
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialVisualAssetType
+import com.cw.vlainter.domain.student.dto.StudentCourseYoutubeSummaryJobResponse
 import com.cw.vlainter.domain.student.dto.StudentExamGenerationMode
 import com.cw.vlainter.domain.student.dto.StudentExamQuestionStyle
 import com.cw.vlainter.domain.student.dto.StudentExamQuestionResponse
@@ -32,11 +38,14 @@ import com.cw.vlainter.domain.interview.ai.PastExamPracticeQuestionCandidate
 import com.cw.vlainter.domain.interview.entity.DocChunkEmbedding
 import com.cw.vlainter.domain.student.entity.StudentCourse
 import com.cw.vlainter.domain.student.entity.StudentCourseMaterial
+import com.cw.vlainter.domain.student.entity.StudentCourseMaterialSourceType
 import com.cw.vlainter.domain.student.entity.StudentExamQuestion
 import com.cw.vlainter.domain.student.entity.StudentExamSession
 import com.cw.vlainter.domain.student.entity.StudentExamSessionStatus
 import com.cw.vlainter.domain.student.entity.StudentWrongAnswerItem
 import com.cw.vlainter.domain.student.entity.StudentWrongAnswerSet
+import com.cw.vlainter.domain.student.entity.StudentCourseYoutubeSummaryJob
+import com.cw.vlainter.domain.student.entity.StudentCourseYoutubeSummaryJobStatus
 import com.cw.vlainter.domain.student.repository.StudentExamQuestionRepository
 import com.cw.vlainter.domain.student.repository.StudentExamSessionRepository
 import com.cw.vlainter.domain.student.repository.StudentCourseMaterialRepository
@@ -44,6 +53,7 @@ import com.cw.vlainter.domain.student.repository.StudentCourseRepository
 import com.cw.vlainter.domain.student.repository.StudentWrongAnswerItemRepository
 import com.cw.vlainter.domain.student.repository.StudentWrongAnswerSetRepository
 import com.cw.vlainter.domain.student.repository.StudentCourseMaterialVisualAssetRepository
+import com.cw.vlainter.domain.student.repository.StudentCourseYoutubeSummaryJobRepository
 import com.cw.vlainter.domain.interview.repository.DocChunkEmbeddingRepository
 import com.cw.vlainter.domain.interview.entity.DocumentIngestionJob
 import com.cw.vlainter.domain.interview.entity.DocumentIngestionStatus
@@ -66,18 +76,26 @@ import org.apache.pdfbox.pdmodel.font.PDType0Font
 import org.apache.poi.xwpf.usermodel.ParagraphAlignment
 import org.apache.poi.xwpf.usermodel.XWPFDocument
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.STShd
+import org.springframework.beans.factory.ObjectProvider
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.core.io.ClassPathResource
+import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.multipart.MultipartFile
 import org.springframework.web.server.ResponseStatusException
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 import java.awt.Color
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.text.Normalizer
 import java.time.OffsetDateTime
+import java.util.concurrent.RejectedExecutionException
 
 @Service
 class StudentCourseService(
@@ -88,18 +106,33 @@ class StudentCourseService(
     private val studentWrongAnswerSetRepository: StudentWrongAnswerSetRepository,
     private val studentWrongAnswerItemRepository: StudentWrongAnswerItemRepository,
     private val studentCourseMaterialVisualAssetRepository: StudentCourseMaterialVisualAssetRepository,
+    private val studentCourseYoutubeSummaryJobRepository: StudentCourseYoutubeSummaryJobRepository,
     private val documentIngestionJobRepository: DocumentIngestionJobRepository,
     private val docChunkEmbeddingRepository: DocChunkEmbeddingRepository,
     private val documentInterviewService: DocumentInterviewService,
     private val interviewAiOrchestrator: InterviewAiOrchestrator,
+    private val youTubeTranscriptService: YouTubeTranscriptService,
     private val userRepository: UserRepository,
     private val userGeminiApiKeyService: UserGeminiApiKeyService,
-    private val userFileService: UserFileService
+    private val userFileService: UserFileService,
+    private val selfProvider: ObjectProvider<StudentCourseService>
 ) {
     private companion object {
         const val PAST_EXAM_FILE_NAME_PREFIX = "__STUDENT_PAST_EXAM__"
         const val DEFAULT_QUESTION_MAX_SCORE = 20
+        const val AI_SUMMARY_FILE_NAME_PREFIX = "[AI 요약본] "
         const val SUMMARY_SNIPPET_SAMPLE_SIZE = 8
+        const val EXAM_SNIPPET_SAMPLE_SIZE = 6
+        const val YOUTUBE_TRANSCRIPT_REFINE_CHUNK_CHARS = 9000
+        const val YOUTUBE_TRANSCRIPT_REFINE_MAX_CHUNKS = 3
+        const val YOUTUBE_SUMMARY_CHUNK_CHARS = 5000
+        const val YOUTUBE_SUMMARY_MAX_SNIPPETS = 8
+        val ACTIVE_YOUTUBE_SUMMARY_STATUSES = setOf(
+            StudentCourseYoutubeSummaryJobStatus.QUEUED,
+            StudentCourseYoutubeSummaryJobStatus.FETCHING_CAPTIONS,
+            StudentCourseYoutubeSummaryJobStatus.REFINING_TRANSCRIPT,
+            StudentCourseYoutubeSummaryJobStatus.GENERATING_SUMMARY
+        )
         val ACADEMIC_EMPHASIS_PATTERNS = listOf(
             Regex("""\b(?:O|Omega|Theta)\s*\([^)]*\)"""),
             Regex("""\b(?:T|f|dp)\s*\([^)]*\)"""),
@@ -140,6 +173,7 @@ class StudentCourseService(
 
     private val logger = LoggerFactory.getLogger(javaClass)
     private val objectMapper = ObjectMapper()
+    private class YoutubeSummaryJobCanceledException(message: String) : RuntimeException(message)
 
     @Transactional(readOnly = true)
     fun getMyCourses(principal: AuthPrincipal): List<StudentCourseResponse> {
@@ -217,7 +251,22 @@ class StudentCourseService(
             studentCourseMaterialRepository.deleteAll(materials)
         }
 
+        val youtubeSummaryJobs = studentCourseYoutubeSummaryJobRepository.findAllByCourseIdAndUserIdOrderByCreatedAtDesc(course.id, user.id)
+        val activeYoutubeSummaryJobs = youtubeSummaryJobs.filter { it.status in ACTIVE_YOUTUBE_SUMMARY_STATUSES }
+        if (activeYoutubeSummaryJobs.isNotEmpty()) {
+            val canceledAt = OffsetDateTime.now()
+            activeYoutubeSummaryJobs.forEach { job ->
+                job.status = StudentCourseYoutubeSummaryJobStatus.CANCELED
+                job.errorMessage = "과목이 삭제되어 유튜브 요약본 작업을 취소했습니다."
+                job.finishedAt = canceledAt
+            }
+            studentCourseYoutubeSummaryJobRepository.saveAll(activeYoutubeSummaryJobs)
+        }
+
         studentCourseRepository.delete(course)
+        studentCourseYoutubeSummaryJobRepository.deleteAll(
+            youtubeSummaryJobs.filter { it.status !in ACTIVE_YOUTUBE_SUMMARY_STATUSES }
+        )
 
         materialFileIds.forEach { fileId ->
             userFileService.deleteOwnedFile(user.id, fileId)
@@ -230,6 +279,38 @@ class StudentCourseService(
         val course = getOwnedCourse(user.id, courseId)
         return studentCourseMaterialRepository.findAllByCourse_IdOrderByCreatedAtDesc(course.id)
             .map { it.toResponse() }
+    }
+
+    @Transactional(readOnly = true)
+    fun getYoutubeCourseMaterialJobs(
+        principal: AuthPrincipal,
+        courseId: Long
+    ): List<StudentCourseYoutubeSummaryJobResponse> {
+        val user = getValidatedStudentUser(principal)
+        val course = getOwnedCourse(user.id, courseId)
+        return studentCourseYoutubeSummaryJobRepository.findAllByCourseIdAndUserIdOrderByCreatedAtDesc(course.id, user.id)
+            .filter { it.status != StudentCourseYoutubeSummaryJobStatus.CANCELED }
+            .map { it.toResponse() }
+    }
+
+    @Transactional
+    fun deleteYoutubeCourseMaterialJob(
+        principal: AuthPrincipal,
+        courseId: Long,
+        jobId: Long
+    ) {
+        val user = getValidatedStudentUser(principal)
+        val course = getOwnedCourse(user.id, courseId)
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "유튜브 요약본 작업을 찾을 수 없습니다.") }
+        if (job.courseId != course.id || job.userId != user.id) {
+            throw ResponseStatusException(HttpStatus.NOT_FOUND, "유튜브 요약본 작업을 찾을 수 없습니다.")
+        }
+        if (job.status in ACTIVE_YOUTUBE_SUMMARY_STATUSES) {
+            selfProvider.getObject().cancelYoutubeSummaryJob(job.id, "사용자가 유튜브 요약본 작업을 취소했습니다.")
+            return
+        }
+        studentCourseYoutubeSummaryJobRepository.delete(job)
     }
 
     @Transactional
@@ -262,6 +343,255 @@ class StudentCourseService(
             )
         )
         return saved.toResponse()
+    }
+
+    @Transactional
+    fun uploadYoutubeCourseMaterial(
+        principal: AuthPrincipal,
+        courseId: Long,
+        request: CreateStudentCourseYoutubeMaterialRequest
+    ): StudentCourseYoutubeSummaryJobResponse {
+        val user = getValidatedStudentUser(principal)
+        userGeminiApiKeyService.assertGeminiApiKeyConfigured(user.id)
+        val course = getOwnedCourse(user.id, courseId)
+        val activeJobExists = studentCourseYoutubeSummaryJobRepository.existsByCourseIdAndUserIdAndStatusIn(
+            courseId = course.id,
+            userId = user.id,
+            statuses = ACTIVE_YOUTUBE_SUMMARY_STATUSES
+        )
+        if (activeJobExists) {
+            throw ResponseStatusException(
+                HttpStatus.CONFLICT,
+                "유튜브 요약본 생성 작업이 이미 진행 중입니다. 완료된 뒤 다시 시도해 주세요."
+            )
+        }
+
+        val job = try {
+            studentCourseYoutubeSummaryJobRepository.save(
+                StudentCourseYoutubeSummaryJob(
+                    courseId = course.id,
+                    userId = user.id,
+                    universityName = user.universityName!!.trim(),
+                    departmentName = user.departmentName!!.trim(),
+                    courseName = course.courseName,
+                    professorName = course.professorName,
+                    youtubeUrl = request.youtubeUrl.trim(),
+                    format = request.format,
+                    status = StudentCourseYoutubeSummaryJobStatus.QUEUED
+                )
+            )
+        } catch (_: DataIntegrityViolationException) {
+            throw ResponseStatusException(
+                HttpStatus.CONFLICT,
+                "유튜브 요약본 생성 작업이 이미 진행 중입니다. 완료된 뒤 다시 시도해 주세요."
+            )
+        }
+
+        runAfterCommit {
+            try {
+                selfProvider.getObject().processYoutubeSummaryJobAsync(job.id)
+            } catch (ex: RejectedExecutionException) {
+                logger.warn("유튜브 요약본 작업 제출 거부 jobId={} reason={}", job.id, ex.message)
+                selfProvider.getObject().markYoutubeSummaryJobFailed(job.id, "유튜브 요약본 작업 대기열이 가득 찼습니다. 잠시 후 다시 시도해 주세요.")
+            } catch (ex: Exception) {
+                logger.warn("유튜브 요약본 작업 제출 실패 jobId={} reason={}", job.id, ex.message)
+                selfProvider.getObject().markYoutubeSummaryJobFailed(job.id, "유튜브 요약본 작업 실행을 시작하지 못했습니다.")
+            }
+        }
+        return job.toResponse()
+    }
+
+    @Async("studentCourseSummaryExecutor")
+    fun processYoutubeSummaryJobAsync(jobId: Long) {
+        runCatching { selfProvider.getObject().processYoutubeSummaryJobSync(jobId) }
+            .onFailure { ex ->
+                if (ex is YoutubeSummaryJobCanceledException) {
+                    logger.info("유튜브 요약본 작업 취소 반영 jobId={} reason={}", jobId, ex.message)
+                    return@onFailure
+                }
+                logger.warn("유튜브 요약본 비동기 처리 실패 jobId={} reason={}", jobId, ex.message)
+                selfProvider.getObject().markYoutubeSummaryJobFailed(jobId, ex.message)
+            }
+    }
+
+    fun processYoutubeSummaryJobSync(jobId: Long) {
+        val job = selfProvider.getObject().loadYoutubeSummaryJobForProcessing(jobId)
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.READY) return
+
+        selfProvider.getObject().markYoutubeSummaryJobFetching(jobId)
+
+        val transcript = youTubeTranscriptService.extractTranscript(job.youtubeUrl)
+        selfProvider.getObject().assertYoutubeSummaryJobNotCanceled(jobId)
+        selfProvider.getObject().saveYoutubeSummaryJobTranscript(jobId, transcript)
+
+        selfProvider.getObject().updateYoutubeSummaryJobStatus(jobId, StudentCourseYoutubeSummaryJobStatus.REFINING_TRANSCRIPT)
+
+        val refinedTranscript = refineYoutubeTranscript(job, transcript)
+        if (refinedTranscript.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "영상 자막 후보정 결과가 비어 있습니다.")
+        }
+        selfProvider.getObject().assertYoutubeSummaryJobNotCanceled(jobId)
+
+        selfProvider.getObject().updateYoutubeSummaryJobStatus(jobId, StudentCourseYoutubeSummaryJobStatus.GENERATING_SUMMARY)
+
+        val summary = userGeminiApiKeyService.withUserApiKey(job.userId) {
+            interviewAiOrchestrator.generateCourseMaterialSummary(
+                universityName = job.universityName,
+                departmentName = job.departmentName,
+                courseName = job.courseName,
+                professorName = job.professorName,
+                sources = buildYoutubeSummarySources(transcript.title, refinedTranscript),
+                language = InterviewLanguage.KO
+            )
+        }
+        selfProvider.getObject().assertYoutubeSummaryJobNotCanceled(jobId)
+        selfProvider.getObject().saveYoutubeSummaryJobSummary(jobId, summary)
+
+        val course = studentCourseRepository.findById(job.courseId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "과목을 찾을 수 없습니다.") }
+        val displayFileName = buildYoutubeSummaryDisplayFileName(
+            summaryTitle = summary.title,
+            videoTitle = transcript.title,
+            format = job.format
+        )
+        val documentBytes = when (job.format) {
+            StudentCourseSummaryDocumentFormat.DOCX -> createSummaryDocx(summary, course, listOf(transcript.title), InterviewLanguage.KO)
+            StudentCourseSummaryDocumentFormat.PDF -> createSummaryPdf(summary, course, listOf(transcript.title), InterviewLanguage.KO)
+        }
+        val contentType = when (job.format) {
+            StudentCourseSummaryDocumentFormat.DOCX -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            StudentCourseSummaryDocumentFormat.PDF -> "application/pdf"
+        }
+        val userFile = userFileService.createOwnedBinaryFile(
+            userId = job.userId,
+            fileType = FileType.COURSE_MATERIAL,
+            originalFileName = displayFileName,
+            contentType = contentType,
+            bytes = documentBytes,
+            storedDisplayFileName = encodeStoredMaterialFileName(displayFileName, StudentCourseMaterialKind.LECTURE_MATERIAL)
+        )
+        selfProvider.getObject().assertYoutubeSummaryJobNotCanceled(jobId)
+        try {
+            selfProvider.getObject().completeYoutubeSummaryJob(jobId, course.id, job.userId, userFile.id)
+        } catch (ex: YoutubeSummaryJobCanceledException) {
+            userFileService.deleteOwnedFile(job.userId, userFile.id)
+            throw ex
+        }
+    }
+
+    @Transactional
+    fun markYoutubeSummaryJobFailed(jobId: Long, message: String?) {
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId).orElse(null) ?: return
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) return
+        job.status = StudentCourseYoutubeSummaryJobStatus.FAILED
+        job.errorMessage = message?.trim()?.takeIf { it.isNotBlank() } ?: "유튜브 요약본 생성에 실패했습니다."
+        job.finishedAt = OffsetDateTime.now()
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    fun loadYoutubeSummaryJobForProcessing(jobId: Long): StudentCourseYoutubeSummaryJob {
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId)
+            .orElseThrow { YoutubeSummaryJobCanceledException("유튜브 요약본 작업을 찾을 수 없습니다.") }
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            throw YoutubeSummaryJobCanceledException(job.errorMessage ?: "유튜브 요약본 작업이 취소되었습니다.")
+        }
+        return job
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun markYoutubeSummaryJobFetching(jobId: Long) {
+        val job = loadYoutubeSummaryJobForUpdate(jobId)
+        job.status = StudentCourseYoutubeSummaryJobStatus.FETCHING_CAPTIONS
+        job.startedAt = job.startedAt ?: OffsetDateTime.now()
+        job.finishedAt = null
+        job.errorMessage = null
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun saveYoutubeSummaryJobTranscript(jobId: Long, transcript: ExtractedYouTubeTranscript) {
+        val job = loadYoutubeSummaryJobForUpdate(jobId)
+        job.videoId = transcript.videoId
+        job.videoTitle = transcript.title
+        job.transcriptLanguage = transcript.transcriptLanguage
+        job.autoGeneratedCaption = transcript.autoGenerated
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun updateYoutubeSummaryJobStatus(jobId: Long, status: StudentCourseYoutubeSummaryJobStatus) {
+        val job = loadYoutubeSummaryJobForUpdate(jobId)
+        job.status = status
+        if (job.startedAt == null) {
+            job.startedAt = OffsetDateTime.now()
+        }
+        if (status != StudentCourseYoutubeSummaryJobStatus.FAILED && status != StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            job.errorMessage = null
+            job.finishedAt = null
+        }
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun saveYoutubeSummaryJobSummary(jobId: Long, summary: GeneratedCourseMaterialSummary) {
+        val job = loadYoutubeSummaryJobForUpdate(jobId)
+        job.summaryTitle = summary.title
+        job.summaryJson = objectMapper.writeValueAsString(summary)
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun completeYoutubeSummaryJob(jobId: Long, courseId: Long, userId: Long, userFileId: Long) {
+        val job = loadYoutubeSummaryJobForUpdate(jobId)
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            throw YoutubeSummaryJobCanceledException(job.errorMessage ?: "유튜브 요약본 작업이 취소되었습니다.")
+        }
+        val course = studentCourseRepository.findById(courseId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "과목을 찾을 수 없습니다.") }
+        val userFile = userFileService.loadOwnedFile(userId, userFileId)
+        val savedMaterial = studentCourseMaterialRepository.save(
+            StudentCourseMaterial(
+                course = course,
+                userFile = userFile,
+                sourceType = StudentCourseMaterialSourceType.AI_GENERATED_SUMMARY
+            )
+        )
+        job.generatedMaterialId = savedMaterial.id
+        job.status = StudentCourseYoutubeSummaryJobStatus.READY
+        job.finishedAt = OffsetDateTime.now()
+        job.errorMessage = null
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun cancelYoutubeSummaryJob(jobId: Long, message: String?) {
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId).orElse(null) ?: return
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.READY || job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            return
+        }
+        job.status = StudentCourseYoutubeSummaryJobStatus.CANCELED
+        job.errorMessage = message?.trim()?.takeIf { it.isNotBlank() } ?: "유튜브 요약본 작업이 취소되었습니다."
+        job.finishedAt = OffsetDateTime.now()
+        studentCourseYoutubeSummaryJobRepository.save(job)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    fun assertYoutubeSummaryJobNotCanceled(jobId: Long) {
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId)
+            .orElseThrow { YoutubeSummaryJobCanceledException("유튜브 요약본 작업을 찾을 수 없습니다.") }
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            throw YoutubeSummaryJobCanceledException(job.errorMessage ?: "유튜브 요약본 작업이 취소되었습니다.")
+        }
+    }
+
+    private fun loadYoutubeSummaryJobForUpdate(jobId: Long): StudentCourseYoutubeSummaryJob {
+        val job = studentCourseYoutubeSummaryJobRepository.findById(jobId)
+            .orElseThrow { YoutubeSummaryJobCanceledException("유튜브 요약본 작업을 찾을 수 없습니다.") }
+        if (job.status == StudentCourseYoutubeSummaryJobStatus.CANCELED) {
+            throw YoutubeSummaryJobCanceledException(job.errorMessage ?: "유튜브 요약본 작업이 취소되었습니다.")
+        }
+        return job
     }
 
     @Transactional
@@ -325,18 +655,66 @@ class StudentCourseService(
         courseId: Long,
         request: CreateStudentCourseSummaryDocumentRequest
     ): UserFileService.FileContentResource {
+        val (course, selectedMaterials, summary) = createCourseSummary(
+            principal = principal,
+            courseId = courseId,
+            selectedMaterialIds = request.selectedMaterialIds,
+            language = request.language
+        )
+        val sourceFileNames = selectedMaterials.map { decodeDisplayMaterialFileName(it.userFile.fileName) }
+        val fileName = buildSummaryDocumentFileName(course, selectedMaterials.size, request.format)
+        return when (request.format) {
+            StudentCourseSummaryDocumentFormat.DOCX -> UserFileService.FileContentResource(
+                bytes = createSummaryDocx(summary, course, sourceFileNames, request.language),
+                contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                fileName = fileName
+            )
+            StudentCourseSummaryDocumentFormat.PDF -> UserFileService.FileContentResource(
+                bytes = createSummaryPdf(summary, course, sourceFileNames, request.language),
+                contentType = "application/pdf",
+                fileName = fileName
+            )
+        }
+    }
+
+    @Transactional(readOnly = true)
+    fun generateCourseSummaryPreview(
+        principal: AuthPrincipal,
+        courseId: Long,
+        request: CreateStudentCourseSummaryPreviewRequest
+    ): StudentCourseSummaryPreviewResponse {
+        val (_, selectedMaterials, summary) = createCourseSummary(
+            principal = principal,
+            courseId = courseId,
+            selectedMaterialIds = request.selectedMaterialIds,
+            language = request.language
+        )
+        return summary.toPreviewResponse(
+            sourceFileNames = selectedMaterials.map { decodeDisplayMaterialFileName(it.userFile.fileName) }
+        )
+    }
+
+    private fun createCourseSummary(
+        principal: AuthPrincipal,
+        courseId: Long,
+        selectedMaterialIds: List<Long>,
+        language: InterviewLanguage
+    ): Triple<StudentCourse, List<StudentCourseMaterial>, GeneratedCourseMaterialSummary> {
         val user = getValidatedStudentUser(principal)
         val course = getOwnedCourse(user.id, courseId)
         userGeminiApiKeyService.assertGeminiApiKeyConfigured(user.id)
 
         val materialsById = studentCourseMaterialRepository.findAllByCourse_IdOrderByCreatedAtDesc(course.id)
             .associateBy(StudentCourseMaterial::id)
-        val selectedMaterials = request.selectedMaterialIds.distinct().map { materialId ->
+        val selectedMaterials = selectedMaterialIds.distinct().map { materialId ->
             materialsById[materialId]
                 ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "선택한 강의자료를 찾을 수 없습니다.")
         }
         if (selectedMaterials.any { resolveMaterialKind(it) != StudentCourseMaterialKind.LECTURE_MATERIAL }) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "요약본은 강의자료만 선택할 수 있습니다.")
+        }
+        if (selectedMaterials.any { it.sourceType != StudentCourseMaterialSourceType.UPLOAD }) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "AI가 생성한 요약본은 다시 요약 자료로 선택할 수 없습니다.")
         }
         val notReadyMaterial = selectedMaterials.firstOrNull {
             documentIngestionJobRepository.findTopByDocumentFileIdOrderByRequestedAtDesc(it.userFile.id)?.status != DocumentIngestionStatus.READY
@@ -354,10 +732,9 @@ class StudentCourseService(
         }
 
         logger.info(
-            "학생 강의자료 요약 생성 요청 courseId={} userId={} format={} selectedMaterials={} sources={} snippets={}",
+            "학생 강의자료 요약 생성 요청 courseId={} userId={} selectedMaterials={} sources={} snippets={}",
             course.id,
             user.id,
-            request.format,
             selectedMaterials.size,
             summarySources.size,
             summarySources.sumOf { it.snippets.size }
@@ -370,22 +747,10 @@ class StudentCourseService(
                 courseName = course.courseName,
                 professorName = course.professorName,
                 sources = summarySources,
-                language = InterviewLanguage.KO
+                language = language
             )
         }
-        val fileName = buildSummaryDocumentFileName(course, selectedMaterials.size, request.format)
-        return when (request.format) {
-            StudentCourseSummaryDocumentFormat.DOCX -> UserFileService.FileContentResource(
-                bytes = createSummaryDocx(summary, course, selectedMaterials.map { decodeDisplayMaterialFileName(it.userFile.fileName) }),
-                contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                fileName = fileName
-            )
-            StudentCourseSummaryDocumentFormat.PDF -> UserFileService.FileContentResource(
-                bytes = createSummaryPdf(summary, course, selectedMaterials.map { decodeDisplayMaterialFileName(it.userFile.fileName) }),
-                contentType = "application/pdf",
-                fileName = fileName
-            )
-        }
+        return Triple(course, selectedMaterials, summary)
     }
 
     @Transactional
@@ -397,6 +762,9 @@ class StudentCourseService(
         val user = getValidatedStudentUser(principal)
         val course = getOwnedCourse(user.id, courseId)
         val material = getOwnedMaterial(course.id, materialId)
+        if (material.sourceType != StudentCourseMaterialSourceType.UPLOAD) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "AI가 생성한 요약본은 다시 분석할 수 없습니다.")
+        }
         if (!userGeminiApiKeyService.hasGeminiApiKey(user)) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Gemini API 키를 먼저 등록해 주세요.")
         }
@@ -439,6 +807,7 @@ class StudentCourseService(
         val materials = studentCourseMaterialRepository.findAllByCourse_IdOrderByCreatedAtDesc(course.id)
         val readyLectureMaterials = materials.filter { material ->
             resolveMaterialKind(material) == StudentCourseMaterialKind.LECTURE_MATERIAL &&
+                material.sourceType == StudentCourseMaterialSourceType.UPLOAD &&
                 documentIngestionJobRepository.findTopByDocumentFileIdOrderByRequestedAtDesc(material.userFile.id)?.status == DocumentIngestionStatus.READY
         }
         val usesLectureMaterials = request.generationMode != StudentExamGenerationMode.PAST_EXAM_PRACTICE
@@ -452,13 +821,11 @@ class StudentCourseService(
         val selectedPastExamMaterials = resolveSelectedPastExamMaterials(request, readyPastExamMaterials)
         validateSessionCreationRequest(request, readyPastExamMaterials.isNotEmpty(), selectedPastExamMaterials.isNotEmpty())
 
-        val effectiveDifficultyLevel = if (
-            request.generationMode == StudentExamGenerationMode.PAST_EXAM ||
-            request.generationMode == StudentExamGenerationMode.PAST_EXAM_PRACTICE
-        ) {
-            null
-        } else {
-            request.difficultyLevel
+        val effectiveDifficultyLevel = when (request.generationMode) {
+            StudentExamGenerationMode.PAST_EXAM,
+            StudentExamGenerationMode.PAST_EXAM_PRACTICE -> null
+            StudentExamGenerationMode.FAST_REVIEW -> 1
+            else -> request.difficultyLevel
         }
         val effectiveQuestionStyles = normalizeRequestedQuestionStyles(request)
         logger.info(
@@ -481,6 +848,7 @@ class StudentCourseService(
                 userId = user.id,
                 status = StudentExamSessionStatus.READY,
                 generationMode = request.generationMode,
+                language = request.language,
                 difficultyLevel = effectiveDifficultyLevel,
                 questionStylesCsv = questionStylesCsv,
                 questionCount = request.questionCount,
@@ -511,7 +879,8 @@ class StudentCourseService(
                     questionCount = request.questionCount,
                     generationMode = request.generationMode,
                     difficultyLevel = effectiveDifficultyLevel,
-                    questionStyles = effectiveQuestionStyles
+                    questionStyles = effectiveQuestionStyles,
+                    language = request.language
                 )
             }
         } catch (ex: GeminiTransientException) {
@@ -590,6 +959,7 @@ class StudentCourseService(
         val user = getValidatedStudentUser(principal)
         val set = getOwnedWrongAnswerSet(user.id, setId)
         val course = getOwnedCourse(user.id, set.courseId)
+        val sourceSession = getOwnedSession(user.id, set.sessionId)
         val items = studentWrongAnswerItemRepository.findAllBySetIdOrderByQuestionOrderAsc(set.id)
         if (items.isEmpty()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "오답노트에 저장된 문제가 없습니다.")
@@ -601,6 +971,7 @@ class StudentCourseService(
                 userId = user.id,
                 status = StudentExamSessionStatus.READY,
                 generationMode = StudentExamGenerationMode.WRONG_ANSWER_RETEST,
+                language = sourceSession.language,
                 difficultyLevel = null,
                 questionStylesCsv = encodeQuestionStyles(items.map(StudentWrongAnswerItem::questionStyle).distinct()),
                 questionCount = items.size,
@@ -671,12 +1042,15 @@ class StudentCourseService(
             if (trimmedAnswer.isBlank()) {
                 question.answerText = null
                 question.score = 0
-                question.feedback = "미응답입니다. 다음 재시험에서는 핵심 개념과 풀이 과정을 꼭 작성해 주세요."
+                question.feedback = when (session.language) {
+                    InterviewLanguage.EN -> "No answer submitted. In the next retest, write the core concept and your reasoning more explicitly."
+                    InterviewLanguage.KO -> "미응답입니다. 다음 재시험에서는 핵심 개념과 풀이 과정을 꼭 작성해 주세요."
+                }
                 question.isCorrect = false
                 question.answeredAt = answeredAt
                 return@forEach
             }
-            val evaluation = evaluationsByQuestionId[question.id] ?: evaluateAnswer(question, trimmedAnswer)
+            val evaluation = evaluationsByQuestionId[question.id] ?: evaluateAnswer(question, trimmedAnswer, session.language)
             question.answerText = trimmedAnswer
             question.score = evaluation.score.coerceIn(0, question.maxScore)
             question.feedback = evaluation.feedback
@@ -823,6 +1197,185 @@ class StudentCourseService(
         }
     }
 
+    private fun buildYoutubeSummaryDisplayFileName(
+        summaryTitle: String,
+        videoTitle: String,
+        format: StudentCourseSummaryDocumentFormat
+    ): String {
+        val baseName = normalizeDisplayText(summaryTitle)
+            .replace(Regex("[^0-9A-Za-z가-힣._ -]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .ifBlank {
+                normalizeDisplayText(videoTitle)
+                    .replace(Regex("[^0-9A-Za-z가-힣._ -]+"), " ")
+                    .replace(Regex("\\s+"), " ")
+                    .trim()
+                    .ifBlank { "youtube_summary" }
+            }
+        val extension = when (format) {
+            StudentCourseSummaryDocumentFormat.DOCX -> "docx"
+            StudentCourseSummaryDocumentFormat.PDF -> "pdf"
+        }
+        return "$AI_SUMMARY_FILE_NAME_PREFIX$baseName.$extension"
+    }
+
+    private fun refineYoutubeTranscript(
+        job: StudentCourseYoutubeSummaryJob,
+        transcript: ExtractedYouTubeTranscript
+    ): String {
+        val chunks = chunkTranscriptForAi(
+            text = transcript.transcriptText,
+            maxChunkChars = YOUTUBE_TRANSCRIPT_REFINE_CHUNK_CHARS,
+            maxChunks = YOUTUBE_TRANSCRIPT_REFINE_MAX_CHUNKS
+        )
+        if (chunks.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "영상 자막을 읽었지만 분석 가능한 텍스트가 비어 있습니다.")
+        }
+
+        return userGeminiApiKeyService.withUserApiKey(job.userId) {
+            chunks.mapIndexed { index, chunk ->
+                runCatching {
+                    interviewAiOrchestrator.refineCourseTranscript(
+                        universityName = job.universityName,
+                        departmentName = job.departmentName,
+                        courseName = job.courseName,
+                        professorName = job.professorName,
+                        transcriptChunk = chunk,
+                        language = InterviewLanguage.KO
+                    )
+                }.getOrElse { ex ->
+                    logger.warn(
+                        "유튜브 자막 후보정 fallback 사용 jobId={} chunkIndex={} reason={}",
+                        job.id,
+                        index,
+                        ex.message
+                    )
+                    normalizeDisplayText(chunk)
+                }
+            }
+                .joinToString("\n\n")
+                .trim()
+        }
+    }
+
+    private fun buildYoutubeSummarySources(
+        videoTitle: String,
+        refinedTranscript: String
+    ): List<CourseMaterialSummarySource> {
+        val chunks = chunkTranscriptForAi(
+            text = refinedTranscript,
+            maxChunkChars = YOUTUBE_SUMMARY_CHUNK_CHARS
+        )
+        if (chunks.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "후보정된 자막에서 요약 가능한 텍스트를 만들지 못했습니다.")
+        }
+        val groupSize = ceil(chunks.size.toDouble() / YOUTUBE_SUMMARY_MAX_SNIPPETS)
+            .toInt()
+            .coerceAtLeast(1)
+        return chunks.chunked(groupSize).mapIndexed { index, groupedChunks ->
+            CourseMaterialSummarySource(
+                fileName = if (chunks.size <= groupSize) videoTitle else "$videoTitle (${index + 1})",
+                snippets = listOf(groupedChunks.joinToString("\n\n"))
+            )
+        }
+    }
+
+    private fun chunkTranscriptForAi(
+        text: String,
+        maxChunkChars: Int,
+        maxChunks: Int? = null
+    ): List<String> {
+        val normalizedLines = text.lineSequence()
+            .map(::normalizeDisplayText)
+            .filter { it.isNotBlank() }
+            .flatMap { splitTranscriptLine(it, maxChunkChars).asSequence() }
+            .toList()
+        if (normalizedLines.isEmpty()) return emptyList()
+
+        val normalizedChunks = buildTranscriptChunks(normalizedLines, maxChunkChars)
+        if (maxChunks == null || normalizedChunks.size <= maxChunks) {
+            return normalizedChunks
+        }
+
+        val groupSize = ceil(normalizedChunks.size.toDouble() / maxChunks.toDouble())
+            .toInt()
+            .coerceAtLeast(1)
+        val groupedChunks = mergeTranscriptChunks(normalizedChunks, maxChunkChars, groupSize)
+        if (groupedChunks.size <= maxChunks) {
+            return groupedChunks
+        }
+        return reduceTranscriptChunkCount(groupedChunks, maxChunkChars, maxChunks)
+    }
+
+    private fun splitTranscriptLine(line: String, maxChunkChars: Int): List<String> {
+        if (line.length <= maxChunkChars) return listOf(line)
+        return line.chunked(maxChunkChars)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+    }
+
+    private fun buildTranscriptChunks(lines: List<String>, maxChunkChars: Int): List<String> {
+        val chunks = mutableListOf<String>()
+        val current = StringBuilder()
+        lines.forEach { line ->
+            val candidateLength = current.length + if (current.isEmpty()) 0 else 1 + line.length
+            if (candidateLength > maxChunkChars && current.isNotEmpty()) {
+                chunks += current.toString().trim()
+                current.setLength(0)
+            }
+            if (current.isNotEmpty()) current.append('\n')
+            current.append(line)
+        }
+        if (current.isNotEmpty()) {
+            chunks += current.toString().trim()
+        }
+        return chunks.filter { it.isNotBlank() }
+    }
+
+    private fun mergeTranscriptChunks(
+        chunks: List<String>,
+        maxChunkChars: Int,
+        preferredGroupSize: Int
+    ): List<String> {
+        if (chunks.isEmpty()) return emptyList()
+        val merged = mutableListOf<String>()
+        val current = mutableListOf<String>()
+        chunks.forEach { chunk ->
+            val candidate = (current + chunk).joinToString("\n\n")
+            if (current.isNotEmpty() && (current.size >= preferredGroupSize || candidate.length > maxChunkChars)) {
+                merged += current.joinToString("\n\n").trim()
+                current.clear()
+            }
+            current += chunk
+        }
+        if (current.isNotEmpty()) {
+            merged += current.joinToString("\n\n").trim()
+        }
+        return merged.filter { it.isNotBlank() }
+    }
+
+    private fun reduceTranscriptChunkCount(
+        chunks: List<String>,
+        maxChunkChars: Int,
+        maxChunks: Int
+    ): List<String> {
+        val reduced = chunks.toMutableList()
+        while (reduced.size > maxChunks) {
+            var merged = false
+            for (index in 0 until reduced.lastIndex) {
+                val candidate = "${reduced[index]}\n\n${reduced[index + 1]}".trim()
+                if (candidate.length > maxChunkChars) continue
+                reduced[index] = candidate
+                reduced.removeAt(index + 1)
+                merged = true
+                break
+            }
+            if (!merged) break
+        }
+        return reduced.filter { it.isNotBlank() }
+    }
+
     private fun buildAiGeneratedQuestions(
         userId: Long,
         universityName: String,
@@ -833,7 +1386,8 @@ class StudentCourseService(
         questionCount: Int,
         generationMode: StudentExamGenerationMode,
         difficultyLevel: Int?,
-        questionStyles: List<StudentExamQuestionStyle>
+        questionStyles: List<StudentExamQuestionStyle>,
+        language: InterviewLanguage
     ): List<GeneratedCourseExamQuestion> {
         if (generationMode == StudentExamGenerationMode.PAST_EXAM_PRACTICE) {
             return buildPastExamPracticeQuestions(
@@ -842,14 +1396,15 @@ class StudentCourseService(
                 departmentName = departmentName,
                 course = course,
                 styleReferenceMaterials = styleReferenceMaterials,
-                questionCount = questionCount
+                questionCount = questionCount,
+                language = language
             )
         }
 
         val lectureSnippets = collectMaterialSnippets(
             userId = userId,
             materials = lectureMaterials,
-            totalLimit = maxOf(questionCount + 5, 10)
+            totalLimit = maxOf(questionCount * 4, 18)
         )
         if (lectureSnippets.isEmpty()) {
             throw IllegalStateException("시험문제 생성에 사용할 강의 자료 발췌가 부족합니다. 자료를 다시 분석해 주세요.")
@@ -880,7 +1435,7 @@ class StudentCourseService(
                 "[족보 스타일 참고 ${index + 1}]\n$snippet"
             },
             generationMode = generationMode.name,
-            language = InterviewLanguage.KO
+            language = language
         )
         val generatedStyleCounts = generatedQuestions.groupingBy { it.questionStyle.trim().uppercase() }.eachCount()
         val generatedMissingReferenceCount = generatedQuestions.count {
@@ -950,7 +1505,8 @@ class StudentCourseService(
         departmentName: String,
         course: StudentCourse,
         styleReferenceMaterials: List<StudentCourseMaterial>,
-        questionCount: Int
+        questionCount: Int,
+        language: InterviewLanguage
     ): List<GeneratedCourseExamQuestion> {
         val extractedCandidates = extractPastExamPracticeQuestionCandidates(
             userId = userId,
@@ -990,7 +1546,7 @@ class StudentCourseService(
                     extractionMethod = candidate.extractionMethod
                 )
             },
-            language = InterviewLanguage.KO
+            language = language
         )
 
         logger.info(
@@ -1037,13 +1593,30 @@ class StudentCourseService(
     ): List<String> {
         return materials
             .flatMap { material ->
-                docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
-                    .map { it.chunkText.replace(Regex("\\s+"), " ").trim() }
-                    .filter { it.length >= 40 }
-                    .take(3)
+                val fileName = decodeDisplayMaterialFileName(material.userFile.fileName)
+                val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
+                buildExamGenerationSnippets(chunks).map { snippet -> "[$fileName] $snippet" }
             }
             .distinct()
             .take(totalLimit)
+    }
+
+    private fun buildExamGenerationSnippets(chunks: List<DocChunkEmbedding>): List<String> {
+        val normalizedChunks = chunks.mapNotNull { chunk ->
+            val text = normalizeChunkText(chunk.chunkText)
+            text.takeIf { it.length >= 80 }?.let { chunk.chunkNo to it }
+        }
+        if (normalizedChunks.isEmpty()) return emptyList()
+
+        val mergedSegments = normalizedChunks.chunked(2).map { group ->
+            val firstChunkNo = group.first().first
+            val lastChunkNo = group.last().first
+            val mergedText = group.joinToString("\n") { it.second }
+                .let { if (it.length <= 900) it else it.take(900).trimEnd() + "..." }
+            "[문서 구간 ${firstChunkNo}-${lastChunkNo}] $mergedText"
+        }
+
+        return sampleEvenly(mergedSegments.distinct(), EXAM_SNIPPET_SAMPLE_SIZE)
     }
 
     private fun collectSummarySources(
@@ -1089,8 +1662,7 @@ class StudentCourseService(
     private fun normalizeDisplayText(text: String): String =
         Normalizer.normalize(text, Normalizer.Form.NFC)
 
-    private fun <T> sampleEvenly(items: List<T>): List<T> {
-        val limit = SUMMARY_SNIPPET_SAMPLE_SIZE
+    private fun <T> sampleEvenly(items: List<T>, limit: Int = SUMMARY_SNIPPET_SAMPLE_SIZE): List<T> {
         if (items.size <= limit) return items
         val sampled = linkedSetOf<T>()
         val lastIndex = items.lastIndex
@@ -1289,7 +1861,7 @@ class StudentCourseService(
         hasSelectedPastExamReference: Boolean
     ) {
         if (request.generationMode == StudentExamGenerationMode.STANDARD && request.difficultyLevel == null) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "일반형 모의고사는 난이도를 선택해 주세요.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "모의고사는 난이도를 선택해 주세요.")
         }
         if (
             (request.generationMode == StudentExamGenerationMode.PAST_EXAM ||
@@ -1338,6 +1910,8 @@ class StudentCourseService(
             request.generationMode == StudentExamGenerationMode.PAST_EXAM_PRACTICE
         ) {
             StudentExamQuestionStyle.entries.toList()
+        } else if (request.generationMode == StudentExamGenerationMode.FAST_REVIEW) {
+            listOf(StudentExamQuestionStyle.DEFINITION)
         } else {
             request.questionStyles.distinct()
         }
@@ -1393,6 +1967,8 @@ class StudentCourseService(
             }
         }
         return when (generationMode) {
+            StudentExamGenerationMode.FAST_REVIEW ->
+                "${course.courseName}$professorSuffix 패스트 모의고사 (${questionCount}문항)"
             StudentExamGenerationMode.PAST_EXAM ->
                 "족보형_${selectedPastExamLabel ?: course.courseName}(${questionCount}문항)"
             StudentExamGenerationMode.PAST_EXAM_PRACTICE ->
@@ -1473,7 +2049,7 @@ class StudentCourseService(
                             userAnswer = answerByQuestionId[question.id]?.answerText?.trim().orEmpty()
                         )
                     },
-                    responseLanguage = InterviewLanguage.KO
+                    responseLanguage = session.language
                 ).mapNotNull { (key, value) ->
                     key.toLongOrNull()?.let { it to value.toEvaluatedAnswer() }
                 }.toMap()
@@ -1482,7 +2058,8 @@ class StudentCourseService(
             answeredQuestions.associate { question ->
                 question.id to evaluateAnswer(
                     question = question,
-                    answerText = answerByQuestionId[question.id]?.answerText?.trim().orEmpty()
+                    answerText = answerByQuestionId[question.id]?.answerText?.trim().orEmpty(),
+                    language = session.language
                 )
             }
         }
@@ -1496,7 +2073,7 @@ class StudentCourseService(
         )
     }
 
-    private fun evaluateAnswer(question: StudentExamQuestion, answerText: String): EvaluatedAnswer {
+    private fun evaluateAnswer(question: StudentExamQuestion, answerText: String, language: InterviewLanguage = InterviewLanguage.KO): EvaluatedAnswer {
         val questionTokens = question.questionText.lowercase()
             .replace(Regex("[^a-z0-9가-힣\\s]"), " ")
             .split(Regex("\\s+"))
@@ -1524,10 +2101,17 @@ class StudentCourseService(
         }
         val normalizedScore = (keywordScore + lengthScore).coerceIn(0, 100)
         val score = ((normalizedScore / 100.0) * question.maxScore.toDouble()).roundToInt().coerceIn(0, question.maxScore)
-        val feedback = when {
-            score >= (question.maxScore * 0.8).roundToInt() -> "핵심 개념과 풀이 흐름이 비교적 잘 드러납니다. 정답 표현을 더 정교하게 다듬으면 좋습니다."
-            score >= (question.maxScore * 0.5).roundToInt() -> "부분적으로 맞지만 핵심 근거, 계산 과정, 구현 세부사항을 더 보강해야 합니다."
-            else -> "핵심 개념 반영이 부족합니다. 정답 예시와 채점 기준을 참고해 다시 정리해 보세요."
+        val feedback = when (language) {
+            InterviewLanguage.EN -> when {
+                score >= (question.maxScore * 0.8).roundToInt() -> "Your answer shows the core concept and reasoning fairly well. Tighten the final wording to make it more precise."
+                score >= (question.maxScore * 0.5).roundToInt() -> "The answer is partially correct, but you need stronger evidence, clearer calculations, or more concrete implementation details."
+                else -> "The core concept is not reflected clearly enough. Review the model answer and grading criteria, then rewrite the answer more precisely."
+            }
+            InterviewLanguage.KO -> when {
+                score >= (question.maxScore * 0.8).roundToInt() -> "핵심 개념과 풀이 흐름이 비교적 잘 드러납니다. 정답 표현을 더 정교하게 다듬으면 좋습니다."
+                score >= (question.maxScore * 0.5).roundToInt() -> "부분적으로 맞지만 핵심 근거, 계산 과정, 구현 세부사항을 더 보강해야 합니다."
+                else -> "핵심 개념 반영이 부족합니다. 정답 예시와 채점 기준을 참고해 다시 정리해 보세요."
+            }
         }
         return EvaluatedAnswer(
             score = score,
@@ -1553,11 +2137,38 @@ class StudentCourseService(
         return "${baseName}_요약본(${materialCount}개).$extension"
     }
 
+    private fun GeneratedCourseMaterialSummary.toPreviewResponse(
+        sourceFileNames: List<String>
+    ): StudentCourseSummaryPreviewResponse {
+        return StudentCourseSummaryPreviewResponse(
+            title = title,
+            overview = overview,
+            coreTakeaways = coreTakeaways,
+            sourceFileNames = sourceFileNames.distinct(),
+            majorTopics = majorTopics.map { topic ->
+                StudentCourseSummaryPreviewTopic(
+                    title = topic.title,
+                    summary = topic.summary,
+                    subtopics = topic.subtopics.map { subtopic ->
+                        StudentCourseSummaryPreviewSubtopic(
+                            title = subtopic.title,
+                            summary = subtopic.summary,
+                            keyPoints = subtopic.keyPoints,
+                            supplementaryNotes = subtopic.supplementaryNotes
+                        )
+                    }
+                )
+            }
+        )
+    }
+
     private fun createSummaryDocx(
         summary: GeneratedCourseMaterialSummary,
         course: StudentCourse,
-        sourceFileNames: List<String>
+        sourceFileNames: List<String>,
+        language: InterviewLanguage
     ): ByteArray {
+        val labels = summaryDocumentLabels(language)
         return ByteArrayOutputStream().use { outputStream ->
             XWPFDocument().use { document ->
                 document.createParagraph().apply {
@@ -1577,11 +2188,12 @@ class StudentCourseService(
                         setText("${course.universityName} · ${course.departmentName} · ${course.courseName}${course.professorName?.let { " · $it" } ?: ""}")
                     }
                 }
-                appendDocxSection(document, "과목 개요", listOf(summary.overview), bullet = false)
+                appendDocxSection(document, labels.overviewTitle, listOf(summary.overview), bullet = false)
+                appendDocxSection(document, labels.keyTakeawaysTitle, summary.coreTakeaways)
                 summary.majorTopics.forEachIndexed { index, topic ->
-                    appendDocxTopicSection(document, index + 1, topic)
+                    appendDocxTopicSection(document, index + 1, topic, labels)
                 }
-                appendDocxSection(document, "참고한 강의자료", sourceFileNames.distinct())
+                appendDocxSection(document, labels.sourceMaterialsTitle, sourceFileNames.distinct())
                 document.write(outputStream)
             }
             outputStream.toByteArray()
@@ -1616,7 +2228,8 @@ class StudentCourseService(
     private fun appendDocxTopicSection(
         document: XWPFDocument,
         topicIndex: Int,
-        topic: GeneratedCourseMaterialSummaryTopic
+        topic: GeneratedCourseMaterialSummaryTopic,
+        labels: SummaryDocumentLabels
     ) {
         document.createParagraph().apply {
             spacingBefore = 120
@@ -1667,14 +2280,28 @@ class StudentCourseService(
                     setText("• $keyPoint")
                 }
             }
+            subtopic.supplementaryNotes.forEach { note ->
+                val paragraph = document.createParagraph().apply {
+                    indentationLeft = 620
+                    spacingAfter = 80
+                    spacingBetween = 1.2
+                }
+                styleDocxCalloutParagraph(paragraph)
+                paragraph.createRun().apply {
+                    fontSize = 10
+                    setText("${labels.supplementaryPrefix}: $note")
+                }
+            }
         }
     }
 
     private fun createSummaryPdf(
         summary: GeneratedCourseMaterialSummary,
         course: StudentCourse,
-        sourceFileNames: List<String>
+        sourceFileNames: List<String>,
+        language: InterviewLanguage
     ): ByteArray {
+        val labels = summaryDocumentLabels(language)
         return ByteArrayOutputStream().use { outputStream ->
             PDDocument().use { document ->
                 val font = loadPdfFont(document)
@@ -1758,8 +2385,13 @@ class StudentCourseService(
 
                 writeWrapped(summary.title, fontSize = 17f, spacingAfter = 12f, lineGap = 5.5f)
                 writeWrapped("${course.universityName} · ${course.departmentName} · ${course.courseName}${course.professorName?.let { " · $it" } ?: ""}", fontSize = 10f, spacingAfter = 14f)
-                writeWrapped("과목 개요", fontSize = 13f, spacingAfter = 5f)
+                writeWrapped(labels.overviewTitle, fontSize = 13f, spacingAfter = 5f)
                 writeWrapped(summary.overview, fontSize = 10.4f, spacingAfter = 12f, lineGap = 5.5f)
+                writeWrapped(labels.keyTakeawaysTitle, fontSize = 13f, spacingAfter = 5f)
+                summary.coreTakeaways.forEach {
+                    writeWrapped("• $it", fontSize = 10.2f, indent = 18f, spacingAfter = 3f, lineGap = 5.2f)
+                }
+                cursorY -= 6f
                 summary.majorTopics.forEachIndexed { index, topic ->
                     writeWrapped("${index + 1}. ${topic.title}", fontSize = 13f, spacingAfter = 5f, lineGap = 5.2f)
                     writeWrapped(topic.summary, fontSize = 10.4f, spacingAfter = 7f, lineGap = 5.5f)
@@ -1780,17 +2412,44 @@ class StudentCourseService(
                                 )
                             }
                         }
+                        subtopic.supplementaryNotes.forEach { note ->
+                            writeCallout("${labels.supplementaryPrefix}: $note", fontSize = 10.2f, indent = 52f)
+                        }
                         cursorY -= 4f
                     }
                     cursorY -= 8f
                 }
-                writeWrapped("참고한 강의자료", fontSize = 13f, spacingAfter = 5f)
+                writeWrapped(labels.sourceMaterialsTitle, fontSize = 13f, spacingAfter = 5f)
                 sourceFileNames.distinct().forEach { writeWrapped("• $it", fontSize = 10.2f, indent = 18f, spacingAfter = 3f, lineGap = 5.2f) }
 
                 contentStream.close()
                 document.save(outputStream)
             }
             outputStream.toByteArray()
+        }
+    }
+
+    private data class SummaryDocumentLabels(
+        val overviewTitle: String,
+        val keyTakeawaysTitle: String,
+        val sourceMaterialsTitle: String,
+        val supplementaryPrefix: String
+    )
+
+    private fun summaryDocumentLabels(language: InterviewLanguage): SummaryDocumentLabels {
+        return when (language) {
+            InterviewLanguage.EN -> SummaryDocumentLabels(
+                overviewTitle = "Course Overview",
+                keyTakeawaysTitle = "At a Glance",
+                sourceMaterialsTitle = "Source Materials",
+                supplementaryPrefix = "Additional Note"
+            )
+            InterviewLanguage.KO -> SummaryDocumentLabels(
+                overviewTitle = "과목 개요",
+                keyTakeawaysTitle = "한눈에 보기",
+                sourceMaterialsTitle = "참고한 강의자료",
+                supplementaryPrefix = "보충 설명"
+            )
         }
     }
 
@@ -1924,6 +2583,7 @@ class StudentCourseService(
         title = title,
         status = status,
         generationMode = generationMode,
+        language = language,
         difficultyLevel = difficultyLevel,
         questionStyles = decodeQuestionStyles(questionStylesCsv),
         questionCount = questionCount,
@@ -1946,6 +2606,7 @@ class StudentCourseService(
         title = title,
         status = status,
         generationMode = generationMode,
+        language = language,
         difficultyLevel = difficultyLevel,
         questionStyles = decodeQuestionStyles(questionStylesCsv),
         questionCount = questionCount,
@@ -2030,6 +2691,7 @@ class StudentCourseService(
             fileId = userFile.id,
             fileType = userFile.fileType,
             materialKind = resolveMaterialKind(this),
+            sourceType = sourceType,
             fileName = decodeDisplayMaterialFileName(userFile.fileName),
             originalFileName = userFile.originalFileName,
             fileUrl = buildCourseMaterialContentUrl(course.id, id),
@@ -2041,6 +2703,37 @@ class StudentCourseService(
             ocrUsed = extractionMethod == "OCR_TESSERACT",
             visualAssets = visualAssets
         )
+    }
+
+    private fun StudentCourseYoutubeSummaryJob.toResponse(): StudentCourseYoutubeSummaryJobResponse =
+        StudentCourseYoutubeSummaryJobResponse(
+            jobId = id,
+            youtubeUrl = youtubeUrl,
+            videoId = videoId,
+            videoTitle = videoTitle,
+            summaryTitle = summaryTitle,
+            format = format,
+            transcriptLanguage = transcriptLanguage,
+            autoGeneratedCaption = autoGeneratedCaption,
+            status = status,
+            errorMessage = errorMessage,
+            generatedMaterialId = generatedMaterialId,
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            startedAt = startedAt,
+            finishedAt = finishedAt
+        )
+
+    private fun runAfterCommit(action: () -> Unit) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action()
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCommit() {
+                action()
+            }
+        })
     }
 
     private fun buildQuestionSourceContexts(

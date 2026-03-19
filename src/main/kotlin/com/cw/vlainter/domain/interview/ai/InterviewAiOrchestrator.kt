@@ -73,6 +73,41 @@ class InterviewAiOrchestrator(
     private val challengeIntentHints = setOf("문제", "난관", "도전", "어려움", "해결", "트러블", "challenge", "problem", "issue", "solve")
     private val collaborationIntentHints = setOf("협업", "조율", "갈등", "커뮤니케이션", "collaboration", "communication", "conflict")
     private val courseMaterialSummaryRetryDelaysMs = listOf(400L, 900L)
+    private val preservedTermPhraseRegex = Regex(
+        """(?<![A-Za-z0-9가-힣])[A-Za-z][A-Za-z0-9+/#()\-]*(?:\s+[A-Za-z][A-Za-z0-9+/#()\-]*){0,3}(?=$|[\s,.:;)\]}"'])"""
+    )
+    private val preservedSingleWordStopwords = setOf(
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "of", "on", "or",
+        "that", "the", "to", "via", "with", "without"
+    )
+    private val technicalTermGlossary = listOf(
+        TechnicalTermGlossaryEntry("Architecture", listOf("아키텍처")),
+        TechnicalTermGlossaryEntry("Mechanism", listOf("메커니즘")),
+        TechnicalTermGlossaryEntry("Transformer", listOf("트랜스포머", "트랜스 포머")),
+        TechnicalTermGlossaryEntry("Attention", listOf("어텐션")),
+        TechnicalTermGlossaryEntry("Seq2Seq", listOf("시퀀스 투 시퀀스", "시퀀스투시퀀스", "시퀀스-투-시퀀스")),
+        TechnicalTermGlossaryEntry("Encoder", listOf("인코더")),
+        TechnicalTermGlossaryEntry("Decoder", listOf("디코더")),
+        TechnicalTermGlossaryEntry("Query", listOf("쿼리")),
+        TechnicalTermGlossaryEntry("Key", listOf("키")),
+        TechnicalTermGlossaryEntry("Value", listOf("밸류", "값 벡터")),
+        TechnicalTermGlossaryEntry("Context Vector", listOf("컨텍스트 벡터", "문맥 벡터")),
+        TechnicalTermGlossaryEntry("Alignment Score", listOf("얼라이먼트 스코어", "정렬 점수")),
+        TechnicalTermGlossaryEntry("Softmax", listOf("소프트맥스")),
+        TechnicalTermGlossaryEntry("Positional Encoding", listOf("포지셔널 인코딩", "위치 인코딩")),
+        TechnicalTermGlossaryEntry("Multi-Head Attention", listOf("멀티 헤드 어텐션", "멀티헤드 어텐션")),
+        TechnicalTermGlossaryEntry("Masked Multi-Head Attention", listOf("마스크드 멀티 헤드 어텐션", "마스크드 멀티헤드 어텐션")),
+        TechnicalTermGlossaryEntry("Encoder-Decoder Attention", listOf("인코더-디코더 어텐션", "인코더 디코더 어텐션")),
+        TechnicalTermGlossaryEntry("Scaled Dot-Product Attention", listOf("스케일드 닷 프로덕트 어텐션", "스케일드 닷프로덕트 어텐션")),
+        TechnicalTermGlossaryEntry("Dot Product Attention", listOf("닷 프로덕트 어텐션", "닷프로덕트 어텐션")),
+        TechnicalTermGlossaryEntry("Feed Forward Network", listOf("피드 포워드 네트워크", "피드포워드 네트워크")),
+        TechnicalTermGlossaryEntry("Residual Connection", listOf("레지듀얼 커넥션", "잔차 연결")),
+        TechnicalTermGlossaryEntry("Layer Normalization", listOf("레이어 노말라이제이션", "레이어 정규화")),
+        TechnicalTermGlossaryEntry("Linear Layer", listOf("리니어 레이어", "선형 레이어")),
+        TechnicalTermGlossaryEntry("Padding Mask", listOf("패딩 마스크")),
+        TechnicalTermGlossaryEntry("Beam Search", listOf("빔 서치")),
+        TechnicalTermGlossaryEntry("EOS token", listOf("EOS 토큰", "종료 토큰"))
+    )
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -207,12 +242,14 @@ class InterviewAiOrchestrator(
         language: InterviewLanguage = InterviewLanguage.KO
     ): List<GeneratedCourseExamQuestion> {
         require(questionCount > 0) { "questionCount must be positive." }
+        val normalizedMode = generationMode.trim().uppercase()
         val requestedStyleSet = questionStyles
             .map { it.trim().uppercase() }
             .filter { it.isNotBlank() }
             .toSet()
+        val effectiveRequestedStyleSet = if (normalizedMode == "FAST_REVIEW") setOf("DEFINITION") else requestedStyleSet
         validateCourseExamGenerationInputs(
-            requestedStyleSet = requestedStyleSet,
+            requestedStyleSet = effectiveRequestedStyleSet,
             generationMode = generationMode,
             lectureContextSnippets = lectureContextSnippets,
             styleReferenceSnippets = styleReferenceSnippets
@@ -231,7 +268,7 @@ class InterviewAiOrchestrator(
                 generationMode,
                 index + 1,
                 remaining,
-                questionStyles.joinToString(","),
+                effectiveRequestedStyleSet.joinToString(","),
                 existingQuestionTexts.size,
                 temperature
             )
@@ -241,7 +278,7 @@ class InterviewAiOrchestrator(
                 courseName = courseName,
                 professorName = professorName,
                 difficultyLevel = difficultyLevel,
-                questionStyles = questionStyles,
+                    questionStyles = effectiveRequestedStyleSet.toList(),
                 questionCount = minOf(questionCount + 2, remaining + 2),
                 lectureContextSnippets = lectureContextSnippets,
                 styleReferenceSnippets = styleReferenceSnippets,
@@ -264,13 +301,18 @@ class InterviewAiOrchestrator(
                         rejectedBlankCount += 1
                         return@forEach
                     }
-                    val normalizedStyle = item.questionStyle.trim().uppercase()
-                    if (requestedStyleSet.isNotEmpty() && normalizedStyle !in requestedStyleSet) {
+                    val normalizedStyle = if (normalizedMode == "FAST_REVIEW") "DEFINITION" else item.questionStyle.trim().uppercase()
+                    if (effectiveRequestedStyleSet.isNotEmpty() && normalizedStyle !in effectiveRequestedStyleSet) {
                         rejectedUnrequestedStyleCount += 1
                         return@forEach
                     }
                     val key = normalized.lowercase()
-                    if (!collected.containsKey(key) && isUsableCourseExamQuestion(courseName, normalized)) {
+                    val usableQuestion = if (normalizedMode == "FAST_REVIEW") {
+                        isUsableFastReviewCourseExamQuestion(normalized, language)
+                    } else {
+                        isUsableCourseExamQuestion(courseName, normalized)
+                    }
+                    if (!collected.containsKey(key) && usableQuestion) {
                         collected[key] = item.copy(
                             questionNo = collected.size + 1,
                             questionText = normalized,
@@ -345,20 +387,48 @@ class InterviewAiOrchestrator(
         language: InterviewLanguage = InterviewLanguage.KO
     ): GeneratedCourseMaterialSummary {
         require(sources.isNotEmpty()) { "sources must not be empty." }
-        val prompt = buildCourseMaterialSummaryPrompt(
-            universityName = universityName,
-            departmentName = departmentName,
-            courseName = courseName,
-            professorName = professorName,
-            sources = sources,
-            language = language
-        )
+        val preservedTerms = extractPreservedTerms(sources)
         val temperatures = listOf(0.2, 0.2, 0.2)
         var lastError: Exception? = null
         for ((index, temperature) in temperatures.withIndex()) {
             try {
-                val generated = llmProviderRouter.generateJson(prompt, temperature = temperature)
+                val outlinePrompt = buildCourseMaterialSummaryOutlinePrompt(
+                    universityName = universityName,
+                    departmentName = departmentName,
+                    courseName = courseName,
+                    professorName = professorName,
+                    sources = sources,
+                    preservedTerms = preservedTerms,
+                    language = language
+                )
+                val outline = parseCourseMaterialSummaryOutline(
+                    llmProviderRouter.generateJson(
+                        outlinePrompt,
+                        temperature = 0.1,
+                        maxOutputTokens = 4096
+                    ).text
+                )
+                val prompt = buildCourseMaterialSummaryPrompt(
+                    universityName = universityName,
+                    departmentName = departmentName,
+                    courseName = courseName,
+                    professorName = professorName,
+                    sources = sources,
+                    outline = outline,
+                    preservedTerms = preservedTerms,
+                    language = language
+                )
+                val generated = llmProviderRouter.generateJson(
+                    prompt,
+                    temperature = temperature,
+                    maxOutputTokens = 8192
+                )
                 return parseGeneratedCourseMaterialSummary(generated.text)
+                    .normalizeTechnicalTerminology(preservedTerms)
+                    .also {
+                        validatePreservedTerminology(it, preservedTerms)
+                        validateCourseMaterialSummaryDensity(it, sources)
+                    }
             } catch (ex: Exception) {
                 lastError = ex
                 if (!shouldRetryCourseMaterialSummary(ex) || index == temperatures.lastIndex) {
@@ -381,6 +451,38 @@ class InterviewAiOrchestrator(
             }
         }
         throw lastError ?: IllegalStateException("강의자료 요약 생성에 실패했습니다.")
+    }
+
+    fun refineCourseTranscript(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        professorName: String?,
+        transcriptChunk: String,
+        language: InterviewLanguage = InterviewLanguage.KO
+    ): String {
+        require(transcriptChunk.isNotBlank()) { "transcriptChunk must not be blank." }
+
+        val professorLine = professorName?.trim()?.takeIf { it.isNotBlank() }
+            ?: if (language == InterviewLanguage.EN) "Unknown" else "미상"
+        val preservedTerms = extractPreservedTerms(
+            listOf(CourseMaterialSummarySource(fileName = courseName, snippets = listOf(transcriptChunk)))
+        )
+        val payload = mapOf(
+            "universityName" to universityName,
+            "departmentName" to departmentName,
+            "courseName" to courseName,
+            "professorName" to professorLine,
+            "transcriptChunk" to transcriptChunk.trim()
+        )
+        val prompt = buildCourseTranscriptRefinementPrompt(
+            payload = payload,
+            preservedTerms = preservedTerms,
+            language = language
+        )
+
+        val generated = llmProviderRouter.generateJson(prompt, temperature = 0.1)
+        return parseRefinedCourseTranscript(generated.text)
     }
 
     fun refinePastExamPracticeQuestions(
@@ -500,8 +602,13 @@ class InterviewAiOrchestrator(
             - 반드시 모든 입력 key를 유지해서 반환
             - score는 0 이상 maxScore 이하의 정수
             - 부분점수를 적극 허용할 것
+            - difficultyLevel은 요구 사고 깊이를 판단하는 참고값일 뿐이며, 답안 형식이 모범답안과 다르다는 이유만으로 과도하게 감점하지 말 것
+            - 학생 답안이 canonicalAnswer와 동일한 표현이 아니어도, 핵심 개념과 인과관계가 맞으면 점수를 인정할 것
+            - 수식, 문장, bullet, 간단한 ASCII 흐름도 등 표현 방식의 차이만으로 감점하지 말 것
             - questionStyle=DEFINITION 또는 ESSAY: 핵심 개념의 정확성, 범위 충실도, 비교/적용 설명을 본다
             - questionStyle=CALCULATION: 식 설정, 변수 해석, 단위, 계산 과정, 최종 결론을 본다
+            - questionStyle=CALCULATION: 정답 수식 자체를 쓰지 않았더라도 관계식과 풀이 논리를 말로 정확히 설명하면 상당한 부분점수를 줄 것
+            - questionStyle=CALCULATION: 계산식 일부가 빠져도 핵심 접근법이 맞으면 0점을 주지 말 것
             - questionStyle=CODING: 답안이 실제 코드 형태인지, 요구 기능을 충족하는지, 예시 입출력 또는 제시된 조건을 만족하는지, 핵심 자료구조/알고리즘 선택이 적절한지 본다
             - questionStyle=CODING: 사용 언어는 감점 요소가 아니며, 학교 교육과정 차이를 고려해 Java, C, C++, Python 등 어떤 언어로 작성해도 로직이 타당하면 인정할 것
             - questionStyle=CODING: 컴파일 오류 가능성이 높은 문법 오류, 실행 자체가 불가능한 수준의 선언/구문 오류, 문제 요구를 깨는 API 오용은 명확한 감점 요소로 반영할 것
@@ -509,6 +616,7 @@ class InterviewAiOrchestrator(
             - questionStyle=PRACTICAL: 명령어, 절차, 시스템 조작 흐름의 정확성, 예제 만족 여부, 중요한 예외 처리를 본다
             - referenceExample이 있으면 예시 충족 여부를 함께 보되, 표현 차이만으로 감점하지 말 것
             - canonicalAnswer와 gradingCriteria는 채점 기준이며, 강의자료 밖 정답을 요구하지 말 것
+            - 난이도가 높더라도 답안이 핵심 개념을 정확히 설명했다면 형식 부족만으로 대폭 감점하지 말 것
             - feedback에는 무엇을 맞췄고 무엇이 부족했는지, 왜 그 점수가 나왔는지 분명히 적을 것
             - feedback은 ${responseLanguage.displayLanguageName()}로 작성할 것
             - 반드시 JSON만 출력
@@ -1082,14 +1190,30 @@ class InterviewAiOrchestrator(
             .filter { it.isNotBlank() }
             .joinToString("\n") { "- $it" }
             .ifBlank { "(없음)" }
-        val difficultyGuide = when (difficultyLevel ?: 3) {
-            1 -> "대학 저학년 기초 수준으로 핵심 개념 확인 위주로 출제합니다."
-            2 -> "기초 개념과 기본 적용을 함께 묻는 수준으로 출제합니다."
-            3 -> "일반적인 대학 중간/기말고사 평균 난이도로 출제합니다."
-            4 -> "풀이 과정, 응용 판단, 개념 연결이 필요한 상위권 수준으로 출제합니다."
-            else -> "대학 교육과정 범위 안에서 변형 응용과 엄밀한 논증이 필요한 어려운 수준으로 출제합니다."
+        val difficultyGuide = when {
+            normalizedMode == "FAST_REVIEW" ->
+                "암기 확인용 초경량 문제로 출제합니다. 한 문제에 한 개념만 묻고, 답안은 1~3문장 또는 짧은 핵심 표현으로 끝낼 수 있어야 합니다."
+            (difficultyLevel ?: 3) == 1 ->
+                "대학 저학년 기초 수준으로 출제합니다. 정의, 기본 원리, 가장 대표적인 예시를 바로 떠올리면 풀 수 있어야 하며, 한 문제에 하나의 개념 또는 하나의 직접 적용만 묻습니다."
+            (difficultyLevel ?: 3) == 2 ->
+                "기초 개념과 기본 적용을 함께 묻는 수준으로 출제합니다. 정의를 그대로 적는 데서 끝나지 않고, 간단한 비교, 짧은 계산, 전형적인 적용 사례를 한 단계 더 요구합니다."
+            (difficultyLevel ?: 3) == 3 ->
+                "일반적인 대학 중간/기말고사 평균 난이도로 출제합니다. 두 개 이상의 개념을 연결하거나, 절차/이유/비교 기준을 함께 설명해야 정답이 되는 문제를 포함합니다."
+            (difficultyLevel ?: 3) == 4 ->
+                "풀이 과정, 응용 판단, 개념 연결이 필요한 상위권 수준으로 출제합니다. 낯선 변형 상황, 다단계 계산, 설계 판단, 예외 조건 비교처럼 중간 추론이 필요한 문항을 적극 포함합니다."
+            else ->
+                "대학 교육과정 범위 안에서 가장 어려운 축으로 출제합니다. 여러 개념을 동시에 엮어 스스로 가정을 세우거나, 제한 조건과 반례, trade-off, 증명 또는 복합 계산을 요구하는 문항을 포함합니다."
         }
         val styleGuide = when (normalizedMode) {
+            "FAST_REVIEW" -> {
+                """
+                - 패스트 모의고사는 암기 확인용 초경량 문제만 만든다
+                - 문제는 OX 퀴즈처럼 빠르게 풀 수 있어야 하며, 한 문제에 하나의 핵심 개념만 묻는다
+                - "정의하시오", "맞으면 이유를 짧게 쓰시오", "틀리면 올바른 용어를 쓰시오", "핵심 개념을 한 줄로 서술하시오" 같은 짧은 개념 서술형 문장을 사용한다
+                - 계산 과정, 긴 논증, 복잡한 구현, 장문의 비교 서술은 금지한다
+                - 강의자료 전 범위를 넓게 훑되, 각 문제는 가볍고 분명해야 한다
+                """.trimIndent()
+            }
             "PAST_EXAM" -> {
                 """
                 - 강의 자료 발췌는 문제 내용의 유일한 근거로 사용하고, 족보 스타일 참고 발췌는 난이도와 문장 스타일을 맞추는 용도로만 사용할 것
@@ -1128,8 +1252,8 @@ class InterviewAiOrchestrator(
         val outputRules = """
             - questionStyle은 반드시 DEFINITION, CODING, CALCULATION, ESSAY, PRACTICAL 중 하나
             - questionText는 시험지에 그대로 넣을 수 있는 문장
-            - canonicalAnswer는 채점 기준이 되는 정답/모범해설을 4~10문장 수준으로 작성
-            - gradingCriteria는 부분점수 기준이 드러나도록 핵심 채점 포인트를 3~6개 정도의 자연어 문장 또는 불릿 느낌 문장으로 작성
+            - canonicalAnswer는 채점 기준이 되는 정답/모범해설을 작성하되, FAST_REVIEW면 1~3문장, 그 외에는 4~10문장 수준으로 작성
+            - gradingCriteria는 부분점수 기준이 드러나도록 핵심 채점 포인트를 작성하되, FAST_REVIEW면 2~4개 정도의 짧은 채점 포인트로 작성
             - referenceExample은 CODING, CALCULATION, PRACTICAL 문제에서는 절대 null이면 안 되며, 입력/출력 예시, 명령어 예시, 계산 전개 예시 중 최소 하나를 반드시 포함
             - referenceExample은 DEFINITION 또는 ESSAY 문제에서만 null 가능
             - CODING 문제의 canonicalAnswer는 실제 코드 또는 언어 중립 의사코드가 아니라, 채점 포인트와 정답 로직 설명을 담은 해설이어야 한다
@@ -1193,8 +1317,16 @@ class InterviewAiOrchestrator(
             - 총 ${questionCount}개 문제 생성
             - 출제 모드가 PAST_EXAM_PRACTICE가 아니라면 모든 문제는 제공된 강의 자료 발췌에서 직접 근거를 찾을 수 있어야 함
             - 출제 모드가 PAST_EXAM_PRACTICE라면 모든 문제는 업로드된 족보 원문 발췌에서 직접 근거를 찾을 수 있어야 함
+            - 출제 모드가 FAST_REVIEW라면 모든 문제는 짧고 즉답 가능한 개념 확인형이어야 하며, 한 문제당 하나의 개념만 물어야 함
             - 업로드된 자료에 없는 개념, 교수 스타일, 외부 족보 내용을 임의로 추가하지 말 것
             - 서로 다른 핵심 주제와 단원을 고르게 반영할 것
+            - 강의자료 발췌가 여러 파일/여러 구간으로 주어졌다면 특정 앞부분이나 일부 자료에 편중하지 말고 전체 범위를 최대한 넓게 커버할 것
+            - 문제 세트 전체 기준으로 초반 개념, 중간 핵심 개념, 후반 심화 개념이 고르게 섞이도록 설계할 것
+            - 같은 소주제 주변에서 표현만 바꾼 문제를 여러 개 만들지 말고, 단원 범위를 바꿔가며 출제할 것
+            - 난이도 1이면 직접 회상형/기초 적용형을 중심으로 만들고, 난이도 4~5면 개념 결합형, 변형 응용형, 다단계 추론형 문제를 분명히 늘릴 것
+            - 난이도가 올라갈수록 채점 기준만 까다롭게 만들지 말고, questionText 자체가 더 긴 사고 과정과 더 넓은 범위를 요구하도록 설계할 것
+            - 난이도 1~2에서는 숨은 함정이나 과도한 조건 비틀기를 넣지 말 것
+            - 난이도 4~5에서는 단순 암기형 비중을 낮추고, "왜", "어떻게", "비교", "설계", "예외", "가정"을 묻는 문항 비중을 높일 것
             - 모든 문제의 questionStyle은 반드시 요청된 스타일 집합(${normalizedStyles.joinToString(", ").ifBlank { "DEFINITION" }}) 안에 있어야 함
             - 사용자가 CODING만 선택했다면 모든 문제를 CODING으로, CALCULATION만 선택했다면 모든 문제를 CALCULATION으로 작성할 것
             - 요청하지 않은 DEFINITION, CALCULATION, ESSAY, PRACTICAL, CODING 스타일을 임의로 섞지 말 것
@@ -1211,6 +1343,10 @@ class InterviewAiOrchestrator(
             - 코딩/실습형 문제는 예제나 명령어, 정확한 평가 포인트를 포함해 실제 채점이 가능해야 함
             - 계산형 문제는 식 설정, 변수 의미, 단위 또는 풀이 절차가 정답에 포함되어야 함
             - 정의형/서술형 문제는 핵심 개념 정의, 비교 포인트, 적용 맥락이 정답에 드러나야 함
+            - 난이도 3 이상에서는 최소 일부 문항이 "개념 A만"이 아니라 "A와 B의 관계", "조건 변화에 따른 차이", "선택 근거"를 묻게 할 것
+            - 난이도 4~5에서는 단순히 공식을 쓰게 하는 데서 끝나지 말고, 왜 그 식을 선택하는지 또는 어떤 조건에서 식이 달라지는지까지 묻게 할 것
+            - 난이도 4~5의 CODING/PRACTICAL 문제는 기능 요구, 제약 조건, 예외 처리 또는 성능 고려 중 최소 2개 이상을 동시에 요구할 것
+            - FAST_REVIEW에서는 DEFINITION 스타일만 사용하고, 답안 길이와 채점 기준을 최대한 간결하게 유지할 것
             - maxScore는 모든 문제에 대해 20으로 설정할 것
             - ${language.displayLanguageName()}로만 작성할 것
             - 반드시 JSON만 출력
@@ -1220,12 +1356,13 @@ class InterviewAiOrchestrator(
         """.trimIndent()
     }
 
-    private fun buildCourseMaterialSummaryPrompt(
+    private fun buildCourseMaterialSummaryOutlinePrompt(
         universityName: String,
         departmentName: String,
         courseName: String,
         professorName: String?,
         sources: List<CourseMaterialSummarySource>,
+        preservedTerms: List<String>,
         language: InterviewLanguage
     ): String {
         val payload = sources.map { source ->
@@ -1234,65 +1371,326 @@ class InterviewAiOrchestrator(
                 "snippets" to source.snippets
             )
         }
-        return """
-            ${generationSystemRole(language, "university course summary writer")}
-            ${jsonLanguageInstruction(language)}
+        val professorLine = professorName?.trim()?.takeIf { it.isNotBlank() } ?: if (language == InterviewLanguage.EN) "Unknown" else "미상"
+        val preservedTermLine = if (preservedTerms.isEmpty()) {
+            if (language == InterviewLanguage.EN) "None" else "없음"
+        } else {
+            preservedTerms.joinToString(", ")
+        }
+        val sourceJson = objectMapper.writeValueAsString(payload)
+        return when (language) {
+            InterviewLanguage.KO -> """
+                ${courseSummarySystemRole(language, "대학 강의자료 구조화 요약의 목차를 설계하는 학습 설계자입니다.", "academic study planner")}
+                ${courseSummaryJsonInstruction(language)}
 
-            [대학교]
-            $universityName
+                [대학교]
+                $universityName
 
-            [학과]
-            $departmentName
+                [학과]
+                $departmentName
 
-            [과목명]
-            $courseName
+                [과목명]
+                $courseName
 
-            [교수명]
-            ${professorName?.trim()?.takeIf { it.isNotBlank() } ?: "미상"}
+                [교수명]
+                $professorLine
 
-            [선택 강의자료 발췌]
-            ${objectMapper.writeValueAsString(payload)}
+                [원문 용어 유지 목록]
+                $preservedTermLine
 
-            출력 JSON 스키마:
-            {
-              "title": "요약본 제목",
-              "overview": "과목 전체 흐름을 설명하는 3~5문장 요약",
-              "majorTopics": [
+                [선택 강의자료 발췌]
+                $sourceJson
+
+                출력 JSON 스키마:
                 {
-                  "title": "대주제 제목",
-                  "summary": "이 대주제의 핵심 맥락과 학술적 의의를 설명하는 2~4문장",
-                  "subtopics": [
+                  "title": "원문 용어를 살린 요약본 제목",
+                  "overviewFocus": "과목의 큰 흐름을 어떻게 설명할지 1~2문장 메모",
+                  "coreTakeawayAngles": [
+                    "한눈에 보기에서 반드시 다룰 핵심 관점",
+                    "..."
+                  ],
+                  "majorTopics": [
                     {
-                      "title": "소주제 제목",
-                      "summary": "소주제의 핵심 개념과 맥락을 설명하는 2~3문장",
-                      "keyPoints": [
-                        "핵심 개념, 정의, 원리, 절차, 공식, 비교 포인트 중 하나를 구체적으로 설명하는 문장",
-                        "..."
+                      "title": "대주제 제목",
+                      "summaryFocus": "이 대주제의 핵심 논점 메모",
+                      "subtopics": [
+                        {
+                          "title": "소주제 제목",
+                          "summaryFocus": "이 소주제에서 반드시 설명할 개념/원리/비교 포인트 메모",
+                          "mustUseTerms": ["반드시 원문으로 남길 용어", "..."]
+                        }
                       ]
                     }
                   ]
                 }
-              ]
-            }
 
-            규칙:
-            - 선택된 강의자료 발췌만 근거로 사용할 것
-            - 자료에 없는 내용은 보태지 말 것
-            - overview는 과목 전체의 큰 흐름과 개념 간 연결 관계를 짧고 선명하게 정리할 것
-            - majorTopics는 반드시 3~6개 작성할 것
-            - 각 majorTopics.summary는 짧은 감상문이 아니라, 그 대주제에서 다루는 학술적 범위와 핵심 논점을 설명할 것
-            - 각 대주제마다 subtopics를 반드시 3~5개 작성할 것
-            - 각 소주제에는 summary를 반드시 작성할 것
-            - 각 소주제 summary는 그 소주제가 어떤 개념을 설명하고, 상위 대주제 안에서 어떤 역할을 하는지 드러내는 2~3문장으로 작성할 것
-            - 각 소주제의 keyPoints는 반드시 4~6개 작성할 것
-            - keyPoints는 짧은 키워드가 아니라 완결된 설명 문장으로 작성할 것
-            - keyPoints에는 정의, 원리, 시간복잡도, 점화식, 절차, 비교 기준, 장단점, 예외 조건처럼 시험 답안에 직접 쓸 수 있는 학술 정보를 우선 포함할 것
-            - 가능하면 한 소주제 안에서 "정의 -> 작동 원리 -> 예시/비교 -> 주의할 점" 순서가 드러나게 구성할 것
-            - 학습 조언, 태도, 체크리스트, 시험 요령 같은 메타 조언은 쓰지 말 것
-            - "중요하다", "다룬다", "설명한다" 같은 일반론만 쓰지 말고, 발췌에 등장하는 용어를 최대한 그대로 살려 구체적으로 서술할 것
-            - 서로 다른 자료에서 같은 개념이 반복되면 하나의 대주제로 묶고, 세부 차이는 소주제/핵심내용에서 구분할 것
-            - ${jsonObjectOnlyRule(language)}
-        """.trimIndent()
+                규칙:
+                - 반드시 JSON 객체만 반환
+                - 발췌를 읽고 먼저 목차와 설명 흐름만 설계할 것
+                - 대주제 순서는 배경 -> 핵심 메커니즘 -> 구조/구성요소 -> 동작/추론 -> 활용/의미처럼 이해가 자연스럽게 이어지도록 짤 것
+                - majorTopics는 3~6개, 각 대주제 subtopics는 3~5개 작성할 것
+                - title, 대주제 제목, 소주제 제목에는 발췌에 나온 원문 용어를 우선 사용할 것
+                - 원문 용어 유지 목록에 있는 전문용어, 약어, 수식 표기는 번역하지 말 것
+                - 같은 내용을 반복하는 소주제는 만들지 말 것
+                - "설명한다", "다룬다", "중요하다" 같은 일반론 대신 실제로 써야 할 개념, 비교축, 인과관계를 메모할 것
+                - ${jsonObjectOnlyRule(language)}
+            """.trimIndent()
+
+            InterviewLanguage.EN -> """
+                ${courseSummarySystemRole(language, "대학 강의자료 구조화 요약의 목차를 설계하는 학습 설계자입니다.", "academic study planner who designs the outline of a structured university course summary")}
+                ${courseSummaryJsonInstruction(language)}
+
+                [University]
+                $universityName
+
+                [Department]
+                $departmentName
+
+                [Course]
+                $courseName
+
+                [Professor]
+                $professorLine
+
+                [Preserve These Source Terms]
+                $preservedTermLine
+
+                [Selected Course Material Snippets]
+                $sourceJson
+
+                Output JSON schema:
+                {
+                  "title": "summary title that preserves original terminology",
+                  "overviewFocus": "1-2 sentence memo describing the high-level narrative arc of the course",
+                  "coreTakeawayAngles": [
+                    "critical lens that must appear in the quick review section",
+                    "..."
+                  ],
+                  "majorTopics": [
+                    {
+                      "title": "major topic title",
+                      "summaryFocus": "memo describing the main academic issue covered by this topic",
+                      "subtopics": [
+                        {
+                          "title": "subtopic title",
+                          "summaryFocus": "memo describing the concept, mechanism, comparison, or reasoning that must be explained here",
+                          "mustUseTerms": ["original term that must remain unchanged", "..."]
+                        }
+                      ]
+                    }
+                  ]
+                }
+
+                Rules:
+                - Return a JSON object only
+                - Read the snippets and design the outline and explanation flow first
+                - Arrange major topics in a natural learning order such as background -> core mechanism -> structure/components -> operation/inference -> application/meaning
+                - Write 3-6 majorTopics, and 3-5 subtopics for each major topic
+                - Prefer original terminology from the snippets in the title, major topic titles, and subtopic titles
+                - Do not translate protected technical terms, abbreviations, formulas, or symbols listed in the preserved-terms section
+                - Do not create overlapping subtopics that repeat the same content
+                - Avoid vague notes like "explains" or "is important"; write the actual concepts, comparison axes, and causal links that the final summary should cover
+                - ${jsonObjectOnlyRule(language)}
+            """.trimIndent()
+        }
+    }
+
+    private fun buildCourseMaterialSummaryPrompt(
+        universityName: String,
+        departmentName: String,
+        courseName: String,
+        professorName: String?,
+        sources: List<CourseMaterialSummarySource>,
+        outline: CourseMaterialSummaryOutline,
+        preservedTerms: List<String>,
+        language: InterviewLanguage
+    ): String {
+        val payload = sources.map { source ->
+            mapOf(
+                "fileName" to source.fileName,
+                "snippets" to source.snippets
+            )
+        }
+        val professorLine = professorName?.trim()?.takeIf { it.isNotBlank() } ?: if (language == InterviewLanguage.EN) "Unknown" else "미상"
+        val preservedTermLine = if (preservedTerms.isEmpty()) {
+            if (language == InterviewLanguage.EN) "None" else "없음"
+        } else {
+            preservedTerms.joinToString(", ")
+        }
+        val outlineJson = objectMapper.writeValueAsString(outline)
+        val sourceJson = objectMapper.writeValueAsString(payload)
+        return when (language) {
+            InterviewLanguage.KO -> """
+                ${courseSummarySystemRole(language, "대학 강의자료를 구조화 요약으로 정리하는 학습 설계자입니다.", "academic study writer")}
+                ${courseSummaryJsonInstruction(language)}
+
+                [대학교]
+                $universityName
+
+                [학과]
+                $departmentName
+
+                [과목명]
+                $courseName
+
+                [교수명]
+                $professorLine
+
+                [원문 용어 유지 목록]
+                $preservedTermLine
+
+                [작성 계획]
+                $outlineJson
+
+                [선택 강의자료 발췌]
+                $sourceJson
+
+                출력 JSON 스키마:
+                {
+                  "title": "요약본 제목",
+                  "overview": "과목 전체 흐름을 설명하는 2~3문장 요약",
+                  "coreTakeaways": [
+                    "강의 전체를 빠르게 이해할 수 있는 핵심 정리 문장",
+                    "..."
+                  ],
+                  "majorTopics": [
+                    {
+                      "title": "대주제 제목",
+                      "summary": "이 대주제의 핵심 맥락과 학술적 의의를 설명하는 1~2문장",
+                      "subtopics": [
+                        {
+                          "title": "소주제 제목",
+                          "summary": "소주제의 핵심 개념과 맥락을 설명하는 1~2문장",
+                          "keyPoints": [
+                            "핵심 개념, 정의, 원리, 절차, 공식, 비교 포인트 중 하나를 구체적으로 설명하는 짧고 선명한 문장",
+                            "..."
+                          ],
+                          "supplementaryNotes": [
+                            "필요할 때만 추가하는 보충 설명, 직관, 간단한 흐름 설명 또는 짧은 비유",
+                            "..."
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+
+                규칙:
+                - 선택된 강의자료 발췌만 근거로 사용할 것
+                - 자료에 없는 내용은 사실처럼 단정해서 보태지 말 것
+                - 작성 계획의 대주제/소주제 흐름을 기본 골격으로 따를 것
+                - title, overview, coreTakeaways, majorTopics, subtopics 어디에서도 원문 용어 유지 목록의 표기를 번역하거나 한글식으로 바꾸지 말 것
+                - 기술 용어는 영어 원문을 기본 표기로 사용할 것. 한국어만 단독으로 쓰지 말 것
+                - 원문 용어를 설명할 때는 "Transformer Encoder(인코더 블록)"처럼 영어 원문을 먼저 쓰고, 필요한 경우에만 괄호 설명을 덧붙일 것
+                - 영문 전문용어를 통째로 한글화한 제목("트랜스포머 인코더", "어텐션 메커니즘", "쿼리/키/밸류")은 금지하고, 반드시 영어 원문 표기를 포함할 것
+                - overview는 과목 전체의 큰 흐름과 개념 간 연결 관계를 짧고 선명하게 정리할 것
+                - coreTakeaways는 반드시 5~7개 작성할 것
+                - coreTakeaways는 시험 직전 훑어볼 수 있는 밀도 높은 문장으로 작성할 것
+                - majorTopics는 반드시 4~6개 작성할 것
+                - 각 majorTopics.summary는 짧은 감상문이 아니라, 그 대주제에서 다루는 학술적 범위와 핵심 논점을 1~2문장으로 압축해서 설명할 것
+                - 각 대주제마다 subtopics를 반드시 3~5개 작성할 것
+                - 각 소주제에는 summary를 반드시 작성할 것
+                - 각 소주제 summary는 그 소주제가 어떤 개념을 설명하고, 상위 대주제 안에서 어떤 역할을 하는지 드러내는 1~2문장으로 작성할 것
+                - 각 소주제의 keyPoints는 반드시 4~6개 작성할 것
+                - keyPoints는 짧은 키워드가 아니라 완결된 설명 문장으로 작성하되, 군더더기 없이 바로 이해되게 쓸 것
+                - keyPoints에는 정의, 원리, 시간복잡도, 점화식, 절차, 비교 기준, 장단점, 예외 조건처럼 시험 답안에 직접 쓸 수 있는 학술 정보를 우선 포함할 것
+                - 가능하면 한 소주제 안에서 "정의 -> 작동 원리 -> 예시/비교 -> 주의할 점" 순서가 드러나게 구성할 것
+                - supplementaryNotes는 필요한 경우에만 0~2개 작성할 것
+                - 추상적이거나 과정 설명이 필요한 소주제에는 supplementaryNotes를 최소 1개 넣어도 좋다
+                - supplementaryNotes에는 이해를 돕는 짧은 추가설명, 흐름도형 설명("A -> B -> C"), 비교표현, 직관적 비유를 넣을 수 있다
+                - supplementaryNotes는 자료에 없는 외부 사실을 꾸며내지 말고, 자료의 맥락을 더 쉽게 풀어 쓰는 수준에서만 사용한다
+                - 학습 조언, 태도, 체크리스트, 시험 요령 같은 메타 조언은 쓰지 말 것
+                - "중요하다", "다룬다", "설명한다" 같은 메타 문장은 최소화하고, 개념 자체와 인과관계를 직접 서술할 것
+                - overview와 summary는 "무엇을 설명한다"보다 "왜 이 개념이 등장했고 다음 개념과 어떻게 이어지는지"를 드러낼 것
+                - keyPoints와 supplementaryNotes에서 간단한 ASCII 흐름도, 비교 표현, 단계 표현을 사용할 수 있다
+                - 발췌에 등장하는 용어를 최대한 그대로 살려 source-specific하게 서술할 것
+                - 입력 정보가 충분하면 너무 짧게 끝내지 말고, 대주제/소주제/핵심 포인트를 충분히 채워 구조화 노트처럼 작성할 것
+                - 서로 다른 자료에서 같은 개념이 반복되면 하나의 대주제로 묶고, 세부 차이는 소주제/핵심내용에서 구분할 것
+                - ${jsonObjectOnlyRule(language)}
+            """.trimIndent()
+
+            InterviewLanguage.EN -> """
+                ${courseSummarySystemRole(language, "대학 강의자료를 구조화 요약으로 정리하는 학습 설계자입니다.", "academic study writer who turns course material into a structured summary")}
+                ${courseSummaryJsonInstruction(language)}
+
+                [University]
+                $universityName
+
+                [Department]
+                $departmentName
+
+                [Course]
+                $courseName
+
+                [Professor]
+                $professorLine
+
+                [Preserve These Source Terms]
+                $preservedTermLine
+
+                [Writing Plan]
+                $outlineJson
+
+                [Selected Course Material Snippets]
+                $sourceJson
+
+                Output JSON schema:
+                {
+                  "title": "summary title",
+                  "overview": "2-3 sentence overview of the full course flow",
+                  "coreTakeaways": [
+                    "dense sentence that helps the student review the whole lecture quickly",
+                    "..."
+                  ],
+                  "majorTopics": [
+                    {
+                      "title": "major topic title",
+                      "summary": "1-2 sentence explanation of the academic scope and significance of this topic",
+                      "subtopics": [
+                        {
+                          "title": "subtopic title",
+                          "summary": "1-2 sentence explanation of the concept and context of this subtopic",
+                          "keyPoints": [
+                            "concise but complete sentence describing a definition, mechanism, procedure, formula, comparison point, or exception",
+                            "..."
+                          ],
+                          "supplementaryNotes": [
+                            "optional extra explanation, intuition, short flow, or concise analogy",
+                            "..."
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+
+                Rules:
+                - Use only the selected course-material snippets as evidence
+                - Do not add external facts, formulas, examples, or conclusions that are not supported by the snippets
+                - Follow the outline's major-topic and subtopic flow as the default structure
+                - Do not translate or localize the preserved source terms anywhere in the title, overview, coreTakeaways, majorTopics, or subtopics
+                - Prefer the original English technical term as the primary label; do not replace it with a localized-only phrase
+                - If you add a parenthetical explanation, keep the original English term first
+                - Keep the overview short but high-density, and make the conceptual flow between ideas clear
+                - Write 5-7 coreTakeaways
+                - Write 4-6 majorTopics
+                - Write 3-5 subtopics for each major topic
+                - Every subtopic must include a summary
+                - Every subtopic must include 4-6 keyPoints
+                - keyPoints must be complete, study-ready statements rather than loose keywords
+                - Prefer academic content such as definitions, mechanisms, time complexity, recurrences, procedures, comparison criteria, trade-offs, and exception conditions
+                - When possible, let the internal order of a subtopic feel like definition -> mechanism -> example/comparison -> caution
+                - supplementaryNotes are optional and should be limited to 0-2 items per subtopic
+                - supplementaryNotes may include a short extra explanation, an ASCII flow such as "A -> B -> C", a compact comparison, or an intuition-building analogy
+                - Do not write meta advice such as study tips, attitude, checklists, or exam strategy
+                - Minimize empty meta phrasing like "this section explains"; state the concept, causal relationship, and comparison directly
+                - Make the overview and topic summaries explain why the concept appears and how it connects to the next concept
+                - Use source-specific wording whenever the snippets clearly support it
+                - If the input is rich enough, do not end too briefly; fill out the structure like a genuine structured study note
+                - When multiple sources repeat the same idea, merge them into one major topic and separate the nuances at the subtopic/key-point level
+                - ${jsonObjectOnlyRule(language)}
+            """.trimIndent()
+        }
     }
 
     private fun buildBatchTechQuestionPrompt(
@@ -1402,6 +1800,13 @@ class InterviewAiOrchestrator(
         val overview = node.text("overview").trim().ifBlank {
             throw IllegalStateException("요약 overview가 비어 있습니다.")
         }
+        val coreTakeaways = node["coreTakeaways"]
+            ?.takeIf { it.isArray }
+            ?.mapNotNull { item -> item.asText().trim().takeIf(String::isNotBlank) }
+            .orEmpty()
+        if (coreTakeaways.isEmpty()) {
+            throw IllegalStateException("핵심 요점 정리가 비어 있습니다.")
+        }
         val majorTopics = node["majorTopics"]
             ?.takeIf { it.isArray }
             ?.mapNotNull { item ->
@@ -1417,10 +1822,15 @@ class InterviewAiOrchestrator(
                             ?.mapNotNull { point -> point.asText().trim().takeIf(String::isNotBlank) }
                             .orEmpty()
                         if (keyPoints.isEmpty()) return@subtopicMap null
+                        val supplementaryNotes = subtopic["supplementaryNotes"]
+                            ?.takeIf { it.isArray }
+                            ?.mapNotNull { note -> note.asText().trim().takeIf(String::isNotBlank) }
+                            .orEmpty()
                         GeneratedCourseMaterialSummarySubtopic(
                             title = subtopicTitle,
                             summary = subtopicSummary,
-                            keyPoints = keyPoints
+                            keyPoints = keyPoints,
+                            supplementaryNotes = supplementaryNotes
                         )
                     }
                     .orEmpty()
@@ -1438,8 +1848,297 @@ class InterviewAiOrchestrator(
         return GeneratedCourseMaterialSummary(
             title = title,
             overview = overview,
+            coreTakeaways = coreTakeaways,
             majorTopics = majorTopics
         )
+    }
+
+    private fun parseCourseMaterialSummaryOutline(raw: String): CourseMaterialSummaryOutline {
+        val node = objectMapper.readTree(raw)
+        val title = node.text("title").trim().ifBlank { "강의자료 요약본" }
+        val overviewFocus = node.text("overviewFocus").trim().ifBlank {
+            throw IllegalStateException("요약 작성 계획 overviewFocus가 비어 있습니다.")
+        }
+        val coreTakeawayAngles = node["coreTakeawayAngles"]
+            ?.takeIf { it.isArray }
+            ?.mapNotNull { item -> item.asText().trim().takeIf(String::isNotBlank) }
+            .orEmpty()
+        if (coreTakeawayAngles.isEmpty()) {
+            throw IllegalStateException("요약 작성 계획 coreTakeawayAngles가 비어 있습니다.")
+        }
+        val majorTopics = node["majorTopics"]
+            ?.takeIf { it.isArray }
+            ?.mapNotNull topicMap@{ item ->
+                val topicTitle = item.text("title").trim().takeIf(String::isNotBlank) ?: return@topicMap null
+                val summaryFocus = item.text("summaryFocus").trim().takeIf(String::isNotBlank) ?: return@topicMap null
+                val subtopics = item["subtopics"]
+                    ?.takeIf { it.isArray }
+                    ?.mapNotNull subtopicMap@{ subtopic ->
+                        val subtopicTitle = subtopic.text("title").trim().takeIf(String::isNotBlank) ?: return@subtopicMap null
+                        val subtopicSummaryFocus = subtopic.text("summaryFocus").trim().takeIf(String::isNotBlank) ?: return@subtopicMap null
+                        val mustUseTerms = subtopic["mustUseTerms"]
+                            ?.takeIf { it.isArray }
+                            ?.mapNotNull { term -> term.asText().trim().takeIf(String::isNotBlank) }
+                            .orEmpty()
+                        CourseMaterialSummaryOutlineSubtopic(
+                            title = subtopicTitle,
+                            summaryFocus = subtopicSummaryFocus,
+                            mustUseTerms = mustUseTerms
+                        )
+                    }
+                    .orEmpty()
+                if (subtopics.isEmpty()) return@topicMap null
+                CourseMaterialSummaryOutlineTopic(
+                    title = topicTitle,
+                    summaryFocus = summaryFocus,
+                    subtopics = subtopics
+                )
+            }
+            .orEmpty()
+        if (majorTopics.isEmpty()) {
+            throw IllegalStateException("요약 작성 계획 majorTopics가 비어 있습니다.")
+        }
+        return CourseMaterialSummaryOutline(
+            title = title,
+            overviewFocus = overviewFocus,
+            coreTakeawayAngles = coreTakeawayAngles,
+            majorTopics = majorTopics
+        )
+    }
+
+    private fun parseRefinedCourseTranscript(raw: String): String {
+        val node = objectMapper.readTree(raw)
+        val refinedTranscript = node.text("refinedTranscript").trim()
+        if (refinedTranscript.isBlank()) {
+            throw IllegalStateException("후보정 자막 결과가 비어 있습니다.")
+        }
+        return refinedTranscript
+    }
+
+    private fun extractPreservedTerms(sources: List<CourseMaterialSummarySource>): List<String> {
+        val weightedTerms = linkedMapOf<String, Int>()
+        sources.forEachIndexed { sourceIndex, source ->
+            val sourceWeight = maxOf(1, 10 - sourceIndex)
+            accumulatePreservedTerms(source.fileName, weightedTerms, maxOf(1, sourceWeight + 4))
+            source.snippets.forEachIndexed { snippetIndex, snippet ->
+                accumulatePreservedTerms(snippet, weightedTerms, maxOf(1, sourceWeight - (snippetIndex / 2)))
+            }
+        }
+        return weightedTerms.entries
+            .sortedWith(
+                compareByDescending<Map.Entry<String, Int>> { it.value }
+                    .thenByDescending { it.key.length }
+            )
+            .map { it.key }
+            .take(18)
+    }
+
+    private fun accumulatePreservedTerms(
+        text: String,
+        weightedTerms: MutableMap<String, Int>,
+        weight: Int
+    ) {
+        preservedTermPhraseRegex.findAll(text).forEach { match ->
+            val normalized = normalizePreservedTerm(match.value) ?: return@forEach
+            weightedTerms[normalized] = (weightedTerms[normalized] ?: 0) + weight + normalized.length
+        }
+    }
+
+    private fun normalizePreservedTerm(raw: String): String? {
+        val normalized = raw
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .trim(',', '.', ':', ';', '(', ')', '[', ']', '{', '}', '"', '\'')
+        if (normalized.length < 2) return null
+        val tokens = normalized.split(' ').filter { it.isNotBlank() }
+        if (tokens.isEmpty()) return null
+        if (tokens.size == 1) {
+            val token = tokens.first()
+            if (token.lowercase() in preservedSingleWordStopwords) return null
+            if (!(token.any { it.isUpperCase() } || token.any { it.isDigit() } || token.contains('-') || token.length >= 4)) {
+                return null
+            }
+        } else {
+            val nonStopwordExists = tokens.any { it.lowercase() !in preservedSingleWordStopwords }
+            if (!nonStopwordExists) return null
+        }
+        return normalized
+    }
+
+    private fun validatePreservedTerminology(
+        summary: GeneratedCourseMaterialSummary,
+        preservedTerms: List<String>
+    ) {
+        val priorityTerms = preservedTerms
+            .filter { term ->
+                term.split(' ').size >= 2 || term.any { it.isUpperCase() } || term.any { it.isDigit() } || term.contains('-')
+            }
+            .take(8)
+        if (priorityTerms.isEmpty()) return
+
+        val renderedSummary = buildString {
+            append(summary.title).append('\n')
+            append(summary.overview).append('\n')
+            summary.coreTakeaways.forEach { append(it).append('\n') }
+            summary.majorTopics.forEach { topic ->
+                append(topic.title).append('\n')
+                append(topic.summary).append('\n')
+                topic.subtopics.forEach { subtopic ->
+                    append(subtopic.title).append('\n')
+                    append(subtopic.summary).append('\n')
+                    subtopic.keyPoints.forEach { append(it).append('\n') }
+                    subtopic.supplementaryNotes.forEach { append(it).append('\n') }
+                }
+            }
+        }
+        val usedCount = priorityTerms.count { term ->
+            buildTechnicalAliasRegex(term).containsMatchIn(renderedSummary)
+        }
+        val minimumRequired = when {
+            priorityTerms.size >= 6 -> 3
+            priorityTerms.size >= 4 -> 2
+            else -> 1
+        }
+        if (usedCount < minimumRequired) {
+            throw IllegalStateException("원문 전문용어가 충분히 보존되지 않았습니다.")
+        }
+    }
+
+    private fun validateCourseMaterialSummaryDensity(
+        summary: GeneratedCourseMaterialSummary,
+        sources: List<CourseMaterialSummarySource>
+    ) {
+        val totalInputChars = sources.sumOf { source ->
+            source.fileName.length + source.snippets.sumOf { snippet -> snippet.length }
+        }
+        val requiredCoreTakeaways = when {
+            totalInputChars < 2_000 -> 2
+            totalInputChars < 5_000 -> 3
+            else -> 4
+        }
+        val requiredMajorTopics = when {
+            totalInputChars < 2_000 -> 1
+            totalInputChars < 5_000 -> 2
+            else -> 3
+        }
+        val minimumSubtopicsPerTopic = if (totalInputChars < 2_000) 1 else 2
+        val minimumKeyPointsPerSubtopic = if (totalInputChars < 2_000) 2 else 3
+
+        if (summary.coreTakeaways.size < requiredCoreTakeaways) {
+            throw IllegalStateException("한눈에 보기 분량이 부족합니다.")
+        }
+        if (summary.majorTopics.size < requiredMajorTopics) {
+            throw IllegalStateException("대주제 수가 부족합니다.")
+        }
+        val totalSubtopics = summary.majorTopics.sumOf { it.subtopics.size }
+        if (totalSubtopics < summary.majorTopics.size * minimumSubtopicsPerTopic) {
+            throw IllegalStateException("소주제 분량이 부족합니다.")
+        }
+        val totalKeyPoints = summary.majorTopics.sumOf { topic ->
+            topic.subtopics.sumOf { subtopic -> subtopic.keyPoints.size }
+        }
+        if (totalKeyPoints < totalSubtopics * minimumKeyPointsPerSubtopic) {
+            throw IllegalStateException("핵심 포인트 분량이 부족합니다.")
+        }
+    }
+
+    private fun GeneratedCourseMaterialSummary.normalizeTechnicalTerminology(
+        preservedTerms: List<String>
+    ): GeneratedCourseMaterialSummary {
+        val activeGlossary = technicalTermGlossary.filter { entry ->
+            preservedTerms.any { preserved ->
+                val normalizedPreserved = preserved.trim()
+                normalizedPreserved.equals(entry.canonical, ignoreCase = true) ||
+                    normalizedPreserved.contains(entry.canonical, ignoreCase = true) ||
+                    buildTechnicalAliasRegex(entry.canonical).containsMatchIn(normalizedPreserved) ||
+                    entry.aliases.any { alias ->
+                        normalizedPreserved.equals(alias, ignoreCase = true) ||
+                            normalizedPreserved.contains(alias, ignoreCase = true) ||
+                            buildTechnicalAliasRegex(alias).containsMatchIn(normalizedPreserved)
+                    }
+            }
+        }
+        if (activeGlossary.isEmpty()) return this
+
+        fun rewrite(text: String): String {
+            var rewritten = text
+            activeGlossary.forEach { entry ->
+                entry.aliases.forEach { alias ->
+                    rewritten = rewritten.replace(buildTechnicalAliasRegex(alias), entry.canonical)
+                }
+            }
+            return rewritten
+                .replace(Regex("""\b(Architecture|Mechanism|Transformer|Attention|Encoder|Decoder|Query|Key|Value|Seq2Seq)\s+\1\b"""), "$1")
+                .replace(Regex("""\s{2,}"""), " ")
+                .trim()
+        }
+
+        return copy(
+            title = rewrite(title),
+            overview = rewrite(overview),
+            coreTakeaways = coreTakeaways.map(::rewrite),
+            majorTopics = majorTopics.map { topic ->
+                topic.copy(
+                    title = rewrite(topic.title),
+                    summary = rewrite(topic.summary),
+                    subtopics = topic.subtopics.map { subtopic ->
+                        subtopic.copy(
+                            title = rewrite(subtopic.title),
+                            summary = rewrite(subtopic.summary),
+                            keyPoints = subtopic.keyPoints.map(::rewrite),
+                            supplementaryNotes = subtopic.supplementaryNotes.map(::rewrite)
+                        )
+                    }
+                )
+            }
+        )
+    }
+
+    private fun buildTechnicalAliasRegex(alias: String): Regex {
+        return Regex("""(?<![A-Za-z0-9가-힣])${Regex.escape(alias)}(?![A-Za-z0-9가-힣])""", RegexOption.IGNORE_CASE)
+    }
+
+    private fun isUsableFastReviewCourseExamQuestion(questionText: String, language: InterviewLanguage): Boolean {
+        val normalized = questionText.trim()
+        if (normalized.length < 6) return false
+        if (normalized.length > 120) return false
+
+        val lowered = normalized.lowercase()
+        return when (language) {
+            InterviewLanguage.KO -> {
+                if (listOf("말해 보세요", "말해보세요", "설명해 주세요", "설명해주세요", "어떻게 생각", "의견을 말씀").any { lowered.contains(it) }) {
+                    return false
+                }
+                listOf(
+                    "정의하시오",
+                    "서술하시오",
+                    "쓰시오",
+                    "기입하시오",
+                    "고르시오",
+                    "맞으면",
+                    "틀리면",
+                    "한 줄로",
+                    "무엇인가",
+                    "무엇인지"
+                ).any { normalized.contains(it) } || normalized.endsWith("?")
+            }
+
+            InterviewLanguage.EN -> {
+                val fastReviewStarters = listOf(
+                    "define",
+                    "state",
+                    "write",
+                    "choose",
+                    "select",
+                    "fill in",
+                    "what is",
+                    "which",
+                    "true or false",
+                    "briefly explain"
+                )
+                fastReviewStarters.any { lowered.startsWith(it) } || normalized.endsWith("?") || normalized.endsWith(".")
+            }
+        }
     }
 
     private fun buildPastExamPracticeRefinementPrompt(
@@ -2454,6 +3153,13 @@ class InterviewAiOrchestrator(
         }
     }
 
+    private fun courseSummarySystemRole(language: InterviewLanguage, koreanRole: String, englishRole: String): String {
+        return when (language) {
+            InterviewLanguage.KO -> "당신은 $koreanRole"
+            InterviewLanguage.EN -> "You are an $englishRole."
+        }
+    }
+
     private fun validateCourseExamGenerationInputs(
         requestedStyleSet: Set<String>,
         generationMode: String,
@@ -2488,6 +3194,83 @@ class InterviewAiOrchestrator(
         return when (language) {
             InterviewLanguage.KO -> "아래 입력을 바탕으로 한국어 JSON만 출력하세요."
             InterviewLanguage.EN -> "Read the input below and return JSON only. feedback, bestPractice, and evidence must be written in English."
+        }
+    }
+
+    private fun courseSummaryJsonInstruction(language: InterviewLanguage): String {
+        return when (language) {
+            InterviewLanguage.KO -> "아래 입력을 바탕으로 설명 문장은 한국어로 작성하고 JSON 객체만 반환하세요."
+            InterviewLanguage.EN -> "Read the input below, write all explanatory strings in English, and return a JSON object only."
+        }
+    }
+
+    private fun buildCourseTranscriptRefinementPrompt(
+        payload: Map<String, String>,
+        preservedTerms: List<String>,
+        language: InterviewLanguage
+    ): String {
+        val preservedTermsText = preservedTerms.joinToString(", ").ifBlank {
+            if (language == InterviewLanguage.EN) "None" else "없음"
+        }
+        val inputJson = objectMapper.writeValueAsString(payload)
+        return when (language) {
+            InterviewLanguage.KO -> """
+                당신은 대학 강의 자동 생성 자막 후보정 도우미입니다.
+                ${jsonObjectOnlyRule(language)}
+
+                목표:
+                - 자동 생성 자막의 띄어쓰기, 끊긴 문장, 반복 어절, 오탈자를 읽기 쉬운 문장으로 다듬는다.
+                - 문맥상 명백한 연결만 복원한다.
+                - 원문에 없는 개념, 공식, 예시, 결론을 새로 추가하지 않는다.
+                - 불확실한 부분은 과장해서 보정하지 말고 최대한 보수적으로 유지한다.
+                - 영어 전문용어, 약어, 수식, 함수명, 알고리즘명은 입력에 나온 표기를 그대로 유지한다.
+                - 아래 원문 용어 유지 목록은 번역하거나 한글식 표기로 바꾸지 않는다.
+
+                출력 JSON 스키마:
+                {
+                  "refinedTranscript": "후보정된 자막 본문"
+                }
+
+                규칙:
+                - 반드시 JSON 객체만 반환
+                - 마크다운 코드블록 금지
+                - 문단 구조는 필요 최소한으로만 정리
+                - 군더더기 감탄사, 의미 없는 반복, 자막 잡음은 제거 가능
+                - 강의 흐름과 순서는 유지
+                - 원문 용어 유지 목록: $preservedTermsText
+
+                입력:
+                $inputJson
+            """.trimIndent()
+
+            InterviewLanguage.EN -> """
+                You are a lecture transcript cleanup assistant for university course captions.
+                ${jsonObjectOnlyRule(language)}
+
+                Goal:
+                - Rewrite auto-generated captions into readable sentences by fixing spacing, broken clauses, duplication, and obvious typos.
+                - Restore only contextually obvious connections.
+                - Do not invent concepts, formulas, examples, or conclusions that are not present in the source.
+                - Keep uncertain passages conservative instead of over-correcting them.
+                - Preserve English technical terms, abbreviations, formulas, function names, and algorithm names exactly as they appear in the input.
+                - Do not translate or localize any term from the preserved-terms list below.
+
+                Output JSON schema:
+                {
+                  "refinedTranscript": "Refined transcript body"
+                }
+
+                Rules:
+                - Return a JSON object only
+                - Do not use markdown code fences
+                - Keep paragraph restructuring minimal
+                - You may remove filler words, meaningless repetition, and caption noise
+                - Preserve the lecture flow and ordering
+                - Preserved source terms: $preservedTermsText
+
+                Input:
+                $inputJson
+            """.trimIndent()
         }
     }
 
@@ -2848,9 +3631,34 @@ data class CourseMaterialSummarySource(
     val snippets: List<String>
 )
 
+data class CourseMaterialSummaryOutline(
+    val title: String,
+    val overviewFocus: String,
+    val coreTakeawayAngles: List<String>,
+    val majorTopics: List<CourseMaterialSummaryOutlineTopic>
+)
+
+data class CourseMaterialSummaryOutlineTopic(
+    val title: String,
+    val summaryFocus: String,
+    val subtopics: List<CourseMaterialSummaryOutlineSubtopic>
+)
+
+data class CourseMaterialSummaryOutlineSubtopic(
+    val title: String,
+    val summaryFocus: String,
+    val mustUseTerms: List<String> = emptyList()
+)
+
+data class TechnicalTermGlossaryEntry(
+    val canonical: String,
+    val aliases: List<String>
+)
+
 data class GeneratedCourseMaterialSummary(
     val title: String,
     val overview: String,
+    val coreTakeaways: List<String>,
     val majorTopics: List<GeneratedCourseMaterialSummaryTopic>
 )
 
@@ -2863,7 +3671,8 @@ data class GeneratedCourseMaterialSummaryTopic(
 data class GeneratedCourseMaterialSummarySubtopic(
     val title: String,
     val summary: String,
-    val keyPoints: List<String>
+    val keyPoints: List<String>,
+    val supplementaryNotes: List<String> = emptyList()
 )
 
 data class PastExamPracticeQuestionCandidate(
