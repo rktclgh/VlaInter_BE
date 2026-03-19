@@ -1179,7 +1179,7 @@ class InterviewPracticeService(
 
     private fun difficultyToRating(difficulty: QuestionDifficulty?): Int? {
         return when (difficulty) {
-            QuestionDifficulty.EASY -> 2
+            QuestionDifficulty.EASY -> 1
             QuestionDifficulty.MEDIUM -> 3
             QuestionDifficulty.HARD -> 5
             null -> null

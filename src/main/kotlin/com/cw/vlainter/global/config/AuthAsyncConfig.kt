@@ -41,7 +41,7 @@ class AuthAsyncConfig {
             maxPoolSize = 2
             queueCapacity = 20
             setThreadNamePrefix("student-course-summary-")
-            setRejectedExecutionHandler(ThreadPoolExecutor.CallerRunsPolicy())
+            setRejectedExecutionHandler(ThreadPoolExecutor.AbortPolicy())
             setWaitForTasksToCompleteOnShutdown(true)
             setAwaitTerminationSeconds(20)
             initialize()

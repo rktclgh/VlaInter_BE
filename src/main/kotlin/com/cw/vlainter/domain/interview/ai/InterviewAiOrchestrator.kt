@@ -418,8 +418,8 @@ class InterviewAiOrchestrator(
                     .normalizeTechnicalTerminology(preservedTerms)
                     .also {
                         validatePreservedTerminology(it, preservedTerms)
-                        validateCourseMaterialSummaryDensity(it)
-                }
+                        validateCourseMaterialSummaryDensity(it, sources)
+                    }
             } catch (ex: Exception) {
                 lastError = ex
                 if (!shouldRetryCourseMaterialSummary(ex) || index == temperatures.lastIndex) {
@@ -1837,21 +1837,40 @@ class InterviewAiOrchestrator(
         }
     }
 
-    private fun validateCourseMaterialSummaryDensity(summary: GeneratedCourseMaterialSummary) {
-        if (summary.coreTakeaways.size < 4) {
+    private fun validateCourseMaterialSummaryDensity(
+        summary: GeneratedCourseMaterialSummary,
+        sources: List<CourseMaterialSummarySource>
+    ) {
+        val totalInputChars = sources.sumOf { source ->
+            source.fileName.length + source.snippets.sumOf { snippet -> snippet.length }
+        }
+        val requiredCoreTakeaways = when {
+            totalInputChars < 2_000 -> 2
+            totalInputChars < 5_000 -> 3
+            else -> 4
+        }
+        val requiredMajorTopics = when {
+            totalInputChars < 2_000 -> 1
+            totalInputChars < 5_000 -> 2
+            else -> 3
+        }
+        val minimumSubtopicsPerTopic = if (totalInputChars < 2_000) 1 else 2
+        val minimumKeyPointsPerSubtopic = if (totalInputChars < 2_000) 2 else 3
+
+        if (summary.coreTakeaways.size < requiredCoreTakeaways) {
             throw IllegalStateException("한눈에 보기 분량이 부족합니다.")
         }
-        if (summary.majorTopics.size < 3) {
+        if (summary.majorTopics.size < requiredMajorTopics) {
             throw IllegalStateException("대주제 수가 부족합니다.")
         }
         val totalSubtopics = summary.majorTopics.sumOf { it.subtopics.size }
-        if (totalSubtopics < summary.majorTopics.size * 2) {
+        if (totalSubtopics < summary.majorTopics.size * minimumSubtopicsPerTopic) {
             throw IllegalStateException("소주제 분량이 부족합니다.")
         }
         val totalKeyPoints = summary.majorTopics.sumOf { topic ->
             topic.subtopics.sumOf { subtopic -> subtopic.keyPoints.size }
         }
-        if (totalKeyPoints < totalSubtopics * 3) {
+        if (totalKeyPoints < totalSubtopics * minimumKeyPointsPerSubtopic) {
             throw IllegalStateException("핵심 포인트 분량이 부족합니다.")
         }
     }
