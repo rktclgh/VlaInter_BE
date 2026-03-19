@@ -55,6 +55,7 @@ class AcademicSearchService(
         .build()
     private val objectMapper = jacksonObjectMapper()
     private val inFlightWarmKeys = ConcurrentHashMap.newKeySet<String>()
+    private val standardDataCacheLock = Any()
     @Volatile
     private var standardDataCache: StandardDataCache? = null
 
@@ -66,7 +67,14 @@ class AcademicSearchService(
         val localResults = academicUniversityRepository.searchByKeyword(normalizeKeyword(normalizedKeyword))
             .map { it.toResponse() }
             .take(MAX_RESULT_SIZE)
-        if (localResults.isNotEmpty() || academyInfoServiceKey.isBlank()) return localResults
+        if (localResults.isNotEmpty()) return localResults
+        if (academyInfoServiceKey.isBlank()) {
+            return searchUniversitiesFromStandardData(normalizedKeyword)
+                .let(::upsertUniversities)
+                .map { it.toResponse() }
+                .filter { it.universityName.contains(normalizedKeyword, ignoreCase = true) }
+                .take(MAX_RESULT_SIZE)
+        }
 
         val quickRemoteCandidates = requestUniversitySearch(
             keyword = normalizedKeyword,
@@ -108,7 +116,20 @@ class AcademicSearchService(
         } else {
             emptyList()
         }
-        if (localResults.isNotEmpty() || academyInfoServiceKey.isBlank()) return localResults
+        if (localResults.isNotEmpty()) return localResults
+        if (academyInfoServiceKey.isBlank()) {
+            val fallbackDepartments = searchDepartmentsFromStandardData(
+                universityName = normalizedUniversityName,
+                keyword = normalizedKeyword
+            )
+            if (fallbackDepartments.isEmpty()) return localResults
+            val fallbackUniversity = localUniversity ?: upsertUniversities(
+                listOf(UniversitySearchItemResponse(universityName = normalizedUniversityName))
+            ).first()
+            return upsertDepartments(fallbackUniversity, fallbackDepartments)
+                .map { it.toResponse() }
+                .take(MAX_RESULT_SIZE)
+        }
 
         val parsedItems = requestDepartmentSearch(
             universityName = normalizedUniversityName,
@@ -309,36 +330,51 @@ class AcademicSearchService(
         }
 
         val rowsByUniversity = rows.groupBy { normalizeKeyword(it.universityName) }
-        val existingUniversitiesByName = academicUniversityRepository.findAll()
+        val normalizedUniversityNames = rowsByUniversity.keys
+        val existingUniversitiesByName = academicUniversityRepository.findAllByNormalizedNameIn(normalizedUniversityNames)
             .associateBy { university -> university.normalizedName }
             .toMutableMap()
         var importedUniversities = 0
         var importedDepartments = 0
         val now = OffsetDateTime.now()
+        val universitiesToSave = mutableListOf<AcademicUniversity>()
 
         rowsByUniversity.forEach { (normalizedUniversityName, universityRows) ->
             val representative = universityRows.first()
             val existingUniversity = existingUniversitiesByName[normalizedUniversityName]
-            val university = existingUniversity
-                ?: academicUniversityRepository.saveAndFlush(
-                    AcademicUniversity(
-                        name = representative.universityName,
-                        normalizedName = normalizedUniversityName,
-                        lastSyncedAt = now
-                    )
-                ).also { saved ->
-                    existingUniversitiesByName[normalizedUniversityName] = saved
-                }
+            val university = existingUniversity ?: AcademicUniversity(
+                name = representative.universityName,
+                normalizedName = normalizedUniversityName,
+                lastSyncedAt = now
+            ).also { created ->
+                existingUniversitiesByName[normalizedUniversityName] = created
+                universitiesToSave += created
+            }
             if (existingUniversity == null) {
                 importedUniversities += 1
             } else if (university.lastSyncedAt != now || university.name != representative.universityName) {
                 university.name = representative.universityName
                 university.normalizedName = normalizedUniversityName
                 university.lastSyncedAt = now
-                academicUniversityRepository.save(university)
+                universitiesToSave += university
             }
+        }
 
-            val existingDepartments = academicDepartmentRepository.findAllByUniversityId(university.id)
+        if (universitiesToSave.isNotEmpty()) {
+            academicUniversityRepository.saveAllAndFlush(universitiesToSave.distinctBy { it.normalizedName })
+        }
+
+        val universitiesByName = academicUniversityRepository.findAllByNormalizedNameIn(normalizedUniversityNames)
+            .associateBy { university -> university.normalizedName }
+        val universityIds = universitiesByName.values.map { it.id }
+        val existingDepartmentsByUniversityId = academicDepartmentRepository.findAllByUniversityIdIn(universityIds)
+            .groupBy { department -> department.university.id }
+        val departmentsToSave = mutableListOf<AcademicDepartment>()
+
+        rowsByUniversity.forEach { (normalizedUniversityName, universityRows) ->
+            val university = universitiesByName[normalizedUniversityName]
+                ?: return@forEach
+            val existingDepartments = existingDepartmentsByUniversityId[university.id].orEmpty()
             val existingByName = existingDepartments.associateBy { department -> department.normalizedName }.toMutableMap()
             val existingByCode = existingDepartments
                 .mapNotNull { department -> department.externalCode?.let { code -> code to department } }
@@ -360,7 +396,7 @@ class AcademicSearchService(
                     duplicates.firstOrNull { !it.departmentCode.isNullOrBlank() } ?: duplicates.first()
                 }
 
-            val departmentsToSave = uniqueDepartments.map { item ->
+            uniqueDepartments.forEach { item ->
                 val normalizedDepartmentName = normalizeKeyword(item.departmentName)
                 val existing = existingByName[normalizedDepartmentName]
                     ?: item.departmentCode?.let { existingByCode[it] }
@@ -383,9 +419,11 @@ class AcademicSearchService(
                 target.lastSyncedAt = now
                 existingByName[normalizedDepartmentName] = target
                 target.externalCode?.let { code -> existingByCode[code] = target }
-                target
+                departmentsToSave += target
             }
+        }
 
+        if (departmentsToSave.isNotEmpty()) {
             academicDepartmentRepository.saveAll(departmentsToSave)
         }
 
@@ -653,31 +691,38 @@ class AcademicSearchService(
     }
 
     private fun loadStandardDataRows(): List<StandardAcademicRow> {
-        val cached = standardDataCache
         val now = Instant.now()
+        val cached = standardDataCache
         if (cached != null && cached.expiresAt.isAfter(now)) {
             return cached.rows
         }
+        synchronized(standardDataCacheLock) {
+            val refreshedNow = Instant.now()
+            val refreshedCache = standardDataCache
+            if (refreshedCache != null && refreshedCache.expiresAt.isAfter(refreshedNow)) {
+                return refreshedCache.rows
+            }
 
-        val html = runCatching {
-            standardDataPortalClient.get()
-                .uri(STANDARD_DATASET_PATH)
-                .retrieve()
-                .body(String::class.java)
-                .orEmpty()
-        }.onFailure { ex ->
-            logger.warn("대학교/학과 포털 표준데이터 fallback 조회 실패 reason={}", ex.rootMessage())
-        }.getOrElse { "" }
-        if (html.isBlank()) return emptyList()
+            val html = runCatching {
+                standardDataPortalClient.get()
+                    .uri(STANDARD_DATASET_PATH)
+                    .retrieve()
+                    .body(String::class.java)
+                    .orEmpty()
+            }.onFailure { ex ->
+                logger.warn("대학교/학과 포털 표준데이터 fallback 조회 실패 reason={}", ex.rootMessage())
+            }.getOrElse { "" }
+            if (html.isBlank()) return emptyList()
 
-        val parsedRows = parseStandardDataRows(html)
-        if (parsedRows.isNotEmpty()) {
-            standardDataCache = StandardDataCache(
-                rows = parsedRows,
-                expiresAt = now.plusSeconds(STANDARD_DATA_CACHE_TTL_SECONDS)
-            )
+            val parsedRows = parseStandardDataRows(html)
+            if (parsedRows.isNotEmpty()) {
+                standardDataCache = StandardDataCache(
+                    rows = parsedRows,
+                    expiresAt = refreshedNow.plusSeconds(STANDARD_DATA_CACHE_TTL_SECONDS)
+                )
+            }
+            return parsedRows
         }
-        return parsedRows
     }
 
     private fun parseStandardDataRows(html: String): List<StandardAcademicRow> {

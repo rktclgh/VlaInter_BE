@@ -10,6 +10,7 @@ interface AcademicDepartmentRepository : JpaRepository<AcademicDepartment, Long>
     fun findByUniversityIdAndExternalCode(universityId: Long, externalCode: String): AcademicDepartment?
     fun findByUniversityIdAndNormalizedName(universityId: Long, normalizedName: String): AcademicDepartment?
     fun findAllByUniversityId(universityId: Long): List<AcademicDepartment>
+    fun findAllByUniversityIdIn(universityIds: Collection<Long>): List<AcademicDepartment>
 
     @Query(
         """
