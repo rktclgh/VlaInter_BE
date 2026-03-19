@@ -17,7 +17,9 @@ import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.client.RestClient
+import org.springframework.web.util.HtmlUtils
 import java.time.OffsetDateTime
+import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
 @Service
@@ -42,8 +44,19 @@ class AcademicSearchService(
             }
         )
         .build()
+    private val standardDataPortalClient: RestClient = restClientBuilder
+        .baseUrl(STANDARD_DATA_PORTAL_BASE_URL)
+        .requestFactory(
+            SimpleClientHttpRequestFactory().apply {
+                setConnectTimeout(10_000)
+                setReadTimeout(20_000)
+            }
+        )
+        .build()
     private val objectMapper = jacksonObjectMapper()
     private val inFlightWarmKeys = ConcurrentHashMap.newKeySet<String>()
+    @Volatile
+    private var standardDataCache: StandardDataCache? = null
 
     @Transactional
     fun searchUniversities(keyword: String): List<UniversitySearchItemResponse> {
@@ -61,7 +74,12 @@ class AcademicSearchService(
         )
             .mapNotNull { item -> item.toUniversityResponse() }
             .distinctBy { normalizeKeyword(it.universityName) }
-        val remoteResults = upsertUniversities(quickRemoteCandidates)
+        val remoteCandidates = if (quickRemoteCandidates.isNotEmpty()) {
+            quickRemoteCandidates
+        } else {
+            searchUniversitiesFromStandardData(normalizedKeyword)
+        }
+        val remoteResults = upsertUniversities(remoteCandidates)
             .map { it.toResponse() }
             .filter { it.universityName.contains(normalizedKeyword, ignoreCase = true) }
             .take(MAX_RESULT_SIZE)
@@ -96,7 +114,20 @@ class AcademicSearchService(
             universityName = normalizedUniversityName,
             maxPages = QUICK_REMOTE_DEPARTMENT_PAGES
         )
-        if (parsedItems.isEmpty()) return localResults
+        if (parsedItems.isEmpty()) {
+            val fallbackDepartments = searchDepartmentsFromStandardData(
+                universityName = normalizedUniversityName,
+                keyword = normalizedKeyword
+            )
+            if (fallbackDepartments.isEmpty()) return localResults
+            val fallbackUniversity = localUniversity ?: upsertUniversities(
+                listOf(UniversitySearchItemResponse(universityName = normalizedUniversityName))
+            ).first()
+            val remoteResults = upsertDepartments(fallbackUniversity, fallbackDepartments)
+                .map { it.toResponse() }
+            triggerDepartmentWarmAsync(normalizedUniversityName)
+            return mergeDepartmentResults(localResults, remoteResults)
+        }
 
         val cachedUniversities = upsertUniversities(
             parsedItems.mapNotNull { item -> item.toUniversityResponse() }
@@ -253,6 +284,119 @@ class AcademicSearchService(
         return true
     }
 
+    @Transactional
+    fun importAllFromStandardData(): StandardDataImportSummary {
+        val rows = loadStandardDataRows()
+        if (rows.isEmpty()) {
+            return StandardDataImportSummary()
+        }
+
+        return importAcademicRows(
+            rows.map { row ->
+                AcademicMetadataImportRow(
+                    universityName = row.universityName,
+                    departmentName = row.departmentName,
+                    departmentCode = row.departmentCode
+                )
+            }
+        )
+    }
+
+    @Transactional
+    fun importAcademicRows(rows: List<AcademicMetadataImportRow>): StandardDataImportSummary {
+        if (rows.isEmpty()) {
+            return StandardDataImportSummary()
+        }
+
+        val rowsByUniversity = rows.groupBy { normalizeKeyword(it.universityName) }
+        val existingUniversitiesByName = academicUniversityRepository.findAll()
+            .associateBy { university -> university.normalizedName }
+            .toMutableMap()
+        var importedUniversities = 0
+        var importedDepartments = 0
+        val now = OffsetDateTime.now()
+
+        rowsByUniversity.forEach { (normalizedUniversityName, universityRows) ->
+            val representative = universityRows.first()
+            val existingUniversity = existingUniversitiesByName[normalizedUniversityName]
+            val university = existingUniversity
+                ?: academicUniversityRepository.saveAndFlush(
+                    AcademicUniversity(
+                        name = representative.universityName,
+                        normalizedName = normalizedUniversityName,
+                        lastSyncedAt = now
+                    )
+                ).also { saved ->
+                    existingUniversitiesByName[normalizedUniversityName] = saved
+                }
+            if (existingUniversity == null) {
+                importedUniversities += 1
+            } else if (university.lastSyncedAt != now || university.name != representative.universityName) {
+                university.name = representative.universityName
+                university.normalizedName = normalizedUniversityName
+                university.lastSyncedAt = now
+                academicUniversityRepository.save(university)
+            }
+
+            val existingDepartments = academicDepartmentRepository.findAllByUniversityId(university.id)
+            val existingByName = existingDepartments.associateBy { department -> department.normalizedName }.toMutableMap()
+            val existingByCode = existingDepartments
+                .mapNotNull { department -> department.externalCode?.let { code -> code to department } }
+                .toMap()
+                .toMutableMap()
+
+            val uniqueDepartments = universityRows
+                .map { row ->
+                    DepartmentSearchItemResponse(
+                        universityId = university.id,
+                        universityName = university.name,
+                        departmentName = row.departmentName,
+                        departmentCode = row.departmentCode
+                    )
+                }
+                .groupBy { item -> normalizeKeyword(item.departmentName) }
+                .values
+                .map { duplicates ->
+                    duplicates.firstOrNull { !it.departmentCode.isNullOrBlank() } ?: duplicates.first()
+                }
+
+            val departmentsToSave = uniqueDepartments.map { item ->
+                val normalizedDepartmentName = normalizeKeyword(item.departmentName)
+                val existing = existingByName[normalizedDepartmentName]
+                    ?: item.departmentCode?.let { existingByCode[it] }
+                val target = existing ?: AcademicDepartment(
+                    university = university,
+                    externalCode = item.departmentCode,
+                    name = item.departmentName,
+                    normalizedName = normalizedDepartmentName,
+                    lastSyncedAt = now
+                ).also {
+                    importedDepartments += 1
+                }
+
+                target.university = university
+                target.name = item.departmentName
+                target.normalizedName = normalizedDepartmentName
+                if (!item.departmentCode.isNullOrBlank()) {
+                    target.externalCode = item.departmentCode
+                }
+                target.lastSyncedAt = now
+                existingByName[normalizedDepartmentName] = target
+                target.externalCode?.let { code -> existingByCode[code] = target }
+                target
+            }
+
+            academicDepartmentRepository.saveAll(departmentsToSave)
+        }
+
+        return StandardDataImportSummary(
+            totalRows = rows.size,
+            importedUniversities = importedUniversities,
+            importedDepartments = importedDepartments,
+            totalUniversities = rowsByUniversity.size
+        )
+    }
+
     fun upsertUniversities(items: List<UniversitySearchItemResponse>): List<AcademicUniversity> {
         if (items.isEmpty()) return emptyList()
         val now = OffsetDateTime.now()
@@ -388,6 +532,46 @@ class AcademicSearchService(
         return collected
     }
 
+    private fun searchUniversitiesFromStandardData(keyword: String): List<UniversitySearchItemResponse> {
+        val rows = loadStandardDataRows()
+        if (rows.isEmpty()) return emptyList()
+        logger.warn("대학교 공공데이터 API 실패로 포털 표준데이터 fallback 사용 keyword={}", keyword)
+        return rows.asSequence()
+            .filter { row -> row.universityName.contains(keyword, ignoreCase = true) }
+            .map { row ->
+                UniversitySearchItemResponse(
+                    universityName = row.universityName
+                )
+            }
+            .distinctBy { normalizeKeyword(it.universityName) }
+            .take(MAX_RESULT_SIZE)
+            .toList()
+    }
+
+    private fun searchDepartmentsFromStandardData(universityName: String, keyword: String): List<DepartmentSearchItemResponse> {
+        val normalizedUniversityName = normalizeKeyword(universityName)
+        val rows = loadStandardDataRows()
+        if (rows.isEmpty()) return emptyList()
+        logger.warn(
+            "학과 공공데이터 API 실패로 포털 표준데이터 fallback 사용 universityName={} keyword={}",
+            universityName,
+            keyword
+        )
+        return rows.asSequence()
+            .filter { row -> normalizeKeyword(row.universityName) == normalizedUniversityName }
+            .filter { row -> row.departmentName.contains(keyword, ignoreCase = true) }
+            .map { row ->
+                DepartmentSearchItemResponse(
+                    universityName = row.universityName,
+                    departmentName = row.departmentName,
+                    departmentCode = row.departmentCode
+                )
+            }
+            .distinctBy { normalizeKeyword(it.departmentName) }
+            .take(MAX_RESULT_SIZE)
+            .toList()
+    }
+
     private fun fetchPublicUniversityMajorApiPage(
         path: String,
         pageNo: Int,
@@ -466,6 +650,60 @@ class AcademicSearchService(
         }.onFailure { ex ->
             logger.warn("대학교/학과 JSON 응답 파싱 실패: {}", ex.message)
         }.getOrElse { emptyList() }
+    }
+
+    private fun loadStandardDataRows(): List<StandardAcademicRow> {
+        val cached = standardDataCache
+        val now = Instant.now()
+        if (cached != null && cached.expiresAt.isAfter(now)) {
+            return cached.rows
+        }
+
+        val html = runCatching {
+            standardDataPortalClient.get()
+                .uri(STANDARD_DATASET_PATH)
+                .retrieve()
+                .body(String::class.java)
+                .orEmpty()
+        }.onFailure { ex ->
+            logger.warn("대학교/학과 포털 표준데이터 fallback 조회 실패 reason={}", ex.rootMessage())
+        }.getOrElse { "" }
+        if (html.isBlank()) return emptyList()
+
+        val parsedRows = parseStandardDataRows(html)
+        if (parsedRows.isNotEmpty()) {
+            standardDataCache = StandardDataCache(
+                rows = parsedRows,
+                expiresAt = now.plusSeconds(STANDARD_DATA_CACHE_TTL_SECONDS)
+            )
+        }
+        return parsedRows
+    }
+
+    private fun parseStandardDataRows(html: String): List<StandardAcademicRow> {
+        return STANDARD_ROW_REGEX.findAll(html)
+            .mapNotNull { match ->
+                val cells = STANDARD_CELL_REGEX.findAll(match.groupValues[1])
+                    .map { cellMatch -> stripHtml(cellMatch.groupValues[1]) }
+                    .toList()
+                if (cells.size <= STANDARD_DEPARTMENT_CODE_INDEX) return@mapNotNull null
+                val universityName = cells[STANDARD_UNIVERSITY_NAME_INDEX]
+                val departmentName = cells[STANDARD_DEPARTMENT_NAME_INDEX]
+                if (universityName.isBlank() || departmentName.isBlank()) return@mapNotNull null
+                StandardAcademicRow(
+                    universityName = universityName,
+                    departmentName = departmentName,
+                    departmentCode = cells[STANDARD_DEPARTMENT_CODE_INDEX].takeIf { it.isNotBlank() }
+                )
+            }
+            .toList()
+    }
+
+    private fun stripHtml(raw: String): String {
+        return HtmlUtils.htmlUnescape(raw)
+            .replace(HTML_TAG_REGEX, " ")
+            .replace(HTML_WHITESPACE_REGEX, " ")
+            .trim()
     }
 
     private fun resolveUniversityEntity(universityId: Long?, universityName: String): AcademicUniversity? {
@@ -567,6 +805,30 @@ class AcademicSearchService(
         }
     }
 
+    private data class StandardAcademicRow(
+        val universityName: String,
+        val departmentName: String,
+        val departmentCode: String?
+    )
+
+    private data class StandardDataCache(
+        val rows: List<StandardAcademicRow>,
+        val expiresAt: Instant
+    )
+
+    data class StandardDataImportSummary(
+        val totalRows: Int = 0,
+        val importedUniversities: Int = 0,
+        val importedDepartments: Int = 0,
+        val totalUniversities: Int = 0
+    )
+
+    data class AcademicMetadataImportRow(
+        val universityName: String,
+        val departmentName: String,
+        val departmentCode: String? = null
+    )
+
     private fun Throwable.rootMessage(): String {
         return generateSequence(this) { it.cause }
             .lastOrNull()
@@ -643,5 +905,15 @@ class AcademicSearchService(
         private const val QUICK_REMOTE_DEPARTMENT_PAGES = 1
         private const val MAX_REMOTE_REQUEST_ATTEMPTS = 3
         private const val REMOTE_RETRY_DELAY_MS = 250L
+        private const val STANDARD_DATA_PORTAL_BASE_URL = "https://www.data.go.kr"
+        private const val STANDARD_DATASET_PATH = "/data/15107737/standard.do"
+        private const val STANDARD_DATA_CACHE_TTL_SECONDS = 21_600L
+        private const val STANDARD_UNIVERSITY_NAME_INDEX = 5
+        private const val STANDARD_DEPARTMENT_NAME_INDEX = 11
+        private const val STANDARD_DEPARTMENT_CODE_INDEX = 12
+        private val STANDARD_ROW_REGEX = Regex("""<tr class="contentsTr">(.*?)</tr>""", setOf(RegexOption.DOT_MATCHES_ALL))
+        private val STANDARD_CELL_REGEX = Regex("""<td>\s*(.*?)\s*</td>""", setOf(RegexOption.DOT_MATCHES_ALL))
+        private val HTML_TAG_REGEX = Regex("""<[^>]+>""")
+        private val HTML_WHITESPACE_REGEX = Regex("""\s+""")
     }
 }
