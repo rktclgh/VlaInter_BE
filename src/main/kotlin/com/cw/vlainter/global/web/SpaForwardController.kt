@@ -30,6 +30,9 @@ class SpaForwardController {
     @GetMapping(
         "/login",
         "/join",
+        "/terms",
+        "/privacy",
+        "/about",
         "/auth/kakao/callback",
         "/content/**"
     )
