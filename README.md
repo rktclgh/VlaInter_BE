@@ -58,11 +58,5 @@ Vlainter는 다릅니다.
         송치호
       </a>
     </td>
-    <td align="center">
-      <a href="https://github.com/rladbstn0">
-        <img src="https://github.com/rladbstn0.png" width="120"/>
-        김윤수
-      </a>
-    </td>
   </tr>
 </table>
