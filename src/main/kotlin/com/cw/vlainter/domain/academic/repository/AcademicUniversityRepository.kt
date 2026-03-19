@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param
 interface AcademicUniversityRepository : JpaRepository<AcademicUniversity, Long> {
     fun findByExternalCode(externalCode: String): AcademicUniversity?
     fun findByNormalizedName(normalizedName: String): AcademicUniversity?
+    fun findAllByNormalizedNameIn(normalizedNames: Collection<String>): List<AcademicUniversity>
 
     @Query(
         """

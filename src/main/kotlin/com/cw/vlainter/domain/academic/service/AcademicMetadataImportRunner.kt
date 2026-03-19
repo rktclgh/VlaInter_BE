@@ -9,6 +9,10 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.ApplicationArguments
 import org.springframework.boot.ApplicationRunner
 import org.springframework.stereotype.Component
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -23,6 +27,12 @@ class AcademicMetadataImportRunner(
     @Value("\${academic.metadata-import.json-path:}")
     private lateinit var jsonPath: String
 
+    @Value("\${academic.metadata-import.csv-path:}")
+    private lateinit var csvPath: String
+
+    @Value("\${academic.metadata-import.csv-encoding:cp949}")
+    private lateinit var csvEncoding: String
+
     @Value("\${academic.metadata-import.targets:}")
     private lateinit var rawTargets: String
 
@@ -33,6 +43,46 @@ class AcademicMetadataImportRunner(
 
     override fun run(args: ApplicationArguments) {
         if (!enabled) return
+
+        if (mode.equals("scrape-all", ignoreCase = true) || mode.equals("portal-import", ignoreCase = true)) {
+            val summary = academicSearchService.importAllFromStandardData()
+            logger.info(
+                "학적 메타데이터 전체 적재 완료 source=standard.do totalRows={} totalUniversities={} importedUniversities={} importedDepartments={}",
+                summary.totalRows,
+                summary.totalUniversities,
+                summary.importedUniversities,
+                summary.importedDepartments
+            )
+            return
+        }
+
+        if (mode.equals("csv-import-all", ignoreCase = true) || mode.equals("csv-all", ignoreCase = true)) {
+            val path = csvPath.trim()
+            require(path.isNotEmpty()) { "academic.metadata-import.csv-path is required" }
+            val summary = academicSearchService.importAcademicRows(loadCsvRecords(Path.of(path), csvEncoding))
+            logger.info(
+                "학적 메타데이터 전체 적재 완료 source=csv totalRows={} totalUniversities={} importedUniversities={} importedDepartments={}",
+                summary.totalRows,
+                summary.totalUniversities,
+                summary.importedUniversities,
+                summary.importedDepartments
+            )
+            return
+        }
+
+        if (mode.equals("json-import-all", ignoreCase = true) || mode.equals("json-all", ignoreCase = true)) {
+            val paths = parsePaths(jsonPath)
+            require(paths.isNotEmpty()) { "academic.metadata-import.json-path is required" }
+            val summary = academicSearchService.importAcademicRows(loadJsonRecords(paths))
+            logger.info(
+                "학적 메타데이터 전체 적재 완료 source=json totalRows={} totalUniversities={} importedUniversities={} importedDepartments={}",
+                summary.totalRows,
+                summary.totalUniversities,
+                summary.importedUniversities,
+                summary.importedDepartments
+            )
+            return
+        }
 
         val targets = parseTargets(rawTargets)
         require(targets.isNotEmpty()) { "academic.metadata-import.targets is required" }
@@ -97,6 +147,91 @@ class AcademicMetadataImportRunner(
                 ?.toList()
                 .orEmpty()
         }
+    }
+
+    private fun loadJsonRecords(paths: List<Path>): List<AcademicSearchService.AcademicMetadataImportRow> {
+        return paths.flatMap { path ->
+            loadRecords(path).mapNotNull { record ->
+                val universityName = record.path("학교명").asText().trim()
+                val departmentName = record.path("학과명").asText().trim()
+                if (universityName.isBlank() || departmentName.isBlank()) {
+                    return@mapNotNull null
+                }
+
+                AcademicSearchService.AcademicMetadataImportRow(
+                    universityName = universityName,
+                    departmentName = departmentName,
+                    departmentCode = record.path("학과코드명(7대계열)")
+                        .asText()
+                        .trim()
+                        .takeIf { it.isNotBlank() }
+                )
+            }
+        }
+    }
+
+    private fun loadCsvRecords(path: Path, encoding: String): List<AcademicSearchService.AcademicMetadataImportRow> {
+        require(Files.exists(path)) { "학과 메타데이터 CSV 파일을 찾을 수 없습니다: $path" }
+        val decoder = Charset.forName(encoding)
+            .newDecoder()
+            .onMalformedInput(CodingErrorAction.REPLACE)
+            .onUnmappableCharacter(CodingErrorAction.REPLACE)
+        BufferedReader(InputStreamReader(Files.newInputStream(path), decoder)).useLines { lines ->
+            val iterator = lines.iterator()
+            if (!iterator.hasNext()) return emptyList()
+            val header = parseCsvLine(iterator.next().removePrefix("\uFEFF"))
+            val universityIndex = header.indexOf("학교명")
+            val departmentIndex = header.indexOf("학과명")
+            val departmentCodeIndex = header.indexOf("학과코드명(7대계열)")
+            require(universityIndex >= 0 && departmentIndex >= 0) {
+                "CSV 헤더에서 학교명/학과명 컬럼을 찾지 못했습니다."
+            }
+
+            val records = mutableListOf<AcademicSearchService.AcademicMetadataImportRow>()
+            iterator.forEachRemaining { line ->
+                if (line.isBlank()) return@forEachRemaining
+                val columns = parseCsvLine(line)
+                val universityName = columns.getOrNull(universityIndex)?.trim().orEmpty()
+                val departmentName = columns.getOrNull(departmentIndex)?.trim().orEmpty()
+                if (universityName.isBlank() || departmentName.isBlank()) return@forEachRemaining
+                records += AcademicSearchService.AcademicMetadataImportRow(
+                    universityName = universityName,
+                    departmentName = departmentName,
+                    departmentCode = columns.getOrNull(departmentCodeIndex)?.trim()?.takeIf { it.isNotBlank() }
+                )
+            }
+            return records
+        }
+    }
+
+    private fun parseCsvLine(line: String): List<String> {
+        val columns = mutableListOf<String>()
+        val current = StringBuilder()
+        var insideQuotes = false
+        var index = 0
+        while (index < line.length) {
+            val char = line[index]
+            when {
+                char == '"' && insideQuotes && index + 1 < line.length && line[index + 1] == '"' -> {
+                    current.append('"')
+                    index += 1
+                }
+
+                char == '"' -> {
+                    insideQuotes = !insideQuotes
+                }
+
+                char == ',' && !insideQuotes -> {
+                    columns += current.toString()
+                    current.setLength(0)
+                }
+
+                else -> current.append(char)
+            }
+            index += 1
+        }
+        columns += current.toString()
+        return columns
     }
 
     private fun importTarget(records: List<JsonNode>, target: ImportTarget): ImportSummary {
@@ -199,6 +334,16 @@ class AcademicMetadataImportRunner(
                     normalizedMajorName = normalize(majorName)
                 )
             }
+    }
+
+    private fun parsePaths(value: String): List<Path> {
+        return value.lineSequence()
+            .flatMap { line -> line.split(",").asSequence() }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .map { Path.of(it) }
+            .distinct()
+            .toList()
     }
 
     private fun normalize(value: String): String {
