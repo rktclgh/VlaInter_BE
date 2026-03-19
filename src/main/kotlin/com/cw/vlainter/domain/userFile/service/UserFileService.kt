@@ -168,6 +168,12 @@ class UserFileService(
         if (bytes.isEmpty()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 파일 내용이 비어 있습니다.")
         }
+        if (bytes.size.toLong() > s3Properties.maxFileSizeBytes) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "파일 크기는 ${s3Properties.maxFileSizeBytes} bytes 이하여야 합니다."
+            )
+        }
         val sanitizedOriginalFileName = extractOriginalFileName(originalFileName)
         validateBinaryFileMetadata(fileType, sanitizedOriginalFileName, contentType)
         ensureS3Configured()
@@ -303,7 +309,8 @@ class UserFileService(
         bytes: ByteArray,
         storedDisplayFileName: String? = null
     ): UserFile {
-        val sanitizedOriginalFileName = extractOriginalFileName(originalFileName)
+        val sanitizedOriginalFileName = originalFileName?.trim()?.takeIf { it.isNotBlank() }
+            ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "원본 파일명이 비어 있습니다.")
         val effectiveFileName = sanitizeStoredDisplayFileName(storedDisplayFileName) ?: sanitizedOriginalFileName
         val storageFileName = buildStorageFileName(sanitizedOriginalFileName)
         val objectKey = buildObjectKey(actor.id, fileType, storageFileName)
@@ -352,7 +359,10 @@ class UserFileService(
     }
 
     private fun registerRollbackObjectCleanup(objectKey: String) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) return
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            logger.warn("transaction synchronization not active, skipping rollback cleanup for objectKey={}", objectKey)
+            return
+        }
         TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
             override fun afterCompletion(status: Int) {
                 if (status != TransactionSynchronization.STATUS_COMMITTED) {

@@ -1994,11 +1994,12 @@ class DocumentInterviewService(
         val fromName = file.originalFileName.substringAfterLast('.', "").trim().lowercase()
         if (fromName.isNotBlank()) return fromName
 
-        return when (file.contentType?.trim()?.lowercase()) {
+        val mediaType = file.contentType?.substringBefore(';')?.trim()?.lowercase()
+        return when (mediaType) {
             "application/pdf" -> "pdf"
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> "docx"
             "application/vnd.openxmlformats-officedocument.presentationml.presentation" -> "pptx"
-            "text/plain", "text/plain; charset=utf-8" -> "txt"
+            "text/plain" -> "txt"
             "image/jpeg", "image/jpg" -> "jpg"
             "image/png" -> "png"
             else -> ""

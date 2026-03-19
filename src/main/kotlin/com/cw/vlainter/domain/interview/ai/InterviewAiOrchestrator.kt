@@ -240,12 +240,14 @@ class InterviewAiOrchestrator(
         language: InterviewLanguage = InterviewLanguage.KO
     ): List<GeneratedCourseExamQuestion> {
         require(questionCount > 0) { "questionCount must be positive." }
+        val normalizedMode = generationMode.trim().uppercase()
         val requestedStyleSet = questionStyles
             .map { it.trim().uppercase() }
             .filter { it.isNotBlank() }
             .toSet()
+        val effectiveRequestedStyleSet = if (normalizedMode == "FAST_REVIEW") setOf("DEFINITION") else requestedStyleSet
         validateCourseExamGenerationInputs(
-            requestedStyleSet = requestedStyleSet,
+            requestedStyleSet = effectiveRequestedStyleSet,
             generationMode = generationMode,
             lectureContextSnippets = lectureContextSnippets,
             styleReferenceSnippets = styleReferenceSnippets
@@ -264,7 +266,7 @@ class InterviewAiOrchestrator(
                 generationMode,
                 index + 1,
                 remaining,
-                questionStyles.joinToString(","),
+                effectiveRequestedStyleSet.joinToString(","),
                 existingQuestionTexts.size,
                 temperature
             )
@@ -274,7 +276,7 @@ class InterviewAiOrchestrator(
                 courseName = courseName,
                 professorName = professorName,
                 difficultyLevel = difficultyLevel,
-                questionStyles = questionStyles,
+                    questionStyles = effectiveRequestedStyleSet.toList(),
                 questionCount = minOf(questionCount + 2, remaining + 2),
                 lectureContextSnippets = lectureContextSnippets,
                 styleReferenceSnippets = styleReferenceSnippets,
@@ -297,13 +299,18 @@ class InterviewAiOrchestrator(
                         rejectedBlankCount += 1
                         return@forEach
                     }
-                    val normalizedStyle = item.questionStyle.trim().uppercase()
-                    if (requestedStyleSet.isNotEmpty() && normalizedStyle !in requestedStyleSet) {
+                    val normalizedStyle = if (normalizedMode == "FAST_REVIEW") "DEFINITION" else item.questionStyle.trim().uppercase()
+                    if (effectiveRequestedStyleSet.isNotEmpty() && normalizedStyle !in effectiveRequestedStyleSet) {
                         rejectedUnrequestedStyleCount += 1
                         return@forEach
                     }
                     val key = normalized.lowercase()
-                    if (!collected.containsKey(key) && isUsableCourseExamQuestion(courseName, normalized)) {
+                    val usableQuestion = if (normalizedMode == "FAST_REVIEW") {
+                        isUsableFastReviewCourseExamQuestion(normalized)
+                    } else {
+                        isUsableCourseExamQuestion(courseName, normalized)
+                    }
+                    if (!collected.containsKey(key) && usableQuestion) {
                         collected[key] = item.copy(
                             questionNo = collected.size + 1,
                             questionText = normalized,
@@ -1825,7 +1832,7 @@ class InterviewAiOrchestrator(
             }
         }
         val usedCount = priorityTerms.count { term ->
-            Regex("""(?i)\b${Regex.escape(term)}\b""").containsMatchIn(renderedSummary)
+            buildTechnicalAliasRegex(term).containsMatchIn(renderedSummary)
         }
         val minimumRequired = when {
             priorityTerms.size >= 6 -> 3
@@ -1878,29 +1885,18 @@ class InterviewAiOrchestrator(
     private fun GeneratedCourseMaterialSummary.normalizeTechnicalTerminology(
         preservedTerms: List<String>
     ): GeneratedCourseMaterialSummary {
-        val alwaysActiveGlossary = setOf(
-            "Architecture",
-            "Mechanism",
-            "Transformer",
-            "Attention",
-            "Seq2Seq",
-            "Encoder",
-            "Decoder",
-            "Query",
-            "Key",
-            "Value",
-            "Positional Encoding",
-            "Multi-Head Attention",
-            "Residual Connection",
-            "Layer Normalization",
-            "Beam Search"
-        )
         val activeGlossary = technicalTermGlossary.filter { entry ->
             preservedTerms.any { preserved ->
-                preserved.equals(entry.canonical, ignoreCase = true) ||
-                    preserved.contains(entry.canonical, ignoreCase = true) ||
-                    entry.canonical.contains(preserved, ignoreCase = true)
-            } || entry.canonical in alwaysActiveGlossary
+                val normalizedPreserved = preserved.trim()
+                normalizedPreserved.equals(entry.canonical, ignoreCase = true) ||
+                    normalizedPreserved.contains(entry.canonical, ignoreCase = true) ||
+                    buildTechnicalAliasRegex(entry.canonical).containsMatchIn(normalizedPreserved) ||
+                    entry.aliases.any { alias ->
+                        normalizedPreserved.equals(alias, ignoreCase = true) ||
+                            normalizedPreserved.contains(alias, ignoreCase = true) ||
+                            buildTechnicalAliasRegex(alias).containsMatchIn(normalizedPreserved)
+                    }
+            }
         }
         if (activeGlossary.isEmpty()) return this
 
@@ -1940,6 +1936,30 @@ class InterviewAiOrchestrator(
 
     private fun buildTechnicalAliasRegex(alias: String): Regex {
         return Regex("""(?<![A-Za-z0-9가-힣])${Regex.escape(alias)}(?![A-Za-z0-9가-힣])""")
+    }
+
+    private fun isUsableFastReviewCourseExamQuestion(questionText: String): Boolean {
+        val normalized = questionText.trim()
+        if (normalized.length < 6) return false
+        if (normalized.length > 120) return false
+
+        val lowered = normalized.lowercase()
+        if (listOf("말해 보세요", "말해보세요", "설명해 주세요", "설명해주세요", "어떻게 생각", "의견을 말씀").any { lowered.contains(it) }) {
+            return false
+        }
+
+        return listOf(
+            "정의하시오",
+            "서술하시오",
+            "쓰시오",
+            "기입하시오",
+            "고르시오",
+            "맞으면",
+            "틀리면",
+            "한 줄로",
+            "무엇인가",
+            "무엇인지"
+        ).any { normalized.contains(it) } || normalized.endsWith("?")
     }
 
     private fun buildPastExamPracticeRefinementPrompt(
