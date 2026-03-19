@@ -139,7 +139,7 @@ class UserFileService(
         allowedContentTypes: Set<String>? = null,
         invalidTypeMessage: String? = null
     ): UserFileResponse {
-        val actor = loadActiveUserForUpdate(principal.userId)
+        val actor = loadActiveUser(principal.userId)
         validateUploadFile(fileType, file, allowedExtensions, allowedContentTypes, invalidTypeMessage)
         ensureS3Configured()
         val contentType = file.contentType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
@@ -164,7 +164,7 @@ class UserFileService(
         bytes: ByteArray,
         storedDisplayFileName: String? = null
     ): UserFile {
-        val actor = loadActiveUserForUpdate(userId)
+        val actor = loadActiveUser(userId)
         if (bytes.isEmpty()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 파일 내용이 비어 있습니다.")
         }
@@ -284,16 +284,6 @@ class UserFileService(
     private fun loadActiveUser(userId: Long): User {
         val user = userRepository.findById(userId)
             .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "인증이 필요합니다.") }
-
-        if (user.status != UserStatus.ACTIVE) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "비활성 상태 계정은 파일 기능을 사용할 수 없습니다.")
-        }
-        return user
-    }
-
-    private fun loadActiveUserForUpdate(userId: Long): User {
-        val user = userRepository.findByIdForUpdate(userId)
-            ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "인증이 필요합니다.")
 
         if (user.status != UserStatus.ACTIVE) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "비활성 상태 계정은 파일 기능을 사용할 수 없습니다.")

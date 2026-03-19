@@ -73,7 +73,9 @@ class InterviewAiOrchestrator(
     private val challengeIntentHints = setOf("문제", "난관", "도전", "어려움", "해결", "트러블", "challenge", "problem", "issue", "solve")
     private val collaborationIntentHints = setOf("협업", "조율", "갈등", "커뮤니케이션", "collaboration", "communication", "conflict")
     private val courseMaterialSummaryRetryDelaysMs = listOf(400L, 900L)
-    private val preservedTermPhraseRegex = Regex("""\b[A-Za-z][A-Za-z0-9+/#()\-]*(?:\s+[A-Za-z][A-Za-z0-9+/#()\-]*){0,3}\b""")
+    private val preservedTermPhraseRegex = Regex(
+        """(?<![A-Za-z0-9가-힣])[A-Za-z][A-Za-z0-9+/#()\-]*(?:\s+[A-Za-z][A-Za-z0-9+/#()\-]*){0,3}(?=$|[\s,.:;)\]}"'])"""
+    )
     private val preservedSingleWordStopwords = setOf(
         "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "of", "on", "or",
         "that", "the", "to", "via", "with", "without"
@@ -306,7 +308,7 @@ class InterviewAiOrchestrator(
                     }
                     val key = normalized.lowercase()
                     val usableQuestion = if (normalizedMode == "FAST_REVIEW") {
-                        isUsableFastReviewCourseExamQuestion(normalized)
+                        isUsableFastReviewCourseExamQuestion(normalized, language)
                     } else {
                         isUsableCourseExamQuestion(courseName, normalized)
                     }
@@ -1369,62 +1371,128 @@ class InterviewAiOrchestrator(
                 "snippets" to source.snippets
             )
         }
-        return """
-            ${generationSystemRole(language, "university course summary planner")}
-            ${jsonLanguageInstruction(language)}
+        val professorLine = professorName?.trim()?.takeIf { it.isNotBlank() } ?: if (language == InterviewLanguage.EN) "Unknown" else "미상"
+        val preservedTermLine = if (preservedTerms.isEmpty()) {
+            if (language == InterviewLanguage.EN) "None" else "없음"
+        } else {
+            preservedTerms.joinToString(", ")
+        }
+        val sourceJson = objectMapper.writeValueAsString(payload)
+        return when (language) {
+            InterviewLanguage.KO -> """
+                ${courseSummarySystemRole(language, "대학 강의자료 구조화 요약의 목차를 설계하는 학습 설계자입니다.", "academic study planner")}
+                ${courseSummaryJsonInstruction(language)}
 
-            [대학교]
-            $universityName
+                [대학교]
+                $universityName
 
-            [학과]
-            $departmentName
+                [학과]
+                $departmentName
 
-            [과목명]
-            $courseName
+                [과목명]
+                $courseName
 
-            [교수명]
-            ${professorName?.trim()?.takeIf { it.isNotBlank() } ?: "미상"}
+                [교수명]
+                $professorLine
 
-            [원문 용어 유지 목록]
-            ${if (preservedTerms.isEmpty()) "없음" else preservedTerms.joinToString(", ")}
+                [원문 용어 유지 목록]
+                $preservedTermLine
 
-            [선택 강의자료 발췌]
-            ${objectMapper.writeValueAsString(payload)}
+                [선택 강의자료 발췌]
+                $sourceJson
 
-            출력 JSON 스키마:
-            {
-              "title": "원문 용어를 살린 요약본 제목",
-              "overviewFocus": "과목의 큰 흐름을 어떻게 설명할지 1~2문장 메모",
-              "coreTakeawayAngles": [
-                "한눈에 보기에서 반드시 다룰 핵심 관점",
-                "..."
-              ],
-              "majorTopics": [
+                출력 JSON 스키마:
                 {
-                  "title": "대주제 제목",
-                  "summaryFocus": "이 대주제의 핵심 논점 메모",
-                  "subtopics": [
+                  "title": "원문 용어를 살린 요약본 제목",
+                  "overviewFocus": "과목의 큰 흐름을 어떻게 설명할지 1~2문장 메모",
+                  "coreTakeawayAngles": [
+                    "한눈에 보기에서 반드시 다룰 핵심 관점",
+                    "..."
+                  ],
+                  "majorTopics": [
                     {
-                      "title": "소주제 제목",
-                      "summaryFocus": "이 소주제에서 반드시 설명할 개념/원리/비교 포인트 메모",
-                      "mustUseTerms": ["반드시 원문으로 남길 용어", "..."]
+                      "title": "대주제 제목",
+                      "summaryFocus": "이 대주제의 핵심 논점 메모",
+                      "subtopics": [
+                        {
+                          "title": "소주제 제목",
+                          "summaryFocus": "이 소주제에서 반드시 설명할 개념/원리/비교 포인트 메모",
+                          "mustUseTerms": ["반드시 원문으로 남길 용어", "..."]
+                        }
+                      ]
                     }
                   ]
                 }
-              ]
-            }
 
-            규칙:
-            - 반드시 JSON 객체만 반환
-            - 발췌를 읽고 먼저 목차와 설명 흐름만 설계할 것
-            - 대주제 순서는 배경 -> 핵심 메커니즘 -> 구조/구성요소 -> 동작/추론 -> 활용/의미처럼 이해가 자연스럽게 이어지도록 짤 것
-            - majorTopics는 3~6개, 각 대주제 subtopics는 3~5개 작성할 것
-            - title, 대주제 제목, 소주제 제목에는 발췌에 나온 원문 용어를 우선 사용할 것
-            - 원문 용어 유지 목록에 있는 전문용어, 약어, 수식 표기는 번역하지 말 것
-            - 같은 내용을 반복하는 소주제는 만들지 말 것
-            - "설명한다", "다룬다", "중요하다" 같은 일반론 대신 실제로 써야 할 개념, 비교축, 인과관계를 메모할 것
-            - ${jsonObjectOnlyRule(language)}
-        """.trimIndent()
+                규칙:
+                - 반드시 JSON 객체만 반환
+                - 발췌를 읽고 먼저 목차와 설명 흐름만 설계할 것
+                - 대주제 순서는 배경 -> 핵심 메커니즘 -> 구조/구성요소 -> 동작/추론 -> 활용/의미처럼 이해가 자연스럽게 이어지도록 짤 것
+                - majorTopics는 3~6개, 각 대주제 subtopics는 3~5개 작성할 것
+                - title, 대주제 제목, 소주제 제목에는 발췌에 나온 원문 용어를 우선 사용할 것
+                - 원문 용어 유지 목록에 있는 전문용어, 약어, 수식 표기는 번역하지 말 것
+                - 같은 내용을 반복하는 소주제는 만들지 말 것
+                - "설명한다", "다룬다", "중요하다" 같은 일반론 대신 실제로 써야 할 개념, 비교축, 인과관계를 메모할 것
+                - ${jsonObjectOnlyRule(language)}
+            """.trimIndent()
+
+            InterviewLanguage.EN -> """
+                ${courseSummarySystemRole(language, "대학 강의자료 구조화 요약의 목차를 설계하는 학습 설계자입니다.", "academic study planner who designs the outline of a structured university course summary")}
+                ${courseSummaryJsonInstruction(language)}
+
+                [University]
+                $universityName
+
+                [Department]
+                $departmentName
+
+                [Course]
+                $courseName
+
+                [Professor]
+                $professorLine
+
+                [Preserve These Source Terms]
+                $preservedTermLine
+
+                [Selected Course Material Snippets]
+                $sourceJson
+
+                Output JSON schema:
+                {
+                  "title": "summary title that preserves original terminology",
+                  "overviewFocus": "1-2 sentence memo describing the high-level narrative arc of the course",
+                  "coreTakeawayAngles": [
+                    "critical lens that must appear in the quick review section",
+                    "..."
+                  ],
+                  "majorTopics": [
+                    {
+                      "title": "major topic title",
+                      "summaryFocus": "memo describing the main academic issue covered by this topic",
+                      "subtopics": [
+                        {
+                          "title": "subtopic title",
+                          "summaryFocus": "memo describing the concept, mechanism, comparison, or reasoning that must be explained here",
+                          "mustUseTerms": ["original term that must remain unchanged", "..."]
+                        }
+                      ]
+                    }
+                  ]
+                }
+
+                Rules:
+                - Return a JSON object only
+                - Read the snippets and design the outline and explanation flow first
+                - Arrange major topics in a natural learning order such as background -> core mechanism -> structure/components -> operation/inference -> application/meaning
+                - Write 3-6 majorTopics, and 3-5 subtopics for each major topic
+                - Prefer original terminology from the snippets in the title, major topic titles, and subtopic titles
+                - Do not translate protected technical terms, abbreviations, formulas, or symbols listed in the preserved-terms section
+                - Do not create overlapping subtopics that repeat the same content
+                - Avoid vague notes like "explains" or "is important"; write the actual concepts, comparison axes, and causal links that the final summary should cover
+                - ${jsonObjectOnlyRule(language)}
+            """.trimIndent()
+        }
     }
 
     private fun buildCourseMaterialSummaryPrompt(
@@ -1443,94 +1511,186 @@ class InterviewAiOrchestrator(
                 "snippets" to source.snippets
             )
         }
-        return """
-            ${generationSystemRole(language, "university course summary writer")}
-            ${jsonLanguageInstruction(language)}
+        val professorLine = professorName?.trim()?.takeIf { it.isNotBlank() } ?: if (language == InterviewLanguage.EN) "Unknown" else "미상"
+        val preservedTermLine = if (preservedTerms.isEmpty()) {
+            if (language == InterviewLanguage.EN) "None" else "없음"
+        } else {
+            preservedTerms.joinToString(", ")
+        }
+        val outlineJson = objectMapper.writeValueAsString(outline)
+        val sourceJson = objectMapper.writeValueAsString(payload)
+        return when (language) {
+            InterviewLanguage.KO -> """
+                ${courseSummarySystemRole(language, "대학 강의자료를 구조화 요약으로 정리하는 학습 설계자입니다.", "academic study writer")}
+                ${courseSummaryJsonInstruction(language)}
 
-            [대학교]
-            $universityName
+                [대학교]
+                $universityName
 
-            [학과]
-            $departmentName
+                [학과]
+                $departmentName
 
-            [과목명]
-            $courseName
+                [과목명]
+                $courseName
 
-            [교수명]
-            ${professorName?.trim()?.takeIf { it.isNotBlank() } ?: "미상"}
+                [교수명]
+                $professorLine
 
-            [원문 용어 유지 목록]
-            ${if (preservedTerms.isEmpty()) "없음" else preservedTerms.joinToString(", ")}
+                [원문 용어 유지 목록]
+                $preservedTermLine
 
-            [작성 계획]
-            ${objectMapper.writeValueAsString(outline)}
+                [작성 계획]
+                $outlineJson
 
-            [선택 강의자료 발췌]
-            ${objectMapper.writeValueAsString(payload)}
+                [선택 강의자료 발췌]
+                $sourceJson
 
-            출력 JSON 스키마:
-            {
-              "title": "요약본 제목",
-              "overview": "과목 전체 흐름을 설명하는 2~3문장 요약",
-              "coreTakeaways": [
-                "강의 전체를 빠르게 이해할 수 있는 핵심 정리 문장",
-                "..."
-              ],
-              "majorTopics": [
+                출력 JSON 스키마:
                 {
-                  "title": "대주제 제목",
-                  "summary": "이 대주제의 핵심 맥락과 학술적 의의를 설명하는 1~2문장",
-                  "subtopics": [
+                  "title": "요약본 제목",
+                  "overview": "과목 전체 흐름을 설명하는 2~3문장 요약",
+                  "coreTakeaways": [
+                    "강의 전체를 빠르게 이해할 수 있는 핵심 정리 문장",
+                    "..."
+                  ],
+                  "majorTopics": [
                     {
-                      "title": "소주제 제목",
-                      "summary": "소주제의 핵심 개념과 맥락을 설명하는 1~2문장",
-                      "keyPoints": [
-                        "핵심 개념, 정의, 원리, 절차, 공식, 비교 포인트 중 하나를 구체적으로 설명하는 짧고 선명한 문장",
-                        "..."
-                      ],
-                      "supplementaryNotes": [
-                        "필요할 때만 추가하는 보충 설명, 직관, 간단한 흐름 설명 또는 짧은 비유",
-                        "..."
+                      "title": "대주제 제목",
+                      "summary": "이 대주제의 핵심 맥락과 학술적 의의를 설명하는 1~2문장",
+                      "subtopics": [
+                        {
+                          "title": "소주제 제목",
+                          "summary": "소주제의 핵심 개념과 맥락을 설명하는 1~2문장",
+                          "keyPoints": [
+                            "핵심 개념, 정의, 원리, 절차, 공식, 비교 포인트 중 하나를 구체적으로 설명하는 짧고 선명한 문장",
+                            "..."
+                          ],
+                          "supplementaryNotes": [
+                            "필요할 때만 추가하는 보충 설명, 직관, 간단한 흐름 설명 또는 짧은 비유",
+                            "..."
+                          ]
+                        }
                       ]
                     }
                   ]
                 }
-              ]
-            }
 
-            규칙:
-            - 선택된 강의자료 발췌만 근거로 사용할 것
-            - 자료에 없는 내용은 사실처럼 단정해서 보태지 말 것
-            - 작성 계획의 대주제/소주제 흐름을 기본 골격으로 따를 것
-            - title, overview, coreTakeaways, majorTopics, subtopics 어디에서도 원문 용어 유지 목록의 표기를 번역하거나 한글식으로 바꾸지 말 것
-            - 기술 용어는 영어 원문을 기본 표기로 사용할 것. 한국어만 단독으로 쓰지 말 것
-            - 원문 용어를 설명할 때는 "Transformer Encoder(인코더 블록)"처럼 영어 원문을 먼저 쓰고, 필요한 경우에만 괄호 설명을 덧붙일 것
-            - 영문 전문용어를 통째로 한글화한 제목("트랜스포머 인코더", "어텐션 메커니즘", "쿼리/키/밸류")은 금지하고, 반드시 영어 원문 표기를 포함할 것
-            - overview는 과목 전체의 큰 흐름과 개념 간 연결 관계를 짧고 선명하게 정리할 것
-            - coreTakeaways는 반드시 5~7개 작성할 것
-            - coreTakeaways는 시험 직전 훑어볼 수 있는 밀도 높은 문장으로 작성할 것
-            - majorTopics는 반드시 4~6개 작성할 것
-            - 각 majorTopics.summary는 짧은 감상문이 아니라, 그 대주제에서 다루는 학술적 범위와 핵심 논점을 1~2문장으로 압축해서 설명할 것
-            - 각 대주제마다 subtopics를 반드시 3~5개 작성할 것
-            - 각 소주제에는 summary를 반드시 작성할 것
-            - 각 소주제 summary는 그 소주제가 어떤 개념을 설명하고, 상위 대주제 안에서 어떤 역할을 하는지 드러내는 1~2문장으로 작성할 것
-            - 각 소주제의 keyPoints는 반드시 4~6개 작성할 것
-            - keyPoints는 짧은 키워드가 아니라 완결된 설명 문장으로 작성하되, 군더더기 없이 바로 이해되게 쓸 것
-            - keyPoints에는 정의, 원리, 시간복잡도, 점화식, 절차, 비교 기준, 장단점, 예외 조건처럼 시험 답안에 직접 쓸 수 있는 학술 정보를 우선 포함할 것
-            - 가능하면 한 소주제 안에서 "정의 -> 작동 원리 -> 예시/비교 -> 주의할 점" 순서가 드러나게 구성할 것
-            - supplementaryNotes는 필요한 경우에만 0~2개 작성할 것
-            - 추상적이거나 과정 설명이 필요한 소주제에는 supplementaryNotes를 최소 1개 넣어도 좋다
-            - supplementaryNotes에는 이해를 돕는 짧은 추가설명, 흐름도형 설명("A -> B -> C"), 비교표현, 직관적 비유를 넣을 수 있다
-            - supplementaryNotes는 자료에 없는 외부 사실을 꾸며내지 말고, 자료의 맥락을 더 쉽게 풀어 쓰는 수준에서만 사용한다
-            - 학습 조언, 태도, 체크리스트, 시험 요령 같은 메타 조언은 쓰지 말 것
-            - "중요하다", "다룬다", "설명한다" 같은 메타 문장은 최소화하고, 개념 자체와 인과관계를 직접 서술할 것
-            - overview와 summary는 "무엇을 설명한다"보다 "왜 이 개념이 등장했고 다음 개념과 어떻게 이어지는지"를 드러낼 것
-            - keyPoints와 supplementaryNotes에서 간단한 ASCII 흐름도, 비교 표현, 단계 표현을 사용할 수 있다
-            - 발췌에 등장하는 용어를 최대한 그대로 살려 source-specific하게 서술할 것
-            - 입력 정보가 충분하면 너무 짧게 끝내지 말고, 대주제/소주제/핵심 포인트를 충분히 채워 구조화 노트처럼 작성할 것
-            - 서로 다른 자료에서 같은 개념이 반복되면 하나의 대주제로 묶고, 세부 차이는 소주제/핵심내용에서 구분할 것
-            - ${jsonObjectOnlyRule(language)}
-        """.trimIndent()
+                규칙:
+                - 선택된 강의자료 발췌만 근거로 사용할 것
+                - 자료에 없는 내용은 사실처럼 단정해서 보태지 말 것
+                - 작성 계획의 대주제/소주제 흐름을 기본 골격으로 따를 것
+                - title, overview, coreTakeaways, majorTopics, subtopics 어디에서도 원문 용어 유지 목록의 표기를 번역하거나 한글식으로 바꾸지 말 것
+                - 기술 용어는 영어 원문을 기본 표기로 사용할 것. 한국어만 단독으로 쓰지 말 것
+                - 원문 용어를 설명할 때는 "Transformer Encoder(인코더 블록)"처럼 영어 원문을 먼저 쓰고, 필요한 경우에만 괄호 설명을 덧붙일 것
+                - 영문 전문용어를 통째로 한글화한 제목("트랜스포머 인코더", "어텐션 메커니즘", "쿼리/키/밸류")은 금지하고, 반드시 영어 원문 표기를 포함할 것
+                - overview는 과목 전체의 큰 흐름과 개념 간 연결 관계를 짧고 선명하게 정리할 것
+                - coreTakeaways는 반드시 5~7개 작성할 것
+                - coreTakeaways는 시험 직전 훑어볼 수 있는 밀도 높은 문장으로 작성할 것
+                - majorTopics는 반드시 4~6개 작성할 것
+                - 각 majorTopics.summary는 짧은 감상문이 아니라, 그 대주제에서 다루는 학술적 범위와 핵심 논점을 1~2문장으로 압축해서 설명할 것
+                - 각 대주제마다 subtopics를 반드시 3~5개 작성할 것
+                - 각 소주제에는 summary를 반드시 작성할 것
+                - 각 소주제 summary는 그 소주제가 어떤 개념을 설명하고, 상위 대주제 안에서 어떤 역할을 하는지 드러내는 1~2문장으로 작성할 것
+                - 각 소주제의 keyPoints는 반드시 4~6개 작성할 것
+                - keyPoints는 짧은 키워드가 아니라 완결된 설명 문장으로 작성하되, 군더더기 없이 바로 이해되게 쓸 것
+                - keyPoints에는 정의, 원리, 시간복잡도, 점화식, 절차, 비교 기준, 장단점, 예외 조건처럼 시험 답안에 직접 쓸 수 있는 학술 정보를 우선 포함할 것
+                - 가능하면 한 소주제 안에서 "정의 -> 작동 원리 -> 예시/비교 -> 주의할 점" 순서가 드러나게 구성할 것
+                - supplementaryNotes는 필요한 경우에만 0~2개 작성할 것
+                - 추상적이거나 과정 설명이 필요한 소주제에는 supplementaryNotes를 최소 1개 넣어도 좋다
+                - supplementaryNotes에는 이해를 돕는 짧은 추가설명, 흐름도형 설명("A -> B -> C"), 비교표현, 직관적 비유를 넣을 수 있다
+                - supplementaryNotes는 자료에 없는 외부 사실을 꾸며내지 말고, 자료의 맥락을 더 쉽게 풀어 쓰는 수준에서만 사용한다
+                - 학습 조언, 태도, 체크리스트, 시험 요령 같은 메타 조언은 쓰지 말 것
+                - "중요하다", "다룬다", "설명한다" 같은 메타 문장은 최소화하고, 개념 자체와 인과관계를 직접 서술할 것
+                - overview와 summary는 "무엇을 설명한다"보다 "왜 이 개념이 등장했고 다음 개념과 어떻게 이어지는지"를 드러낼 것
+                - keyPoints와 supplementaryNotes에서 간단한 ASCII 흐름도, 비교 표현, 단계 표현을 사용할 수 있다
+                - 발췌에 등장하는 용어를 최대한 그대로 살려 source-specific하게 서술할 것
+                - 입력 정보가 충분하면 너무 짧게 끝내지 말고, 대주제/소주제/핵심 포인트를 충분히 채워 구조화 노트처럼 작성할 것
+                - 서로 다른 자료에서 같은 개념이 반복되면 하나의 대주제로 묶고, 세부 차이는 소주제/핵심내용에서 구분할 것
+                - ${jsonObjectOnlyRule(language)}
+            """.trimIndent()
+
+            InterviewLanguage.EN -> """
+                ${courseSummarySystemRole(language, "대학 강의자료를 구조화 요약으로 정리하는 학습 설계자입니다.", "academic study writer who turns course material into a structured summary")}
+                ${courseSummaryJsonInstruction(language)}
+
+                [University]
+                $universityName
+
+                [Department]
+                $departmentName
+
+                [Course]
+                $courseName
+
+                [Professor]
+                $professorLine
+
+                [Preserve These Source Terms]
+                $preservedTermLine
+
+                [Writing Plan]
+                $outlineJson
+
+                [Selected Course Material Snippets]
+                $sourceJson
+
+                Output JSON schema:
+                {
+                  "title": "summary title",
+                  "overview": "2-3 sentence overview of the full course flow",
+                  "coreTakeaways": [
+                    "dense sentence that helps the student review the whole lecture quickly",
+                    "..."
+                  ],
+                  "majorTopics": [
+                    {
+                      "title": "major topic title",
+                      "summary": "1-2 sentence explanation of the academic scope and significance of this topic",
+                      "subtopics": [
+                        {
+                          "title": "subtopic title",
+                          "summary": "1-2 sentence explanation of the concept and context of this subtopic",
+                          "keyPoints": [
+                            "concise but complete sentence describing a definition, mechanism, procedure, formula, comparison point, or exception",
+                            "..."
+                          ],
+                          "supplementaryNotes": [
+                            "optional extra explanation, intuition, short flow, or concise analogy",
+                            "..."
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+
+                Rules:
+                - Use only the selected course-material snippets as evidence
+                - Do not add external facts, formulas, examples, or conclusions that are not supported by the snippets
+                - Follow the outline's major-topic and subtopic flow as the default structure
+                - Do not translate or localize the preserved source terms anywhere in the title, overview, coreTakeaways, majorTopics, or subtopics
+                - Prefer the original English technical term as the primary label; do not replace it with a localized-only phrase
+                - If you add a parenthetical explanation, keep the original English term first
+                - Keep the overview short but high-density, and make the conceptual flow between ideas clear
+                - Write 5-7 coreTakeaways
+                - Write 4-6 majorTopics
+                - Write 3-5 subtopics for each major topic
+                - Every subtopic must include a summary
+                - Every subtopic must include 4-6 keyPoints
+                - keyPoints must be complete, study-ready statements rather than loose keywords
+                - Prefer academic content such as definitions, mechanisms, time complexity, recurrences, procedures, comparison criteria, trade-offs, and exception conditions
+                - When possible, let the internal order of a subtopic feel like definition -> mechanism -> example/comparison -> caution
+                - supplementaryNotes are optional and should be limited to 0-2 items per subtopic
+                - supplementaryNotes may include a short extra explanation, an ASCII flow such as "A -> B -> C", a compact comparison, or an intuition-building analogy
+                - Do not write meta advice such as study tips, attitude, checklists, or exam strategy
+                - Minimize empty meta phrasing like "this section explains"; state the concept, causal relationship, and comparison directly
+                - Make the overview and topic summaries explain why the concept appears and how it connects to the next concept
+                - Use source-specific wording whenever the snippets clearly support it
+                - If the input is rich enough, do not end too briefly; fill out the structure like a genuine structured study note
+                - When multiple sources repeat the same idea, merge them into one major topic and separate the nuances at the subtopic/key-point level
+                - ${jsonObjectOnlyRule(language)}
+            """.trimIndent()
+        }
     }
 
     private fun buildBatchTechQuestionPrompt(
@@ -1935,31 +2095,50 @@ class InterviewAiOrchestrator(
     }
 
     private fun buildTechnicalAliasRegex(alias: String): Regex {
-        return Regex("""(?<![A-Za-z0-9가-힣])${Regex.escape(alias)}(?![A-Za-z0-9가-힣])""")
+        return Regex("""(?<![A-Za-z0-9가-힣])${Regex.escape(alias)}(?![A-Za-z0-9가-힣])""", RegexOption.IGNORE_CASE)
     }
 
-    private fun isUsableFastReviewCourseExamQuestion(questionText: String): Boolean {
+    private fun isUsableFastReviewCourseExamQuestion(questionText: String, language: InterviewLanguage): Boolean {
         val normalized = questionText.trim()
         if (normalized.length < 6) return false
         if (normalized.length > 120) return false
 
         val lowered = normalized.lowercase()
-        if (listOf("말해 보세요", "말해보세요", "설명해 주세요", "설명해주세요", "어떻게 생각", "의견을 말씀").any { lowered.contains(it) }) {
-            return false
-        }
+        return when (language) {
+            InterviewLanguage.KO -> {
+                if (listOf("말해 보세요", "말해보세요", "설명해 주세요", "설명해주세요", "어떻게 생각", "의견을 말씀").any { lowered.contains(it) }) {
+                    return false
+                }
+                listOf(
+                    "정의하시오",
+                    "서술하시오",
+                    "쓰시오",
+                    "기입하시오",
+                    "고르시오",
+                    "맞으면",
+                    "틀리면",
+                    "한 줄로",
+                    "무엇인가",
+                    "무엇인지"
+                ).any { normalized.contains(it) } || normalized.endsWith("?")
+            }
 
-        return listOf(
-            "정의하시오",
-            "서술하시오",
-            "쓰시오",
-            "기입하시오",
-            "고르시오",
-            "맞으면",
-            "틀리면",
-            "한 줄로",
-            "무엇인가",
-            "무엇인지"
-        ).any { normalized.contains(it) } || normalized.endsWith("?")
+            InterviewLanguage.EN -> {
+                val fastReviewStarters = listOf(
+                    "define",
+                    "state",
+                    "write",
+                    "choose",
+                    "select",
+                    "fill in",
+                    "what is",
+                    "which",
+                    "true or false",
+                    "briefly explain"
+                )
+                fastReviewStarters.any { lowered.startsWith(it) } || normalized.endsWith("?") || normalized.endsWith(".")
+            }
+        }
     }
 
     private fun buildPastExamPracticeRefinementPrompt(
@@ -2974,6 +3153,13 @@ class InterviewAiOrchestrator(
         }
     }
 
+    private fun courseSummarySystemRole(language: InterviewLanguage, koreanRole: String, englishRole: String): String {
+        return when (language) {
+            InterviewLanguage.KO -> "당신은 $koreanRole"
+            InterviewLanguage.EN -> "You are an $englishRole."
+        }
+    }
+
     private fun validateCourseExamGenerationInputs(
         requestedStyleSet: Set<String>,
         generationMode: String,
@@ -3008,6 +3194,13 @@ class InterviewAiOrchestrator(
         return when (language) {
             InterviewLanguage.KO -> "아래 입력을 바탕으로 한국어 JSON만 출력하세요."
             InterviewLanguage.EN -> "Read the input below and return JSON only. feedback, bestPractice, and evidence must be written in English."
+        }
+    }
+
+    private fun courseSummaryJsonInstruction(language: InterviewLanguage): String {
+        return when (language) {
+            InterviewLanguage.KO -> "아래 입력을 바탕으로 설명 문장은 한국어로 작성하고 JSON 객체만 반환하세요."
+            InterviewLanguage.EN -> "Read the input below, write all explanatory strings in English, and return a JSON object only."
         }
     }
 

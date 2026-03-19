@@ -85,6 +85,8 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest
 import software.amazon.awssdk.core.sync.RequestBody
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.OffsetDateTime
@@ -1614,7 +1616,7 @@ class DocumentInterviewService(
                 "pdf" -> extractPdfText(bytes)
                 "docx" -> extractDocxText(bytes)
                 "pptx" -> extractPptxText(bytes)
-                "txt" -> extractPlainText(bytes)
+                "txt" -> extractPlainText(bytes, resolveDeclaredCharset(file.contentType))
                 "jpg", "jpeg", "png" -> extractImageTextWithOcr(bytes, format)
                 else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않는 문서 형식입니다.")
             }
@@ -1720,12 +1722,23 @@ class DocumentInterviewService(
         )
     }
 
-    private fun extractPlainText(bytes: ByteArray): ExtractedDocumentText {
+    private fun extractPlainText(bytes: ByteArray, charset: Charset = StandardCharsets.UTF_8): ExtractedDocumentText {
         return ExtractedDocumentText(
-            text = normalizeText(bytes.toString(Charsets.UTF_8)),
+            text = normalizeText(bytes.toString(charset)),
             method = "TXT_RAW",
             ocrLanguages = null
         )
+    }
+
+    private fun resolveDeclaredCharset(contentType: String?): Charset {
+        val declaredCharset = contentType
+            ?.substringAfter("charset=", missingDelimiterValue = "")
+            ?.substringBefore(';')
+            ?.trim()
+            ?.trim('"', '\'')
+            .orEmpty()
+        if (declaredCharset.isBlank()) return StandardCharsets.UTF_8
+        return runCatching { Charset.forName(declaredCharset) }.getOrDefault(StandardCharsets.UTF_8)
     }
 
     private fun extractImageTextWithOcr(bytes: ByteArray, format: String): ExtractedDocumentText {
