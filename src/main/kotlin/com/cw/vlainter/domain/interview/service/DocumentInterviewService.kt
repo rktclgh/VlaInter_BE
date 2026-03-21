@@ -134,7 +134,6 @@ class DocumentInterviewService(
         private const val AI_GENERATED_SET_DESCRIPTION = "모의면접 시작 시 자동 생성된 기술 문답"
         private const val INTRO_CATEGORY = INTERVIEW_INTRO_CATEGORY
         private const val INTRO_QUESTION_TEXT = INTERVIEW_INTRO_QUESTION_TEXT
-        private const val MAX_COURSE_VISUAL_ASSETS = 12
         private const val COURSE_VISUAL_RENDER_DPI = 140f
         private const val OCR_MIN_RENDER_WIDTH = 1800
     }
@@ -1789,7 +1788,7 @@ class DocumentInterviewService(
     private fun extractPdfVisualAssets(bytes: ByteArray): List<ExtractedCourseVisualAsset> {
         return PDDocument.load(ByteArrayInputStream(bytes)).use { document ->
             val renderer = PDFRenderer(document)
-            (0 until min(document.numberOfPages, MAX_COURSE_VISUAL_ASSETS)).map { pageIndex ->
+            (0 until document.numberOfPages).map { pageIndex ->
                 val image = renderer.renderImageWithDPI(pageIndex, COURSE_VISUAL_RENDER_DPI)
                 ExtractedCourseVisualAsset(
                     assetType = StudentCourseMaterialVisualAssetType.PDF_PAGE_RENDER,
@@ -1809,7 +1808,7 @@ class DocumentInterviewService(
     private fun extractPptxVisualAssets(bytes: ByteArray): List<ExtractedCourseVisualAsset> {
         return XMLSlideShow(ByteArrayInputStream(bytes)).use { slideShow ->
             val pageSize = slideShow.pageSize
-            slideShow.slides.take(MAX_COURSE_VISUAL_ASSETS).mapIndexed { index, slide ->
+            slideShow.slides.mapIndexed { index, slide ->
                 val image = BufferedImage(pageSize.width, pageSize.height, BufferedImage.TYPE_INT_RGB)
                 val graphics = image.createGraphics()
                 try {
@@ -1862,7 +1861,6 @@ class DocumentInterviewService(
                         extension = extension
                     )
                 }
-                .take(MAX_COURSE_VISUAL_ASSETS)
                 .mapIndexed { index, asset ->
                     asset.copy(
                         assetOrder = index + 1,
