@@ -306,13 +306,19 @@ class InterviewAiOrchestrator(
                         rejectedUnrequestedStyleCount += 1
                         return@forEach
                     }
-                    val key = normalized.lowercase()
+                    val key = buildCourseExamQuestionFingerprint(normalized)
                     val usableQuestion = if (normalizedMode == "FAST_REVIEW") {
                         isUsableFastReviewCourseExamQuestion(normalized, language)
                     } else {
                         isUsableCourseExamQuestion(courseName, normalized)
                     }
-                    if (!collected.containsKey(key) && usableQuestion) {
+                    val semanticallyDuplicated = collected.values.any {
+                        isSemanticallyDuplicateCourseExamQuestion(
+                            existingQuestion = it.questionText,
+                            candidateQuestion = normalized
+                        )
+                    }
+                    if (!collected.containsKey(key) && !semanticallyDuplicated && usableQuestion) {
                         collected[key] = item.copy(
                             questionNo = collected.size + 1,
                             questionText = normalized,
@@ -426,7 +432,7 @@ class InterviewAiOrchestrator(
                 return parseGeneratedCourseMaterialSummary(generated.text)
                     .normalizeTechnicalTerminology(preservedTerms)
                     .also {
-                        validatePreservedTerminology(it, preservedTerms)
+                        validatePreservedTerminology(it, preservedTerms, sources)
                         validateCourseMaterialSummaryDensity(it, sources)
                     }
             } catch (ex: Exception) {
@@ -1967,7 +1973,8 @@ class InterviewAiOrchestrator(
 
     private fun validatePreservedTerminology(
         summary: GeneratedCourseMaterialSummary,
-        preservedTerms: List<String>
+        preservedTerms: List<String>,
+        sources: List<CourseMaterialSummarySource>
     ) {
         val priorityTerms = preservedTerms
             .filter { term ->
@@ -1975,6 +1982,9 @@ class InterviewAiOrchestrator(
             }
             .take(8)
         if (priorityTerms.isEmpty()) return
+        val totalInputChars = sources.sumOf { source ->
+            source.fileName.length + source.snippets.sumOf { snippet -> snippet.length }
+        }
 
         val renderedSummary = buildString {
             append(summary.title).append('\n')
@@ -1995,13 +2005,66 @@ class InterviewAiOrchestrator(
             buildTechnicalAliasRegex(term).containsMatchIn(renderedSummary)
         }
         val minimumRequired = when {
+            totalInputChars < 4_000 -> 1
             priorityTerms.size >= 6 -> 3
             priorityTerms.size >= 4 -> 2
             else -> 1
         }
         if (usedCount < minimumRequired) {
+            if (totalInputChars < 4_000) {
+                logger.warn(
+                    "강의자료 요약 전문용어 보존 검증 완화 sourceChars={} priorityTerms={} usedCount={} minimumRequired={}",
+                    totalInputChars,
+                    priorityTerms.size,
+                    usedCount,
+                    minimumRequired
+                )
+                return
+            }
             throw IllegalStateException("원문 전문용어가 충분히 보존되지 않았습니다.")
         }
+    }
+
+    private fun buildCourseExamQuestionFingerprint(text: String): String {
+        return text
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .lowercase()
+    }
+
+    private fun isSemanticallyDuplicateCourseExamQuestion(
+        existingQuestion: String,
+        candidateQuestion: String
+    ): Boolean {
+        val existingTokens = documentQuestionTopicTokens(existingQuestion)
+        val candidateTokens = documentQuestionTopicTokens(candidateQuestion)
+        if (existingTokens.isEmpty() || candidateTokens.isEmpty()) return false
+
+        val overlap = flexibleTokenOverlap(existingTokens, candidateTokens)
+        val minTopicSize = minOf(existingTokens.size, candidateTokens.size)
+        val strongTopicOverlap = overlap >= 4 && overlap * 100 >= minTopicSize * 65
+        val sharedLeadNarrative = hasSharedQuestionLead(existingQuestion, candidateQuestion)
+        if (!strongTopicOverlap && !sharedLeadNarrative) return false
+
+        val existingIntents = courseExamIntentSignals(existingQuestion)
+        val candidateIntents = courseExamIntentSignals(candidateQuestion)
+        if (existingIntents.isEmpty() || candidateIntents.isEmpty()) {
+            return strongTopicOverlap && sharedLeadNarrative
+        }
+        return strongTopicOverlap &&
+            existingIntents.intersect(candidateIntents).isNotEmpty()
+    }
+
+    private fun courseExamIntentSignals(text: String): Set<String> {
+        val lowered = text.lowercase()
+        val intents = linkedSetOf<String>()
+        if (listOf("정의", "무엇", "define", "what is", "state").any { lowered.contains(it) }) intents += "DEFINITION"
+        if (listOf("설명", "서술", "기술", "explain", "describe").any { lowered.contains(it) }) intents += "EXPLAIN"
+        if (listOf("비교", "차이", "compare", "contrast", "difference").any { lowered.contains(it) }) intents += "COMPARE"
+        if (listOf("구하", "계산", "calculate", "compute", "find").any { lowered.contains(it) }) intents += "CALC"
+        if (listOf("구현", "작성", "코드", "implement", "write", "code").any { lowered.contains(it) }) intents += "BUILD"
+        if (listOf("맞으면", "틀리면", "고르", "선택", "choose", "select", "true or false").any { lowered.contains(it) }) intents += "SELECT"
+        return intents
     }
 
     private fun validateCourseMaterialSummaryDensity(
