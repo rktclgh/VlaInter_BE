@@ -2011,7 +2011,7 @@ class InterviewAiOrchestrator(
             else -> 1
         }
         if (usedCount < minimumRequired) {
-            if (totalInputChars < 4_000 || priorityTerms.size <= 3) {
+            if (totalInputChars < 4_000) {
                 logger.warn(
                     "강의자료 요약 전문용어 보존 검증 완화 sourceChars={} priorityTerms={} usedCount={} minimumRequired={}",
                     totalInputChars,
@@ -2026,8 +2026,10 @@ class InterviewAiOrchestrator(
     }
 
     private fun buildCourseExamQuestionFingerprint(text: String): String {
-        return text.lowercase()
-            .replace(Regex("[^a-z0-9가-힣]+"), "")
+        return text
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .lowercase()
     }
 
     private fun isSemanticallyDuplicateCourseExamQuestion(
@@ -2049,7 +2051,8 @@ class InterviewAiOrchestrator(
         if (existingIntents.isEmpty() || candidateIntents.isEmpty()) {
             return strongTopicOverlap && sharedLeadNarrative
         }
-        return existingIntents.intersect(candidateIntents).isNotEmpty()
+        return strongTopicOverlap &&
+            existingIntents.intersect(candidateIntents).isNotEmpty()
     }
 
     private fun courseExamIntentSignals(text: String): Set<String> {
