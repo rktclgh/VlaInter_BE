@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.interview.service
 import com.cw.vlainter.domain.interview.dto.BookmarkTurnRequest
 import com.cw.vlainter.domain.interview.dto.InterviewQuestionResponse
 import com.cw.vlainter.domain.interview.dto.InterviewHistoryDocumentResponse
+import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryPageResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionResultsResponse
 import com.cw.vlainter.domain.interview.dto.InterviewTurnResultResponse
@@ -53,6 +54,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
 import org.slf4j.LoggerFactory
+import org.springframework.data.domain.PageRequest
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
@@ -496,6 +498,43 @@ class InterviewPracticeService(
             .findAllByUser_IdAndModeInOrderByCreatedAtDesc(principal.userId, listOf(InterviewMode.TECH))
             .filter { shouldStoreHistory(it.configJson) }
             .map { toSessionHistoryResponse(it) }
+    }
+
+    @Transactional(readOnly = true)
+    fun getTechSessionHistoryPage(
+        principal: AuthPrincipal,
+        page: Int,
+        size: Int
+    ): InterviewSessionHistoryPageResponse {
+        validateHistoryPageRequest(page, size)
+        val slice = interviewSessionRepository.findAllByUser_IdAndModeInOrderByCreatedAtDesc(
+            principal.userId,
+            listOf(InterviewMode.TECH),
+            PageRequest.of(page, size)
+        )
+        val filtered = slice.content
+            .filter { shouldStoreHistory(it.configJson) }
+            .map { toSessionHistoryResponse(it) }
+
+        return InterviewSessionHistoryPageResponse(
+            items = filtered,
+            page = page,
+            size = size,
+            hasNext = slice.hasNext()
+        )
+    }
+
+    @Transactional(readOnly = true)
+    fun getTechSessionHistorySummary(principal: AuthPrincipal, sessionId: Long): InterviewSessionHistoryResponse {
+        val session = interviewSessionRepository.findByIdAndUser_Id(sessionId, principal.userId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "면접 세션을 찾을 수 없습니다.")
+        if (session.mode != InterviewMode.TECH) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술질문 연습 세션만 조회할 수 있습니다.")
+        }
+        if (!shouldStoreHistory(session.configJson)) {
+            throw ResponseStatusException(HttpStatus.NOT_FOUND, "조회 가능한 기술질문 연습 이력이 없습니다.")
+        }
+        return toSessionHistoryResponse(session)
     }
 
     @Transactional(readOnly = true)
@@ -1092,6 +1131,15 @@ class InterviewPracticeService(
             startedAt = session.startedAt,
             finishedAt = session.finishedAt
         )
+    }
+
+    private fun validateHistoryPageRequest(page: Int, size: Int) {
+        if (page < 0) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "page는 0 이상이어야 합니다.")
+        }
+        if (size !in 1..24) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "size는 1 이상 24 이하여야 합니다.")
+        }
     }
 
     private fun toResumeSessionResponse(session: InterviewSession): ResumeInterviewSessionResponse? {
