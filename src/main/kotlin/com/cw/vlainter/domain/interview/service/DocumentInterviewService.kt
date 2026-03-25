@@ -887,7 +887,7 @@ class DocumentInterviewService(
             throw ResponseStatusException(HttpStatus.CONFLICT, "진행 중인 모의면접은 먼저 종료한 뒤 삭제해 주세요.")
         }
 
-        userQuestionAttemptRepository.deleteAllBySession_IdOrTurn_Session_Id(session.id, session.id)
+        userQuestionAttemptRepository.deleteAllBySessionIdOrTurnSessionId(session.id, session.id)
         interviewTurnEvaluationRepository.deleteAllByTurnSessionId(session.id)
         interviewTurnRepository.deleteAllBySessionId(session.id)
         interviewSessionRepository.delete(session)
