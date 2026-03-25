@@ -20,4 +20,8 @@ interface InterviewTurnRepository : JpaRepository<InterviewTurn, Long> {
         @Param("source") source: QaCategory,
         @Param("target") target: QaCategory
     ): Int
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("delete from InterviewTurn t where t.session.id = :sessionId")
+    fun deleteAllBySessionId(@Param("sessionId") sessionId: Long): Int
 }
