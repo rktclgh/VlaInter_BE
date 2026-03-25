@@ -45,6 +45,7 @@ import com.cw.vlainter.domain.interview.repository.QaCategoryRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetItemRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetRepository
+import com.cw.vlainter.domain.interview.repository.UserQuestionAttemptRepository
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialVisualAssetType
 import com.cw.vlainter.domain.student.entity.StudentCourseMaterialVisualAsset
 import com.cw.vlainter.domain.student.repository.StudentCourseMaterialRepository
@@ -122,6 +123,7 @@ class DocumentInterviewService(
     private val interviewSessionRepository: InterviewSessionRepository,
     private val interviewTurnRepository: InterviewTurnRepository,
     private val interviewTurnEvaluationRepository: InterviewTurnEvaluationRepository,
+    private val userQuestionAttemptRepository: UserQuestionAttemptRepository,
     private val studentCourseMaterialRepository: StudentCourseMaterialRepository,
     private val studentCourseMaterialVisualAssetRepository: StudentCourseMaterialVisualAssetRepository,
     private val interviewAiOrchestrator: InterviewAiOrchestrator,
@@ -885,6 +887,7 @@ class DocumentInterviewService(
             throw ResponseStatusException(HttpStatus.CONFLICT, "진행 중인 모의면접은 먼저 종료한 뒤 삭제해 주세요.")
         }
 
+        userQuestionAttemptRepository.deleteAllBySession_IdOrTurn_Session_Id(session.id, session.id)
         interviewTurnEvaluationRepository.deleteAllByTurnSessionId(session.id)
         interviewTurnRepository.deleteAllBySessionId(session.id)
         interviewSessionRepository.delete(session)
@@ -940,12 +943,7 @@ class DocumentInterviewService(
     }
 
     private fun validateHistoryPageRequest(page: Int, size: Int) {
-        if (page < 0) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "page는 0 이상이어야 합니다.")
-        }
-        if (size !in 1..24) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "size는 1 이상 24 이하여야 합니다.")
-        }
+        HistoryPageRequestValidator.validate(page, size)
     }
 
     private fun retrievePromptSnippets(

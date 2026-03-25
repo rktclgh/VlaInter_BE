@@ -6,4 +6,5 @@ import org.springframework.data.jpa.repository.JpaRepository
 interface UserQuestionAttemptRepository : JpaRepository<UserQuestionAttempt, Long> {
     fun findAllByUser_IdAndQuestion_IdOrderByCreatedAtDesc(userId: Long, questionId: Long): List<UserQuestionAttempt>
     fun existsByTurn_Id(turnId: Long): Boolean
+    fun deleteAllBySession_IdOrTurn_Session_Id(sessionId: Long, turnSessionId: Long): Int
 }

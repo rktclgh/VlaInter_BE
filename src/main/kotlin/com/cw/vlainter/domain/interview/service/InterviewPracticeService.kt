@@ -54,7 +54,6 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
 import org.slf4j.LoggerFactory
-import org.springframework.data.domain.PageRequest
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
@@ -89,6 +88,7 @@ class InterviewPracticeService(
 ) {
     companion object {
         private const val AI_GENERATED_SET_DESCRIPTION = "카테고리 기반 자동 생성 문답"
+        private const val TECH_HISTORY_SCAN_BATCH_SIZE = 24
         private val ENGLISH_WORD_REGEX = Regex("""\b[A-Za-z](?:[A-Za-z']*[A-Za-z])?\b""")
         private val ENGLISH_LETTER_REGEX = Regex("""[A-Za-z]""")
         private val HANGUL_REGEX = Regex("""[가-힣]""")
@@ -507,20 +507,15 @@ class InterviewPracticeService(
         size: Int
     ): InterviewSessionHistoryPageResponse {
         validateHistoryPageRequest(page, size)
-        val slice = interviewSessionRepository.findAllByUser_IdAndModeInOrderByCreatedAtDesc(
-            principal.userId,
-            listOf(InterviewMode.TECH),
-            PageRequest.of(page, size)
-        )
-        val filtered = slice.content
-            .filter { shouldStoreHistory(it.configJson) }
+        val historySlice = collectTechHistoryPage(principal.userId, page, size)
+        val filtered = historySlice.items
             .map { toSessionHistoryResponse(it) }
 
         return InterviewSessionHistoryPageResponse(
             items = filtered,
             page = page,
             size = size,
-            hasNext = slice.hasNext()
+            hasNext = historySlice.hasNext
         )
     }
 
@@ -1134,12 +1129,43 @@ class InterviewPracticeService(
     }
 
     private fun validateHistoryPageRequest(page: Int, size: Int) {
-        if (page < 0) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "page는 0 이상이어야 합니다.")
+        HistoryPageRequestValidator.validate(page, size)
+    }
+
+    private fun collectTechHistoryPage(userId: Long, page: Int, size: Int): TechHistorySlice {
+        var remainingToSkip = page * size
+        var sourcePage = 0
+        val collected = mutableListOf<InterviewSession>()
+
+        while (true) {
+            val slice = interviewSessionRepository.findAllByUser_IdAndModeInOrderByCreatedAtDesc(
+                userId,
+                listOf(InterviewMode.TECH),
+                org.springframework.data.domain.PageRequest.of(sourcePage, TECH_HISTORY_SCAN_BATCH_SIZE)
+            )
+            val visibleSessions = slice.content.filter { shouldStoreHistory(it.configJson) }
+
+            if (remainingToSkip >= visibleSessions.size) {
+                remainingToSkip -= visibleSessions.size
+            } else {
+                val startIndex = remainingToSkip.coerceAtLeast(0)
+                collected += visibleSessions.drop(startIndex)
+                remainingToSkip = 0
+            }
+
+            if (remainingToSkip == 0 && collected.size > size) {
+                break
+            }
+            if (!slice.hasNext()) {
+                break
+            }
+            sourcePage += 1
         }
-        if (size !in 1..24) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "size는 1 이상 24 이하여야 합니다.")
-        }
+
+        return TechHistorySlice(
+            items = collected.take(size),
+            hasNext = collected.size > size
+        )
     }
 
     private fun toResumeSessionResponse(session: InterviewSession): ResumeInterviewSessionResponse? {
@@ -1171,6 +1197,11 @@ class InterviewPracticeService(
             fallbackDepth = meta?.get("fallbackDepth")?.asInt() ?: 0
         )
     }
+
+    private data class TechHistorySlice(
+        val items: List<InterviewSession>,
+        val hasNext: Boolean
+    )
 
     private fun parseSessionMeta(session: InterviewSession): ParsedSessionMeta {
         val root = runCatching { objectMapper.readTree(session.configJson) }.getOrNull()
