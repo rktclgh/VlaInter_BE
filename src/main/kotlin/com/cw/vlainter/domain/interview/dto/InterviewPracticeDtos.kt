@@ -158,6 +158,13 @@ data class InterviewSessionHistoryResponse(
     val finishedAt: OffsetDateTime?
 )
 
+data class InterviewSessionHistoryPageResponse(
+    val items: List<InterviewSessionHistoryResponse>,
+    val page: Int,
+    val size: Int,
+    val hasNext: Boolean
+)
+
 data class ResumeInterviewSessionResponse(
     val sessionId: Long,
     val status: String,

@@ -7,6 +7,7 @@ import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.dto.DocumentIngestionResponse
 import com.cw.vlainter.domain.interview.dto.InterviewHistoryDocumentResponse
 import com.cw.vlainter.domain.interview.dto.InterviewQuestionResponse
+import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryPageResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryResponse
 import com.cw.vlainter.domain.interview.dto.ReadyDocumentResponse
 import com.cw.vlainter.domain.interview.dto.ResumeInterviewSessionResponse
@@ -38,11 +39,13 @@ import com.cw.vlainter.domain.interview.repository.DocumentIngestionJobRepositor
 import com.cw.vlainter.domain.interview.repository.DocumentQuestionRepository
 import com.cw.vlainter.domain.interview.repository.DocumentQuestionSetRepository
 import com.cw.vlainter.domain.interview.repository.InterviewSessionRepository
+import com.cw.vlainter.domain.interview.repository.InterviewTurnEvaluationRepository
 import com.cw.vlainter.domain.interview.repository.InterviewTurnRepository
 import com.cw.vlainter.domain.interview.repository.QaCategoryRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetItemRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetRepository
+import com.cw.vlainter.domain.interview.repository.UserQuestionAttemptRepository
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialVisualAssetType
 import com.cw.vlainter.domain.student.entity.StudentCourseMaterialVisualAsset
 import com.cw.vlainter.domain.student.repository.StudentCourseMaterialRepository
@@ -70,6 +73,7 @@ import org.apache.pdfbox.text.PDFTextStripper
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.dao.DataIntegrityViolationException
+import org.springframework.data.domain.PageRequest
 import org.springframework.http.HttpStatus
 import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
@@ -118,6 +122,8 @@ class DocumentInterviewService(
     private val questionSetItemRepository: QaQuestionSetItemRepository,
     private val interviewSessionRepository: InterviewSessionRepository,
     private val interviewTurnRepository: InterviewTurnRepository,
+    private val interviewTurnEvaluationRepository: InterviewTurnEvaluationRepository,
+    private val userQuestionAttemptRepository: UserQuestionAttemptRepository,
     private val studentCourseMaterialRepository: StudentCourseMaterialRepository,
     private val studentCourseMaterialVisualAssetRepository: StudentCourseMaterialVisualAssetRepository,
     private val interviewAiOrchestrator: InterviewAiOrchestrator,
@@ -777,46 +783,33 @@ class DocumentInterviewService(
     }
 
     @Transactional(readOnly = true)
-    fun getMockSessionHistory(principal: AuthPrincipal): List<InterviewSessionHistoryResponse> {
-        return interviewSessionRepository
-            .findAllByUser_IdAndModeInOrderByCreatedAtDesc(principal.userId, listOf(InterviewMode.DOC, InterviewMode.MIXED))
-            .map { session ->
-                val root = runCatching { objectMapper.readTree(session.configJson) }.getOrNull()
-                val meta = root?.get("meta")
-                val turns = interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(session.id)
-                val queueSize = root?.get("queue")?.takeIf { it.isArray }?.size() ?: 0
-                val documents = meta?.get("selectedDocuments")
-                    ?.takeIf { it.isArray }
-                    ?.map { item ->
-                        InterviewHistoryDocumentResponse(
-                            fileId = item["fileId"]?.takeIf { it.canConvertToLong() }?.asLong(),
-                            fileType = item["fileType"]?.asText(),
-                            label = item["label"]?.asText()?.trim().orEmpty(),
-                            ocrUsed = item["ocrUsed"]?.asBoolean() == true
-                        )
-                    }
-                    ?.filter { it.label.isNotBlank() }
-                    ?: emptyList()
+    fun getMockSessionHistory(
+        principal: AuthPrincipal,
+        page: Int,
+        size: Int
+    ): InterviewSessionHistoryPageResponse {
+        validateHistoryPageRequest(page, size)
+        val slice = interviewSessionRepository.findAllByUser_IdAndModeInOrderByCreatedAtDesc(
+            principal.userId,
+            listOf(InterviewMode.DOC, InterviewMode.MIXED),
+            PageRequest.of(page, size)
+        )
+        return InterviewSessionHistoryPageResponse(
+            items = slice.content.map { toMockSessionHistoryResponse(it) },
+            page = page,
+            size = size,
+            hasNext = slice.hasNext()
+        )
+    }
 
-                InterviewSessionHistoryResponse(
-                    sessionId = session.id,
-                    status = session.status.name,
-                    mode = session.mode.name,
-                    language = meta?.get("language")?.asText()?.takeIf { it.isNotBlank() } ?: InterviewLanguage.KO.name,
-                    questionCount = meta?.get("questionCount")?.asInt() ?: max(queueSize, turns.size),
-                    difficulty = meta?.get("difficulty")?.asText() ?: turns.firstOrNull()?.difficulty,
-                    difficultyRating = meta?.get("difficultyRating")?.asInt()
-                        ?: difficultyToRating(turns.firstOrNull()?.difficulty?.let { runCatching { QuestionDifficulty.valueOf(it) }.getOrNull() }),
-                    categoryId = meta?.get("categoryId")?.takeIf { it.canConvertToLong() }?.asLong()
-                        ?: turns.firstOrNull()?.category?.id,
-                    categoryName = meta?.get("categoryName")?.asText()?.takeIf { it.isNotBlank() }
-                        ?: turns.firstOrNull()?.categorySnapshot,
-                    jobName = meta?.get("jobName")?.asText()?.takeIf { it.isNotBlank() },
-                    selectedDocuments = documents,
-                    startedAt = session.startedAt,
-                    finishedAt = session.finishedAt
-                )
-            }
+    @Transactional(readOnly = true)
+    fun getMockSessionHistorySummary(principal: AuthPrincipal, sessionId: Long): InterviewSessionHistoryResponse {
+        val session = interviewSessionRepository.findByIdAndUser_Id(sessionId, principal.userId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "면접 세션을 찾을 수 없습니다.")
+        if (session.mode != InterviewMode.DOC && session.mode != InterviewMode.MIXED) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "실전 모의면접 세션만 조회할 수 있습니다.")
+        }
+        return toMockSessionHistoryResponse(session)
     }
 
     @Transactional(readOnly = true)
@@ -883,6 +876,23 @@ class DocumentInterviewService(
         session.finishedAt = OffsetDateTime.now()
     }
 
+    @Transactional
+    fun deleteMockSession(principal: AuthPrincipal, sessionId: Long) {
+        val session = interviewSessionRepository.findByIdAndUser_Id(sessionId, principal.userId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "면접 세션을 찾을 수 없습니다.")
+        if (session.mode != InterviewMode.DOC && session.mode != InterviewMode.MIXED) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "실전 모의면접 세션만 삭제할 수 있습니다.")
+        }
+        if (session.status == InterviewStatus.IN_PROGRESS) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "진행 중인 모의면접은 먼저 종료한 뒤 삭제해 주세요.")
+        }
+
+        userQuestionAttemptRepository.deleteAllBySessionIdOrTurnSessionId(session.id, session.id)
+        interviewTurnEvaluationRepository.deleteAllByTurnSessionId(session.id)
+        interviewTurnRepository.deleteAllBySessionId(session.id)
+        interviewSessionRepository.delete(session)
+    }
+
     private fun JsonNode.toInterviewHistoryDocumentResponse(): InterviewHistoryDocumentResponse? {
         val label = this["label"]?.asText()?.trim().orEmpty()
         if (label.isBlank()) return null
@@ -892,6 +902,48 @@ class DocumentInterviewService(
             label = label,
             ocrUsed = this["ocrUsed"]?.asBoolean() == true
         )
+    }
+
+    private fun toMockSessionHistoryResponse(session: InterviewSession): InterviewSessionHistoryResponse {
+        val root = runCatching { objectMapper.readTree(session.configJson) }.getOrNull()
+        val meta = root?.get("meta")
+        val turns = interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(session.id)
+        val queueSize = root?.get("queue")?.takeIf { it.isArray }?.size() ?: 0
+        val documents = meta?.get("selectedDocuments")
+            ?.takeIf { it.isArray }
+            ?.map { item ->
+                InterviewHistoryDocumentResponse(
+                    fileId = item["fileId"]?.takeIf { it.canConvertToLong() }?.asLong(),
+                    fileType = item["fileType"]?.asText(),
+                    label = item["label"]?.asText()?.trim().orEmpty(),
+                    ocrUsed = item["ocrUsed"]?.asBoolean() == true
+                )
+            }
+            ?.filter { it.label.isNotBlank() }
+            ?: emptyList()
+
+        return InterviewSessionHistoryResponse(
+            sessionId = session.id,
+            status = session.status.name,
+            mode = session.mode.name,
+            language = meta?.get("language")?.asText()?.takeIf { it.isNotBlank() } ?: InterviewLanguage.KO.name,
+            questionCount = meta?.get("questionCount")?.asInt() ?: max(queueSize, turns.size),
+            difficulty = meta?.get("difficulty")?.asText() ?: turns.firstOrNull()?.difficulty,
+            difficultyRating = meta?.get("difficultyRating")?.asInt()
+                ?: difficultyToRating(turns.firstOrNull()?.difficulty?.let { runCatching { QuestionDifficulty.valueOf(it) }.getOrNull() }),
+            categoryId = meta?.get("categoryId")?.takeIf { it.canConvertToLong() }?.asLong()
+                ?: turns.firstOrNull()?.category?.id,
+            categoryName = meta?.get("categoryName")?.asText()?.takeIf { it.isNotBlank() }
+                ?: turns.firstOrNull()?.categorySnapshot,
+            jobName = meta?.get("jobName")?.asText()?.takeIf { it.isNotBlank() },
+            selectedDocuments = documents,
+            startedAt = session.startedAt,
+            finishedAt = session.finishedAt
+        )
+    }
+
+    private fun validateHistoryPageRequest(page: Int, size: Int) {
+        HistoryPageRequestValidator.validate(page, size)
     }
 
     private fun retrievePromptSnippets(

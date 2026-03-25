@@ -1,6 +1,7 @@
 package com.cw.vlainter.domain.interview.controller
 
 import com.cw.vlainter.domain.interview.dto.BookmarkTurnRequest
+import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryPageResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionResultsResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryResponse
 import com.cw.vlainter.domain.interview.dto.QuestionAttemptResponse
@@ -59,6 +60,23 @@ class InterviewPracticeController(
         @AuthenticationPrincipal principal: AuthPrincipal
     ): ResponseEntity<List<InterviewSessionHistoryResponse>> {
         return ResponseEntity.ok(interviewPracticeService.getTechSessionHistory(principal))
+    }
+
+    @GetMapping("/sessions/history-page")
+    fun getSessionHistoryPage(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @RequestParam(defaultValue = "0") page: Int,
+        @RequestParam(defaultValue = "6") size: Int
+    ): ResponseEntity<InterviewSessionHistoryPageResponse> {
+        return ResponseEntity.ok(interviewPracticeService.getTechSessionHistoryPage(principal, page, size))
+    }
+
+    @GetMapping("/sessions/{sessionId}/summary")
+    fun getSessionHistorySummary(
+        @AuthenticationPrincipal principal: AuthPrincipal,
+        @PathVariable sessionId: Long
+    ): ResponseEntity<InterviewSessionHistoryResponse> {
+        return ResponseEntity.ok(interviewPracticeService.getTechSessionHistorySummary(principal, sessionId))
     }
 
     @GetMapping("/sessions/latest-incomplete")
