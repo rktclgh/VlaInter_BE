@@ -64,7 +64,20 @@ class SuspiciousRequestBlockService(
 
     internal fun isSuspiciousRequest(method: String, requestUri: String): Boolean {
         val lowered = requestUri.lowercase()
-        if (".env" in lowered || ".git" in lowered || "phpmyadmin" in lowered) {
+        if (
+            ".env" in lowered ||
+            ".git" in lowered ||
+            "phpmyadmin" in lowered ||
+            "docker-compose" in lowered ||
+            "dockerfile" in lowered ||
+            "package.json" in lowered ||
+            "package-lock.json" in lowered ||
+            "yarn.lock" in lowered ||
+            "pnpm-lock.yaml" in lowered ||
+            "service-account.json" in lowered ||
+            "phpinfo" in lowered ||
+            "graphql-playground" in lowered
+        ) {
             return true
         }
         if (!docsEnabled && (lowered.startsWith("/swagger-ui") || lowered.startsWith("/v3/api-docs"))) {
@@ -74,7 +87,14 @@ class SuspiciousRequestBlockService(
             "settings.json" in lowered ||
             "fluent-mail" in lowered ||
             "wp-" in lowered ||
-            "wp/" in lowered
+            "wp/" in lowered ||
+            ".sql" in lowered ||
+            ".yaml" in lowered ||
+            ".yml" in lowered ||
+            ".bak" in lowered ||
+            ".old" in lowered ||
+            ".swp" in lowered ||
+            "backup" in lowered
         ) {
             return true
         }
