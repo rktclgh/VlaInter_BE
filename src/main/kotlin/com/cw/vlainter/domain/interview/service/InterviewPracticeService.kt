@@ -2,6 +2,7 @@ package com.cw.vlainter.domain.interview.service
 import com.cw.vlainter.domain.interview.dto.BookmarkTurnRequest
 import com.cw.vlainter.domain.interview.dto.InterviewQuestionResponse
 import com.cw.vlainter.domain.interview.dto.InterviewHistoryDocumentResponse
+import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryPageResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionHistoryResponse
 import com.cw.vlainter.domain.interview.dto.InterviewSessionResultsResponse
 import com.cw.vlainter.domain.interview.dto.InterviewTurnResultResponse
@@ -87,6 +88,7 @@ class InterviewPracticeService(
 ) {
     companion object {
         private const val AI_GENERATED_SET_DESCRIPTION = "카테고리 기반 자동 생성 문답"
+        private const val TECH_HISTORY_SCAN_BATCH_SIZE = 24
         private val ENGLISH_WORD_REGEX = Regex("""\b[A-Za-z](?:[A-Za-z']*[A-Za-z])?\b""")
         private val ENGLISH_LETTER_REGEX = Regex("""[A-Za-z]""")
         private val HANGUL_REGEX = Regex("""[가-힣]""")
@@ -496,6 +498,38 @@ class InterviewPracticeService(
             .findAllByUser_IdAndModeInOrderByCreatedAtDesc(principal.userId, listOf(InterviewMode.TECH))
             .filter { shouldStoreHistory(it.configJson) }
             .map { toSessionHistoryResponse(it) }
+    }
+
+    @Transactional(readOnly = true)
+    fun getTechSessionHistoryPage(
+        principal: AuthPrincipal,
+        page: Int,
+        size: Int
+    ): InterviewSessionHistoryPageResponse {
+        validateHistoryPageRequest(page, size)
+        val historySlice = collectTechHistoryPage(principal.userId, page, size)
+        val filtered = historySlice.items
+            .map { toSessionHistoryResponse(it) }
+
+        return InterviewSessionHistoryPageResponse(
+            items = filtered,
+            page = page,
+            size = size,
+            hasNext = historySlice.hasNext
+        )
+    }
+
+    @Transactional(readOnly = true)
+    fun getTechSessionHistorySummary(principal: AuthPrincipal, sessionId: Long): InterviewSessionHistoryResponse {
+        val session = interviewSessionRepository.findByIdAndUser_Id(sessionId, principal.userId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "면접 세션을 찾을 수 없습니다.")
+        if (session.mode != InterviewMode.TECH) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술질문 연습 세션만 조회할 수 있습니다.")
+        }
+        if (!shouldStoreHistory(session.configJson)) {
+            throw ResponseStatusException(HttpStatus.NOT_FOUND, "조회 가능한 기술질문 연습 이력이 없습니다.")
+        }
+        return toSessionHistoryResponse(session)
     }
 
     @Transactional(readOnly = true)
@@ -1094,6 +1128,46 @@ class InterviewPracticeService(
         )
     }
 
+    private fun validateHistoryPageRequest(page: Int, size: Int) {
+        HistoryPageRequestValidator.validate(page, size)
+    }
+
+    private fun collectTechHistoryPage(userId: Long, page: Int, size: Int): TechHistorySlice {
+        var remainingToSkip = page * size
+        var sourcePage = 0
+        val collected = mutableListOf<InterviewSession>()
+
+        while (true) {
+            val slice = interviewSessionRepository.findAllByUser_IdAndModeInOrderByCreatedAtDesc(
+                userId,
+                listOf(InterviewMode.TECH),
+                org.springframework.data.domain.PageRequest.of(sourcePage, TECH_HISTORY_SCAN_BATCH_SIZE)
+            )
+            val visibleSessions = slice.content.filter { shouldStoreHistory(it.configJson) }
+
+            if (remainingToSkip >= visibleSessions.size) {
+                remainingToSkip -= visibleSessions.size
+            } else {
+                val startIndex = remainingToSkip.coerceAtLeast(0)
+                collected += visibleSessions.drop(startIndex)
+                remainingToSkip = 0
+            }
+
+            if (remainingToSkip == 0 && collected.size > size) {
+                break
+            }
+            if (!slice.hasNext()) {
+                break
+            }
+            sourcePage += 1
+        }
+
+        return TechHistorySlice(
+            items = collected.take(size),
+            hasNext = collected.size > size
+        )
+    }
+
     private fun toResumeSessionResponse(session: InterviewSession): ResumeInterviewSessionResponse? {
         val currentTurn = interviewTurnRepository.findFirstBySession_IdAndUserAnswerIsNullOrderByTurnNoAsc(session.id)
             ?: return null
@@ -1123,6 +1197,11 @@ class InterviewPracticeService(
             fallbackDepth = meta?.get("fallbackDepth")?.asInt() ?: 0
         )
     }
+
+    private data class TechHistorySlice(
+        val items: List<InterviewSession>,
+        val hasNext: Boolean
+    )
 
     private fun parseSessionMeta(session: InterviewSession): ParsedSessionMeta {
         val root = runCatching { objectMapper.readTree(session.configJson) }.getOrNull()
