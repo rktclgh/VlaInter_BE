@@ -91,7 +91,15 @@ else
   $DC -f deploy/docker-compose.bluegreen.yml up -d proxy
 fi
 
-if ! docker exec vlainter-proxy nginx -T 2>/dev/null | grep -q "server app-${target_color}:${target_port};"; then
+nginx_dump=""
+if ! nginx_dump="$(docker exec vlainter-proxy nginx -T 2>&1)"; then
+  echo "[ERROR] nginx 설정 덤프에 실패했습니다."
+  printf '%s\n' "$nginx_dump"
+  docker logs vlainter-proxy --tail 200 || true
+  exit 1
+fi
+
+if ! printf '%s\n' "$nginx_dump" | grep -q "server app-${target_color}:${target_port};"; then
   echo "[ERROR] nginx 설정이 새 upstream(app-${target_color}:${target_port})을 반영하지 않았습니다."
   docker logs vlainter-proxy --tail 200 || true
   exit 1
