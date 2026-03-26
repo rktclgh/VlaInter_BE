@@ -9,6 +9,9 @@ DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN:?DOCKERHUB_TOKEN is required}"
 HEALTH_PATH="${HEALTH_PATH:-/actuator/health}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
 HEALTH_INTERVAL_SECONDS="${HEALTH_INTERVAL_SECONDS:-3}"
+PROXY_CHECK_PATH="${PROXY_CHECK_PATH:-/}"
+PROXY_CHECK_TIMEOUT_SECONDS="${PROXY_CHECK_TIMEOUT_SECONDS:-30}"
+CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-10}"
 
 cd "$DEPLOY_DIR"
 
@@ -61,7 +64,7 @@ deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
 health_url="http://127.0.0.1:${target_port}${HEALTH_PATH}"
 
 echo "[INFO] 헬스체크 시작: ${health_url}"
-until curl -fsS "$health_url" >/dev/null 2>&1; do
+until curl -fsS --max-time "$CURL_MAX_TIME_SECONDS" "$health_url" >/dev/null 2>&1; do
   if [ "$SECONDS" -ge "$deadline" ]; then
     echo "[ERROR] 새 컨테이너 헬스체크 실패: ${health_url}"
     docker logs "vlainter-app-${target_color}" --tail 200 || true
@@ -88,11 +91,17 @@ else
   $DC -f deploy/docker-compose.bluegreen.yml up -d proxy
 fi
 
-echo "[INFO] 프록시 스위칭 완료. 프록시 헬스체크 확인 중"
-proxy_deadline=$((SECONDS + 30))
-until curl -fsS "http://127.0.0.1:8080${HEALTH_PATH}" >/dev/null 2>&1; do
+if ! docker exec vlainter-proxy nginx -T 2>/dev/null | grep -q "server app-${target_color}:${target_port};"; then
+  echo "[ERROR] nginx 설정이 새 upstream(app-${target_color}:${target_port})을 반영하지 않았습니다."
+  docker logs vlainter-proxy --tail 200 || true
+  exit 1
+fi
+
+echo "[INFO] 프록시 스위칭 완료. 프록시 응답 확인 중: http://127.0.0.1:8080${PROXY_CHECK_PATH}"
+proxy_deadline=$((SECONDS + PROXY_CHECK_TIMEOUT_SECONDS))
+until curl -fsS --max-time "$CURL_MAX_TIME_SECONDS" "http://127.0.0.1:8080${PROXY_CHECK_PATH}" >/dev/null 2>&1; do
   if [ "$SECONDS" -ge "$proxy_deadline" ]; then
-    echo "[ERROR] 프록시 헬스체크 실패: http://127.0.0.1:8080${HEALTH_PATH}"
+    echo "[ERROR] 프록시 응답 확인 실패: http://127.0.0.1:8080${PROXY_CHECK_PATH}"
     docker logs vlainter-proxy --tail 200 || true
     exit 1
   fi
