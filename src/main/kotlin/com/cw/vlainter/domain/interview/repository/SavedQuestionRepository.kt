@@ -16,6 +16,10 @@ interface SavedQuestionRepository : JpaRepository<SavedQuestion, Long> {
     fun findTopByUser_IdAndQuestion_IdOrderByCreatedAtDesc(userId: Long, questionId: Long): SavedQuestion?
     fun findTopByUser_IdAndDocumentQuestion_IdOrderByCreatedAtDesc(userId: Long, documentQuestionId: Long): SavedQuestion?
 
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("update SavedQuestion s set s.sourceTurn = null where s.sourceTurn.session.id = :sessionId")
+    fun clearSourceTurnReferencesBySessionId(@Param("sessionId") sessionId: Long): Int
+
     @Modifying(flushAutomatically = true)
     @Query("update SavedQuestion s set s.category = :target where s.category = :source")
     fun reassignCategory(

@@ -45,6 +45,7 @@ import com.cw.vlainter.domain.interview.repository.QaCategoryRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetItemRepository
 import com.cw.vlainter.domain.interview.repository.QaQuestionSetRepository
+import com.cw.vlainter.domain.interview.repository.SavedQuestionRepository
 import com.cw.vlainter.domain.interview.repository.UserQuestionAttemptRepository
 import com.cw.vlainter.domain.student.dto.StudentCourseMaterialVisualAssetType
 import com.cw.vlainter.domain.student.entity.StudentCourseMaterialVisualAsset
@@ -124,6 +125,7 @@ class DocumentInterviewService(
     private val interviewTurnRepository: InterviewTurnRepository,
     private val interviewTurnEvaluationRepository: InterviewTurnEvaluationRepository,
     private val userQuestionAttemptRepository: UserQuestionAttemptRepository,
+    private val savedQuestionRepository: SavedQuestionRepository,
     private val studentCourseMaterialRepository: StudentCourseMaterialRepository,
     private val studentCourseMaterialVisualAssetRepository: StudentCourseMaterialVisualAssetRepository,
     private val interviewAiOrchestrator: InterviewAiOrchestrator,
@@ -887,6 +889,7 @@ class DocumentInterviewService(
             throw ResponseStatusException(HttpStatus.CONFLICT, "진행 중인 모의면접은 먼저 종료한 뒤 삭제해 주세요.")
         }
 
+        savedQuestionRepository.clearSourceTurnReferencesBySessionId(session.id)
         userQuestionAttemptRepository.deleteAllBySessionIdOrTurnSessionId(session.id, session.id)
         interviewTurnEvaluationRepository.deleteAllByTurnSessionId(session.id)
         interviewTurnRepository.deleteAllBySessionId(session.id)
