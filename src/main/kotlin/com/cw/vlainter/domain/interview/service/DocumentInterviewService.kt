@@ -153,25 +153,35 @@ class DocumentInterviewService(
     @Transactional(readOnly = true)
     fun getReadyDocuments(principal: AuthPrincipal): List<ReadyDocumentResponse> {
         val actor = loadActiveUser(principal.userId)
-        return userFileRepository.findAllByUser_IdAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id)
-            .asSequence()
-            .filter { it.fileType.isInterviewDocument() }
-            .mapNotNull { file ->
-                val latestJob = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
-                    ?: return@mapNotNull null
-                if (latestJob.status != DocumentIngestionStatus.READY) return@mapNotNull null
-                ReadyDocumentResponse(
-                    fileId = file.id,
-                    fileName = file.originalFileName,
-                    fileType = file.fileType.name,
-                    status = latestJob.status,
-                    chunkCount = latestJob.chunkCount,
-                    extractionMethod = extractExtractionMethod(latestJob.metadataJson),
-                    ocrUsed = extractExtractionMethod(latestJob.metadataJson) == "OCR_TESSERACT",
-                    lastIngestedAt = latestJob.finishedAt
-                )
-            }
-            .toList()
+        lateinit var readyDocuments: List<ReadyDocumentResponse>
+        val elapsedMs = measureTimeMillis {
+            readyDocuments = userFileRepository.findAllByUser_IdAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id)
+                .asSequence()
+                .filter { it.fileType.isInterviewDocument() }
+                .mapNotNull { file ->
+                    val latestJob = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
+                        ?: return@mapNotNull null
+                    if (latestJob.status != DocumentIngestionStatus.READY) return@mapNotNull null
+                    ReadyDocumentResponse(
+                        fileId = file.id,
+                        fileName = file.originalFileName,
+                        fileType = file.fileType.name,
+                        status = latestJob.status,
+                        chunkCount = latestJob.chunkCount,
+                        extractionMethod = extractExtractionMethod(latestJob.metadataJson),
+                        ocrUsed = extractExtractionMethod(latestJob.metadataJson) == "OCR_TESSERACT",
+                        lastIngestedAt = latestJob.finishedAt
+                    )
+                }
+                .toList()
+        }
+        logger.info(
+            "ready document lookup userId={} resultCount={} elapsedMs={}",
+            actor.id,
+            readyDocuments.size,
+            elapsedMs
+        )
+        return readyDocuments
     }
 
     @Transactional
@@ -426,181 +436,192 @@ class DocumentInterviewService(
         try {
             val actor = loadActiveUser(principal.userId)
             userGeminiApiKeyService.assertGeminiApiKeyConfigured(actor.id)
-            val documentIds = request.documentFileIds.distinct()
-            val files = documentIds.map { loadOwnedInterviewDocument(actor.id, it) }
-            if (files.isEmpty()) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "선택된 문서가 없습니다.")
-            }
-
-            files.forEach { file ->
-                val latestJob = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
-                if (latestJob?.status != DocumentIngestionStatus.READY) {
-                    throw ResponseStatusException(HttpStatus.CONFLICT, "분석 완료된 문서만 면접에 사용할 수 있습니다: ${file.originalFileName}")
+            lateinit var response: StartTechInterviewResponse
+            val elapsedMs = measureTimeMillis {
+                val documentIds = request.documentFileIds.distinct()
+                val files = documentIds.map { loadOwnedInterviewDocument(actor.id, it) }
+                if (files.isEmpty()) {
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "선택된 문서가 없습니다.")
                 }
-            }
 
-            val selectedQuestionSet = request.questionSetId?.let { loadOwnedUserQuestionSet(actor.id, it) }
-            val selectedSetQuestions = selectedQuestionSet
-                ?.let { questionSetItemRepository.findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(it.id) }
-                ?.map { it.question }
-                .orEmpty()
-            if (selectedQuestionSet != null && selectedSetQuestions.isEmpty()) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "선택한 질문 세트에 사용할 기술 질문이 없습니다.")
-            }
-
-            val techContexts = if (selectedQuestionSet == null) resolveRequestedTechContexts(request) else emptyList()
-            techContexts.forEach { context ->
-                jobSkillCatalogService.ensureCatalog(context.jobName, context.skillName)
-            }
-
-            val requestedCount = request.questionCount.coerceAtLeast(5).coerceAtMost(20)
-            val desiredTechTarget = max(1, (requestedCount * 0.4).roundToInt())
-            val (techCandidates, generatedQuestions) = userGeminiApiKeyService.withUserApiKey(actor.id) {
-                var resolvedTechCandidates = if (selectedSetQuestions.isNotEmpty()) {
-                    selectedSetQuestions
-                } else {
-                    resolveOrGenerateTechCandidates(
-                        actor = actor,
-                        contexts = techContexts,
-                        difficulty = request.difficulty,
-                        requestedCount = desiredTechTarget,
-                        language = request.language
-                    )
+                files.forEach { file ->
+                    val latestJob = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
+                    if (latestJob?.status != DocumentIngestionStatus.READY) {
+                        throw ResponseStatusException(HttpStatus.CONFLICT, "분석 완료된 문서만 면접에 사용할 수 있습니다: ${file.originalFileName}")
+                    }
                 }
-                val techTarget = if (resolvedTechCandidates.isNotEmpty()) {
-                    min(resolvedTechCandidates.size, desiredTechTarget)
-                } else {
-                    0
+
+                val selectedQuestionSet = request.questionSetId?.let { loadOwnedUserQuestionSet(actor.id, it) }
+                val selectedSetQuestions = selectedQuestionSet
+                    ?.let { questionSetItemRepository.findAllBySet_IdAndIsActiveTrueOrderByOrderNoAsc(it.id) }
+                    ?.map { it.question }
+                    .orEmpty()
+                if (selectedQuestionSet != null && selectedSetQuestions.isEmpty()) {
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "선택한 질문 세트에 사용할 기술 질문이 없습니다.")
                 }
-                val documentTarget = max(1, requestedCount - techTarget)
-                val resolvedDocumentQuestions = generateDocumentQuestions(
-                    actor = actor,
-                    files = files,
-                    difficulty = request.difficulty,
-                    questionCount = documentTarget,
-                    language = request.language
-                )
-                val requiredTechCount = (requestedCount - resolvedDocumentQuestions.size).coerceAtLeast(0)
-                if (requiredTechCount > resolvedTechCandidates.size) {
-                    resolvedTechCandidates = if (selectedSetQuestions.isNotEmpty()) {
+
+                val techContexts = if (selectedQuestionSet == null) resolveRequestedTechContexts(request) else emptyList()
+                techContexts.forEach { context ->
+                    jobSkillCatalogService.ensureCatalog(context.jobName, context.skillName)
+                }
+
+                val requestedCount = request.questionCount.coerceAtLeast(5).coerceAtMost(20)
+                val desiredTechTarget = max(1, (requestedCount * 0.4).roundToInt())
+                val (techCandidates, generatedQuestions) = userGeminiApiKeyService.withUserApiKey(actor.id) {
+                    var resolvedTechCandidates = if (selectedSetQuestions.isNotEmpty()) {
                         selectedSetQuestions
                     } else {
                         resolveOrGenerateTechCandidates(
                             actor = actor,
                             contexts = techContexts,
                             difficulty = request.difficulty,
-                            requestedCount = requiredTechCount,
+                            requestedCount = desiredTechTarget,
                             language = request.language
                         )
                     }
+                    val techTarget = if (resolvedTechCandidates.isNotEmpty()) {
+                        min(resolvedTechCandidates.size, desiredTechTarget)
+                    } else {
+                        0
+                    }
+                    val documentTarget = max(1, requestedCount - techTarget)
+                    val resolvedDocumentQuestions = generateDocumentQuestions(
+                        actor = actor,
+                        files = files,
+                        difficulty = request.difficulty,
+                        questionCount = documentTarget,
+                        language = request.language
+                    )
+                    val requiredTechCount = (requestedCount - resolvedDocumentQuestions.size).coerceAtLeast(0)
+                    if (requiredTechCount > resolvedTechCandidates.size) {
+                        resolvedTechCandidates = if (selectedSetQuestions.isNotEmpty()) {
+                            selectedSetQuestions
+                        } else {
+                            resolveOrGenerateTechCandidates(
+                                actor = actor,
+                                contexts = techContexts,
+                                difficulty = request.difficulty,
+                                requestedCount = requiredTechCount,
+                                language = request.language
+                            )
+                        }
+                    }
+                    resolvedTechCandidates to resolvedDocumentQuestions
                 }
-                resolvedTechCandidates to resolvedDocumentQuestions
-            }
 
-            val techTarget = if (techCandidates.isNotEmpty()) {
-                min(techCandidates.size, (requestedCount - generatedQuestions.size).coerceAtLeast(0))
-            } else {
-                0
-            }
-            val selectedTech = techCandidates.shuffled().take(techTarget)
-            val localizedQueue = buildLocalizedDocumentQueueEntries(actor.id, request.language, generatedQuestions) +
-                buildLocalizedTechQueueEntries(actor.id, request.language, selectedTech)
-            val techMetaJobName = selectedQuestionSet?.jobName
-                ?: techContexts.firstOrNull()?.jobName
-                ?: selectedTech.firstOrNull()?.jobName
-                ?: selectedTech.firstOrNull()?.category?.parent?.name?.trim()
-                ?: request.jobName?.trim()
-                ?: "직무"
-            val techMetaSkillNames = if (selectedQuestionSet != null) {
-                selectedSetQuestions.mapNotNull { question ->
-                    question.skillName?.trim()?.takeIf { it.isNotBlank() } ?: question.category.name.trim().takeIf { it.isNotBlank() }
-                }.distinctBy { it.lowercase() }
-            } else {
-                techContexts.map { it.skillName }
-            }
-            val primaryCategoryId = if (selectedQuestionSet != null && techMetaSkillNames.size == 1) {
-                selectedSetQuestions.firstOrNull()?.category?.id
-            } else if (techContexts.size == 1) {
-                techContexts.first().category.id
-            } else {
-                null
-            }
-            val queue = buildList {
-                if (request.includeSelfIntroduction) {
-                    add(InterviewPracticeService.QuestionRef(InterviewQuestionKind.INTRO, 0))
+                val techTarget = if (techCandidates.isNotEmpty()) {
+                    min(techCandidates.size, (requestedCount - generatedQuestions.size).coerceAtLeast(0))
+                } else {
+                    0
                 }
-                addAll(generatedQuestions.map { InterviewPracticeService.QuestionRef(InterviewQuestionKind.DOCUMENT, it.id) })
-                addAll(selectedTech.map { InterviewPracticeService.QuestionRef(InterviewQuestionKind.TECH, it.id) })
-            }.let { refs ->
-                val intro = refs.firstOrNull()?.takeIf { it.kind == InterviewQuestionKind.INTRO }
-                val remaining = if (intro != null) refs.drop(1).shuffled() else refs.shuffled()
-                if (intro != null) listOf(intro) + remaining else remaining
-            }
-            if (queue.isEmpty()) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "면접 질문 생성에 실패했습니다.")
-            }
+                val selectedTech = techCandidates.shuffled().take(techTarget)
+                val localizedQueue = buildLocalizedDocumentQueueEntries(actor.id, request.language, generatedQuestions) +
+                    buildLocalizedTechQueueEntries(actor.id, request.language, selectedTech)
+                val techMetaJobName = selectedQuestionSet?.jobName
+                    ?: techContexts.firstOrNull()?.jobName
+                    ?: selectedTech.firstOrNull()?.jobName
+                    ?: selectedTech.firstOrNull()?.category?.parent?.name?.trim()
+                    ?: request.jobName?.trim()
+                    ?: "직무"
+                val techMetaSkillNames = if (selectedQuestionSet != null) {
+                    selectedSetQuestions.mapNotNull { question ->
+                        question.skillName?.trim()?.takeIf { it.isNotBlank() } ?: question.category.name.trim().takeIf { it.isNotBlank() }
+                    }.distinctBy { it.lowercase() }
+                } else {
+                    techContexts.map { it.skillName }
+                }
+                val primaryCategoryId = if (selectedQuestionSet != null && techMetaSkillNames.size == 1) {
+                    selectedSetQuestions.firstOrNull()?.category?.id
+                } else if (techContexts.size == 1) {
+                    techContexts.first().category.id
+                } else {
+                    null
+                }
+                val queue = buildList {
+                    if (request.includeSelfIntroduction) {
+                        add(InterviewPracticeService.QuestionRef(InterviewQuestionKind.INTRO, 0))
+                    }
+                    addAll(generatedQuestions.map { InterviewPracticeService.QuestionRef(InterviewQuestionKind.DOCUMENT, it.id) })
+                    addAll(selectedTech.map { InterviewPracticeService.QuestionRef(InterviewQuestionKind.TECH, it.id) })
+                }.let { refs ->
+                    val intro = refs.firstOrNull()?.takeIf { it.kind == InterviewQuestionKind.INTRO }
+                    val remaining = if (intro != null) refs.drop(1).shuffled() else refs.shuffled()
+                    if (intro != null) listOf(intro) + remaining else remaining
+                }
+                if (queue.isEmpty()) {
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "면접 질문 생성에 실패했습니다.")
+                }
 
-            val interviewMode = when {
-                generatedQuestions.isNotEmpty() && selectedTech.isNotEmpty() -> InterviewMode.MIXED
-                generatedQuestions.isNotEmpty() -> InterviewMode.DOC
-                else -> InterviewMode.TECH
-            }
-            val session = interviewSessionRepository.save(
-                InterviewSession(
-                    user = actor,
-                    mode = interviewMode,
-                    status = InterviewStatus.IN_PROGRESS,
-                    revealPolicy = RevealPolicy.END_ONLY,
-                    configJson = objectMapper.writeValueAsString(
-                        mapOf(
-                            "queue" to queue,
-                            "cursor" to 1,
-                            "meta" to mapOf(
-                                "questionCount" to queue.size,
-                                "requestedQuestionCount" to requestedCount,
-                                "includeSelfIntroduction" to request.includeSelfIntroduction,
-                                "difficulty" to request.difficulty?.name,
-                                "difficultyRating" to difficultyToRating(request.difficulty),
-                                "language" to request.language.name,
-                                "categoryId" to primaryCategoryId,
-                                "categoryName" to techMetaSkillNames.joinToString(", "),
-                                "jobName" to techMetaJobName,
-                                "questionSetId" to selectedQuestionSet?.id,
-                                "localizedQueue" to localizedQueue,
-                                "providerUsed" to aiRoutingContextHolder.snapshot().providerUsed?.name,
-                                "fallbackDepth" to aiRoutingContextHolder.snapshot().fallbackDepth,
-                                "selectedDocuments" to files.map { file ->
-                                    mapOf(
-                                        "fileId" to file.id,
-                                        "fileType" to file.fileType.name,
-                                        "label" to file.originalFileName,
-                                        "ocrUsed" to isOcrDocument(actor.id, file.id)
-                                    )
-                                }
+                val interviewMode = when {
+                    generatedQuestions.isNotEmpty() && selectedTech.isNotEmpty() -> InterviewMode.MIXED
+                    generatedQuestions.isNotEmpty() -> InterviewMode.DOC
+                    else -> InterviewMode.TECH
+                }
+                val session = interviewSessionRepository.save(
+                    InterviewSession(
+                        user = actor,
+                        mode = interviewMode,
+                        status = InterviewStatus.IN_PROGRESS,
+                        revealPolicy = RevealPolicy.END_ONLY,
+                        configJson = objectMapper.writeValueAsString(
+                            mapOf(
+                                "queue" to queue,
+                                "cursor" to 1,
+                                "meta" to mapOf(
+                                    "questionCount" to queue.size,
+                                    "requestedQuestionCount" to requestedCount,
+                                    "includeSelfIntroduction" to request.includeSelfIntroduction,
+                                    "difficulty" to request.difficulty?.name,
+                                    "difficultyRating" to difficultyToRating(request.difficulty),
+                                    "language" to request.language.name,
+                                    "categoryId" to primaryCategoryId,
+                                    "categoryName" to techMetaSkillNames.joinToString(", "),
+                                    "jobName" to techMetaJobName,
+                                    "questionSetId" to selectedQuestionSet?.id,
+                                    "localizedQueue" to localizedQueue,
+                                    "providerUsed" to aiRoutingContextHolder.snapshot().providerUsed?.name,
+                                    "fallbackDepth" to aiRoutingContextHolder.snapshot().fallbackDepth,
+                                    "selectedDocuments" to files.map { file ->
+                                        mapOf(
+                                            "fileId" to file.id,
+                                            "fileType" to file.fileType.name,
+                                            "label" to file.originalFileName,
+                                            "ocrUsed" to isOcrDocument(actor.id, file.id)
+                                        )
+                                    }
+                                )
                             )
                         )
                     )
                 )
-            )
 
-            val firstTurn = createTurnFromRef(session, queue.first())
-            val routingSnapshot = aiRoutingContextHolder.snapshot()
+                val firstTurn = createTurnFromRef(session, queue.first())
+                val routingSnapshot = aiRoutingContextHolder.snapshot()
+                logger.info(
+                    "mock interview session created sessionId={} providers={} providerUsed={} fallbackDepth={}",
+                    session.id,
+                    routingSnapshot.usedProviders,
+                    routingSnapshot.providerUsed,
+                    routingSnapshot.fallbackDepth
+                )
+                response = StartTechInterviewResponse(
+                    sessionId = session.id,
+                    status = session.status.name,
+                    currentQuestion = toInterviewQuestionResponse(firstTurn),
+                    hasNext = queue.size > 1,
+                    language = request.language.name,
+                    providerUsed = routingSnapshot.providerUsed?.name,
+                    fallbackDepth = routingSnapshot.fallbackDepth
+                )
+            }
             logger.info(
-                "mock interview session created sessionId={} providers={} providerUsed={} fallbackDepth={}",
-                session.id,
-                routingSnapshot.usedProviders,
-                routingSnapshot.providerUsed,
-                routingSnapshot.fallbackDepth
+                "mock interview start timing userId={} documents={} requestedQuestions={} elapsedMs={}",
+                actor.id,
+                request.documentFileIds.distinct().size,
+                request.questionCount,
+                elapsedMs
             )
-            return StartTechInterviewResponse(
-                sessionId = session.id,
-                status = session.status.name,
-                currentQuestion = toInterviewQuestionResponse(firstTurn),
-                hasNext = queue.size > 1,
-                language = request.language.name,
-                providerUsed = routingSnapshot.providerUsed?.name,
-                fallbackDepth = routingSnapshot.fallbackDepth
-            )
+            return response
         } finally {
             aiRoutingContextHolder.clear()
         }
@@ -625,6 +646,7 @@ class DocumentInterviewService(
             val targetCount = allocation[index]
             if (targetCount <= 0) return@forEachIndexed
             val snippetBudget = DocumentQuestionGenerationPolicy.snippetBudget(file.fileType, targetCount)
+            val generationStartedAt = System.nanoTime()
 
             val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(actor.id, file.id)
                 .map { it.chunkText }
@@ -763,6 +785,17 @@ class DocumentInterviewService(
                 }
             )
             results += persisted
+            logger.info(
+                "document question generation timing userId={} fileId={} fileType={} targetCount={} chunkCount={} snippetBudget={} generatedCount={} elapsedMs={}",
+                actor.id,
+                file.id,
+                file.fileType.name,
+                targetCount,
+                chunks.size,
+                snippetBudget,
+                persisted.size,
+                (System.nanoTime() - generationStartedAt) / 1_000_000
+            )
         }
 
         val transientError = lastGeminiTransient
@@ -791,17 +824,29 @@ class DocumentInterviewService(
         size: Int
     ): InterviewSessionHistoryPageResponse {
         validateHistoryPageRequest(page, size)
-        val slice = interviewSessionRepository.findAllByUser_IdAndModeInOrderByCreatedAtDesc(
+        lateinit var response: InterviewSessionHistoryPageResponse
+        val elapsedMs = measureTimeMillis {
+            val slice = interviewSessionRepository.findAllByUser_IdAndModeInOrderByCreatedAtDesc(
+                principal.userId,
+                listOf(InterviewMode.DOC, InterviewMode.MIXED),
+                PageRequest.of(page, size)
+            )
+            response = InterviewSessionHistoryPageResponse(
+                items = slice.content.map { toMockSessionHistoryResponse(it) },
+                page = page,
+                size = size,
+                hasNext = slice.hasNext()
+            )
+        }
+        logger.info(
+            "mock session history page timing userId={} page={} size={} itemCount={} elapsedMs={}",
             principal.userId,
-            listOf(InterviewMode.DOC, InterviewMode.MIXED),
-            PageRequest.of(page, size)
+            page,
+            size,
+            response.items.size,
+            elapsedMs
         )
-        return InterviewSessionHistoryPageResponse(
-            items = slice.content.map { toMockSessionHistoryResponse(it) },
-            page = page,
-            size = size,
-            hasNext = slice.hasNext()
-        )
+        return response
     }
 
     @Transactional(readOnly = true)
@@ -961,37 +1006,51 @@ class DocumentInterviewService(
             difficulty = difficulty,
             queryLimit = DocumentQuestionGenerationPolicy.retrievalQueryLimit(file.fileType, questionCount)
         )
-        val allChunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, file.id)
-        val seenChunkNos = linkedSetOf<Int>()
-        val results = mutableListOf<String>()
+        lateinit var selectedSnippets: List<String>
+        val elapsedMs = measureTimeMillis {
+            val allChunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, file.id)
+            val seenChunkNos = linkedSetOf<Int>()
+            val results = mutableListOf<String>()
 
-        retrievalQueries.forEach { query ->
-            val matches = runCatching {
-                val queryEmbedding = embeddingProviderRouter.embedText(query)
-                semanticRetrieve(allChunks, queryEmbedding.values)
-            }.onFailure { ex ->
-                logger.warn("document retrieval embedding failed fileId={} query='{}' reason={}", file.id, query.take(80), ex.message)
-            }.getOrElse {
-                lexicalRetrieve(allChunks, query)
-            }
+            retrievalQueries.forEach { query ->
+                val matches = runCatching {
+                    val queryEmbedding = embeddingProviderRouter.embedText(query)
+                    semanticRetrieve(allChunks, queryEmbedding.values)
+                }.onFailure { ex ->
+                    logger.warn("document retrieval embedding failed fileId={} query='{}' reason={}", file.id, query.take(80), ex.message)
+                }.getOrElse {
+                    lexicalRetrieve(allChunks, query)
+                }
 
-            matches.forEach { (chunkNo, chunkText) ->
-                if (seenChunkNos.add(chunkNo)) {
-                    results += chunkText
+                matches.forEach { (chunkNo, chunkText) ->
+                    if (seenChunkNos.add(chunkNo)) {
+                        results += chunkText
+                    }
                 }
             }
-        }
 
-        if (results.isNotEmpty()) {
-            return DocumentQuestionGenerationPolicy.prioritizeSnippets(file.fileType, results)
-                .map(::sanitizePromptSnippet)
-                .filter { isUsablePromptSnippet(file.fileType, it) }
-                .map { it.take(420) }
-                .take(snippetBudget)
+            selectedSnippets = if (results.isNotEmpty()) {
+                DocumentQuestionGenerationPolicy.prioritizeSnippets(file.fileType, results)
+                    .map(::sanitizePromptSnippet)
+                    .filter { isUsablePromptSnippet(file.fileType, it) }
+                    .map { it.take(420) }
+                    .take(snippetBudget)
+            } else {
+                val chunks = allChunks.map { it.chunkText }
+                fallbackPromptSnippets(chunks, snippetBudget, file.fileType)
+            }
         }
-
-        val chunks = allChunks.map { it.chunkText }
-        return fallbackPromptSnippets(chunks, snippetBudget, file.fileType)
+        logger.info(
+            "document prompt retrieval timing userId={} fileId={} fileType={} queries={} snippetBudget={} selectedSnippets={} elapsedMs={}",
+            userId,
+            file.id,
+            file.fileType.name,
+            retrievalQueries.size,
+            snippetBudget,
+            selectedSnippets.size,
+            elapsedMs
+        )
+        return selectedSnippets
     }
 
     private fun semanticRetrieve(chunks: List<DocChunkEmbedding>, queryVector: List<Double>): List<Pair<Int, String>> {
