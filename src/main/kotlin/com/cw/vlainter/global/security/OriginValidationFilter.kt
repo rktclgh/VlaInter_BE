@@ -21,10 +21,14 @@ import java.net.URI
  */
 @Component
 class OriginValidationFilter(
-    private val corsProperties: CorsProperties,
+    corsProperties: CorsProperties,
     private val authCookieManager: AuthCookieManager,
     private val objectMapper: ObjectMapper
 ) : OncePerRequestFilter() {
+    private val normalizedAllowedOrigins = corsProperties.allowedOrigins
+        .mapNotNull(::normalizeOrigin)
+        .toSet()
+
     override fun doFilterInternal(
         request: HttpServletRequest,
         response: HttpServletResponse,
@@ -107,9 +111,6 @@ class OriginValidationFilter(
     }
 
     private fun isAllowedOrigin(origin: String, requestAuthority: String?): Boolean {
-        val normalizedAllowedOrigins = corsProperties.allowedOrigins
-            .mapNotNull(::normalizeOrigin)
-
         if (origin in normalizedAllowedOrigins) {
             return true
         }
@@ -170,14 +171,13 @@ class OriginValidationFilter(
         response.status = HttpStatus.FORBIDDEN.value()
         response.contentType = MediaType.APPLICATION_JSON_VALUE
         response.characterEncoding = Charsets.UTF_8.name()
-        response.writer.write(
-            objectMapper.writeValueAsString(
-                ApiErrorResponse(
-                    status = HttpStatus.FORBIDDEN.value(),
-                    code = HttpStatus.FORBIDDEN.name,
-                    message = "허용되지 않은 요청 출처입니다.",
-                    path = requestUri
-                )
+        objectMapper.writeValue(
+            response.writer,
+            ApiErrorResponse(
+                status = HttpStatus.FORBIDDEN.value(),
+                code = HttpStatus.FORBIDDEN.name,
+                message = "허용되지 않은 요청 출처입니다.",
+                path = requestUri
             )
         )
         response.writer.flush()
@@ -186,6 +186,7 @@ class OriginValidationFilter(
     private companion object {
         val UNSAFE_METHODS = setOf("POST", "PUT", "PATCH", "DELETE")
         val ALWAYS_PROTECTED_PUBLIC_PATHS = setOf(
+            "/api/auth/login",
             "/api/auth/refresh",
             "/api/auth/logout"
         )

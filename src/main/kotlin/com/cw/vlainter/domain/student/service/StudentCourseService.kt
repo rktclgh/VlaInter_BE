@@ -1784,9 +1784,8 @@ class StudentCourseService(
                         ).ifEmpty { regexCandidates }
                     }
                     logger.info(
-                        "족보 원문 문제 추출 fileId={} fileName={} extractionMethod={} chunkCount={} chars={} regexCount={} finalCount={}",
+                        "족보 원문 문제 추출 fileId={} extractionMethod={} chunkCount={} chars={} regexCount={} finalCount={}",
                         material.userFile.id,
-                        sourceFileName,
                         extractionMethod ?: "UNKNOWN",
                         chunks.size,
                         combinedText.length,

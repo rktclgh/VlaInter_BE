@@ -111,6 +111,81 @@ class OriginValidationFilterTests {
     }
 
     @Test
+    fun `referer is used when origin header is missing`() {
+        val filter = OriginValidationFilter(
+            CorsProperties(listOf("http://localhost:5173")),
+            authCookieManager,
+            jacksonObjectMapper()
+        )
+        val request = MockHttpServletRequest("POST", "/api/auth/logout").apply {
+            addHeader("Referer", "http://localhost:5173/content/mypage")
+            addHeader("Host", "localhost:8080")
+            addHeader("X-Forwarded-Host", "localhost:8080")
+            setCookies(Cookie("vlainter_rt", "refresh-token"))
+        }
+        val response = MockHttpServletResponse()
+
+        filter.doFilter(request, response, MockFilterChain())
+
+        assertEquals(200, response.status)
+    }
+
+    @Test
+    fun `safe methods are not protected even with auth cookie`() {
+        val filter = OriginValidationFilter(
+            CorsProperties(listOf("http://localhost:5173")),
+            authCookieManager,
+            jacksonObjectMapper()
+        )
+
+        listOf("GET", "HEAD", "OPTIONS").forEach { method ->
+            val request = MockHttpServletRequest(method, "/api/users/me/service-mode").apply {
+                setCookies(Cookie("vlainter_at", "access-token"))
+            }
+            val response = MockHttpServletResponse()
+
+            filter.doFilter(request, response, MockFilterChain())
+
+            assertEquals(200, response.status)
+        }
+    }
+
+    @Test
+    fun `non api path is not protected`() {
+        val filter = OriginValidationFilter(
+            CorsProperties(listOf("http://localhost:5173")),
+            authCookieManager,
+            jacksonObjectMapper()
+        )
+        val request = MockHttpServletRequest("POST", "/content/interview").apply {
+            setCookies(Cookie("vlainter_at", "access-token"))
+        }
+        val response = MockHttpServletResponse()
+
+        filter.doFilter(request, response, MockFilterChain())
+
+        assertEquals(200, response.status)
+    }
+
+    @Test
+    fun `login endpoint is protected even without auth cookies`() {
+        val filter = OriginValidationFilter(
+            CorsProperties(listOf("http://localhost:5173")),
+            authCookieManager,
+            jacksonObjectMapper()
+        )
+        val request = MockHttpServletRequest("POST", "/api/auth/login").apply {
+            addHeader("Host", "vlainter.online")
+            addHeader("X-Forwarded-Host", "vlainter.online")
+        }
+        val response = MockHttpServletResponse()
+
+        filter.doFilter(request, response, MockFilterChain())
+
+        assertEquals(403, response.status)
+    }
+
+    @Test
     fun `public webhook without auth cookies is not protected`() {
         val filter = OriginValidationFilter(
             CorsProperties(listOf("http://localhost:5173")),
