@@ -271,8 +271,8 @@ class UserFileService(
             // 문서 삭제 시 임베딩/ingestion 이력도 함께 정리한다.
             docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(targetOwnerId, target.id)
             documentIngestionJobRepository.deleteAllByUserIdAndDocumentFileId(targetOwnerId, target.id)
-            studentCourseMaterialVisualAssetRepository.deleteAllByUserFile_Id(target.id)
-            studentCourseMaterialRepository.findByUserFile_Id(target.id)?.let { studentCourseMaterialRepository.delete(it) }
+            studentCourseMaterialVisualAssetRepository.deleteAllByUserFileId(target.id)
+            studentCourseMaterialRepository.deleteAllByUserFileId(target.id)
         }
 
         userFileRepository.delete(target)

@@ -100,111 +100,123 @@ class InterviewPracticeService(
     @Transactional
     fun startTechInterview(principal: AuthPrincipal, request: StartTechInterviewRequest): StartTechInterviewResponse {
         aiRoutingContextHolder.reset()
-        val actor = loadUser(principal.userId)
-        userGeminiApiKeyService.assertGeminiApiKeyConfigured(actor.id)
         try {
-            var categoryContext = if (request.setId == null) {
-                categoryContextResolver.resolve(
-                    categoryId = request.categoryId,
-                    jobName = request.jobName,
-                    skillName = request.skillName,
-                    requireIfMissing = false
-                )
-            } else {
-                null
-            }
-            val techQuestionReusePolicy = if (request.setId == null) {
-                adminInterviewSettingsService.getTechQuestionReusePolicy()
-            } else {
-                TechQuestionReusePolicy.REUSE_MATCHING
-            }
-            var candidates = if (shouldReuseMatchingQuestions(request, techQuestionReusePolicy)) {
-                resolveCandidates(principal, request, categoryContext?.category?.id)
-            } else {
-                emptyList()
-            }
-            if (candidates.isEmpty() && request.setId == null) {
-                categoryContext = categoryContext
-                    ?: categoryContextResolver.resolve(
+            val actor = loadUser(principal.userId)
+            userGeminiApiKeyService.assertGeminiApiKeyConfigured(actor.id)
+            lateinit var response: StartTechInterviewResponse
+            val elapsedMs = measureTimeMillis {
+                var categoryContext = if (request.setId == null) {
+                    categoryContextResolver.resolve(
                         categoryId = request.categoryId,
                         jobName = request.jobName,
                         skillName = request.skillName,
                         requireIfMissing = false
                     )
-                    ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술질문 연습에는 기술 선택이 필요합니다.")
-                candidates = userGeminiApiKeyService.withUserApiKey(actor.id) {
-                    generateCategoryQuestions(actor, request, categoryContext)
+                } else {
+                    null
                 }
-            }
-            if (candidates.isEmpty()) {
-                throw ResponseStatusException(HttpStatus.NOT_FOUND, "조건에 맞는 질문이 없습니다.")
-            }
+                val techQuestionReusePolicy = if (request.setId == null) {
+                    adminInterviewSettingsService.getTechQuestionReusePolicy()
+                } else {
+                    TechQuestionReusePolicy.REUSE_MATCHING
+                }
+                var candidates = if (shouldReuseMatchingQuestions(request, techQuestionReusePolicy)) {
+                    resolveCandidates(principal, request, categoryContext?.category?.id)
+                } else {
+                    emptyList()
+                }
+                if (candidates.isEmpty() && request.setId == null) {
+                    categoryContext = categoryContext
+                        ?: categoryContextResolver.resolve(
+                            categoryId = request.categoryId,
+                            jobName = request.jobName,
+                            skillName = request.skillName,
+                            requireIfMissing = false
+                        )
+                        ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "기술질문 연습에는 기술 선택이 필요합니다.")
+                    candidates = userGeminiApiKeyService.withUserApiKey(actor.id) {
+                        generateCategoryQuestions(actor, request, categoryContext)
+                    }
+                }
+                if (candidates.isEmpty()) {
+                    throw ResponseStatusException(HttpStatus.NOT_FOUND, "조건에 맞는 질문이 없습니다.")
+                }
 
-            val questionCount = request.questionCount.coerceAtMost(candidates.size)
-            val selected = candidates.shuffled().take(questionCount)
-            val questionRefs = selected.map { QuestionRef(InterviewQuestionKind.TECH, it.id) }
-            val localizedQueue = buildLocalizedTechQueueEntries(actor.id, request.language, selected)
-            val questionSet = request.setId?.let { questionSetRepository.findByIdAndDeletedAtIsNull(it) }
-            val primaryCategory = categoryContext?.category
-                ?: request.categoryId?.let { categoryRepository.findByIdAndDeletedAtIsNull(it) }
-                ?: selected.firstOrNull()?.category
-            val jobCategory = primaryCategory?.parent ?: primaryCategory
-            val resolvedJobName = request.jobName?.trim()?.takeIf { it.isNotBlank() }
-                ?: questionSet?.jobName
-                ?: categoryContext?.jobName
-                ?: jobCategory?.name
-            val resolvedSkillName = request.skillName?.trim()?.takeIf { it.isNotBlank() }
-                ?: questionSet?.skillName
-                ?: categoryContext?.skillName
-                ?: primaryCategory?.name
-            if (!resolvedJobName.isNullOrBlank() && !resolvedSkillName.isNullOrBlank()) {
-                jobSkillCatalogService.ensureCatalog(resolvedJobName, resolvedSkillName)
-            }
-            val practiceMode = if (request.setId != null) InterviewMode.QUESTION_SET_PRACTICE else InterviewMode.TECH
-            val saveHistory = if (practiceMode == InterviewMode.QUESTION_SET_PRACTICE) false else request.saveHistory
+                val questionCount = request.questionCount.coerceAtMost(candidates.size)
+                val selected = candidates.shuffled().take(questionCount)
+                val questionRefs = selected.map { QuestionRef(InterviewQuestionKind.TECH, it.id) }
+                val localizedQueue = buildLocalizedTechQueueEntries(actor.id, request.language, selected)
+                val questionSet = request.setId?.let { questionSetRepository.findByIdAndDeletedAtIsNull(it) }
+                val primaryCategory = categoryContext?.category
+                    ?: request.categoryId?.let { categoryRepository.findByIdAndDeletedAtIsNull(it) }
+                    ?: selected.firstOrNull()?.category
+                val jobCategory = primaryCategory?.parent ?: primaryCategory
+                val resolvedJobName = request.jobName?.trim()?.takeIf { it.isNotBlank() }
+                    ?: questionSet?.jobName
+                    ?: categoryContext?.jobName
+                    ?: jobCategory?.name
+                val resolvedSkillName = request.skillName?.trim()?.takeIf { it.isNotBlank() }
+                    ?: questionSet?.skillName
+                    ?: categoryContext?.skillName
+                    ?: primaryCategory?.name
+                if (!resolvedJobName.isNullOrBlank() && !resolvedSkillName.isNullOrBlank()) {
+                    jobSkillCatalogService.ensureCatalog(resolvedJobName, resolvedSkillName)
+                }
+                val practiceMode = if (request.setId != null) InterviewMode.QUESTION_SET_PRACTICE else InterviewMode.TECH
+                val saveHistory = if (practiceMode == InterviewMode.QUESTION_SET_PRACTICE) false else request.saveHistory
 
-            val session = interviewSessionRepository.save(
-                InterviewSession(
-                    user = actor,
-                    mode = practiceMode,
-                    status = InterviewStatus.IN_PROGRESS,
-                    questionSet = questionSet,
-                    revealPolicy = RevealPolicy.PER_TURN,
-                    configJson = toSessionConfigJson(
-                        questionRefs = questionRefs,
-                        cursor = 1,
-                        meta = mapOf(
-                            "saveHistory" to saveHistory,
-                            "questionCount" to questionCount,
-                            "difficulty" to request.difficulty?.name,
-                            "difficultyRating" to difficultyToRating(request.difficulty),
-                            "language" to request.language.name,
-                            "categoryId" to primaryCategory?.id,
-                            "categoryName" to resolvedSkillName,
-                            "jobName" to resolvedJobName,
-                            "practiceMode" to practiceMode.name,
-                            "techQuestionReusePolicy" to techQuestionReusePolicy.name,
-                            "selectedDocuments" to emptyList<Map<String, Any?>>(),
-                            "localizedQueue" to localizedQueue,
-                            "providerUsed" to aiRoutingContextHolder.snapshot().providerUsed?.name,
-                            "fallbackDepth" to aiRoutingContextHolder.snapshot().fallbackDepth
+                val session = interviewSessionRepository.save(
+                    InterviewSession(
+                        user = actor,
+                        mode = practiceMode,
+                        status = InterviewStatus.IN_PROGRESS,
+                        questionSet = questionSet,
+                        revealPolicy = RevealPolicy.PER_TURN,
+                        configJson = toSessionConfigJson(
+                            questionRefs = questionRefs,
+                            cursor = 1,
+                            meta = mapOf(
+                                "saveHistory" to saveHistory,
+                                "questionCount" to questionCount,
+                                "difficulty" to request.difficulty?.name,
+                                "difficultyRating" to difficultyToRating(request.difficulty),
+                                "language" to request.language.name,
+                                "categoryId" to primaryCategory?.id,
+                                "categoryName" to resolvedSkillName,
+                                "jobName" to resolvedJobName,
+                                "practiceMode" to practiceMode.name,
+                                "techQuestionReusePolicy" to techQuestionReusePolicy.name,
+                                "selectedDocuments" to emptyList<Map<String, Any?>>(),
+                                "localizedQueue" to localizedQueue,
+                                "providerUsed" to aiRoutingContextHolder.snapshot().providerUsed?.name,
+                                "fallbackDepth" to aiRoutingContextHolder.snapshot().fallbackDepth
+                            )
                         )
                     )
                 )
-            )
 
-            val firstTurn = createTurnFromRef(session, 1, questionRefs.first())
-            val routingSnapshot = aiRoutingContextHolder.snapshot()
+                val firstTurn = createTurnFromRef(session, 1, questionRefs.first())
+                val routingSnapshot = aiRoutingContextHolder.snapshot()
 
-            return StartTechInterviewResponse(
-                sessionId = session.id,
-                status = session.status.name,
-                currentQuestion = toInterviewQuestionResponse(firstTurn),
-                hasNext = questionCount > 1,
-                language = request.language.name,
-                providerUsed = routingSnapshot.providerUsed?.name,
-                fallbackDepth = routingSnapshot.fallbackDepth
+                response = StartTechInterviewResponse(
+                    sessionId = session.id,
+                    status = session.status.name,
+                    currentQuestion = toInterviewQuestionResponse(firstTurn),
+                    hasNext = questionCount > 1,
+                    language = request.language.name,
+                    providerUsed = routingSnapshot.providerUsed?.name,
+                    fallbackDepth = routingSnapshot.fallbackDepth
+                )
+            }
+            logger.info(
+                "tech interview start timing userId={} setId={} categoryId={} requestedQuestions={} elapsedMs={}",
+                actor.id,
+                request.setId,
+                request.categoryId,
+                request.questionCount,
+                elapsedMs
             )
+            return response
         } finally {
             aiRoutingContextHolder.clear()
         }

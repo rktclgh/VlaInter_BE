@@ -30,12 +30,14 @@ import com.cw.vlainter.domain.interview.ai.GeminiTransientException
 import com.cw.vlainter.domain.interview.ai.CourseExamEvaluationInput
 import com.cw.vlainter.domain.interview.ai.CourseExamEvaluationResult
 import com.cw.vlainter.domain.interview.ai.CourseMaterialSummarySource
+import com.cw.vlainter.domain.interview.ai.EmbeddingProviderRouter
 import com.cw.vlainter.domain.interview.ai.GeneratedCourseExamQuestion
 import com.cw.vlainter.domain.interview.ai.GeneratedCourseMaterialSummary
 import com.cw.vlainter.domain.interview.ai.GeneratedCourseMaterialSummaryTopic
 import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
 import com.cw.vlainter.domain.interview.ai.PastExamPracticeQuestionCandidate
 import com.cw.vlainter.domain.interview.entity.DocChunkEmbedding
+import com.cw.vlainter.domain.interview.repository.ChunkSnippetProjection
 import com.cw.vlainter.domain.student.entity.StudentCourse
 import com.cw.vlainter.domain.student.entity.StudentCourseMaterial
 import com.cw.vlainter.domain.student.entity.StudentCourseMaterialSourceType
@@ -110,6 +112,7 @@ class StudentCourseService(
     private val studentCourseYoutubeSummaryJobRepository: StudentCourseYoutubeSummaryJobRepository,
     private val documentIngestionJobRepository: DocumentIngestionJobRepository,
     private val docChunkEmbeddingRepository: DocChunkEmbeddingRepository,
+    private val embeddingProviderRouter: EmbeddingProviderRouter,
     private val documentInterviewService: DocumentInterviewService,
     private val interviewAiOrchestrator: InterviewAiOrchestrator,
     private val youTubeTranscriptService: YouTubeTranscriptService,
@@ -174,6 +177,12 @@ class StudentCourseService(
 
     private val logger = LoggerFactory.getLogger(javaClass)
     private val objectMapper = ObjectMapper()
+    private data class ChunkExcerpt(val chunkNo: Int, val chunkText: String)
+    private enum class RetrievalPurpose(val logLabel: String) {
+        SUMMARY("summary"),
+        EXAM("exam"),
+        STYLE_REFERENCE("style_reference")
+    }
     private class YoutubeSummaryJobCanceledException(message: String) : RuntimeException(message)
 
     @Transactional(readOnly = true)
@@ -261,10 +270,6 @@ class StudentCourseService(
             studentExamSessionRepository.deleteAll(sessions)
         }
 
-        if (materials.isNotEmpty()) {
-            studentCourseMaterialRepository.deleteAll(materials)
-        }
-
         val youtubeSummaryJobs = studentCourseYoutubeSummaryJobRepository.findAllByCourseIdAndUserIdOrderByCreatedAtDesc(course.id, user.id)
         val activeYoutubeSummaryJobs = youtubeSummaryJobs.filter { it.status in ACTIVE_YOUTUBE_SUMMARY_STATUSES }
         if (activeYoutubeSummaryJobs.isNotEmpty()) {
@@ -277,14 +282,14 @@ class StudentCourseService(
             studentCourseYoutubeSummaryJobRepository.saveAll(activeYoutubeSummaryJobs)
         }
 
+        materialFileIds.forEach { fileId ->
+            userFileService.deleteOwnedFile(user.id, fileId)
+        }
+
         studentCourseRepository.delete(course)
         studentCourseYoutubeSummaryJobRepository.deleteAll(
             youtubeSummaryJobs.filter { it.status !in ACTIVE_YOUTUBE_SUMMARY_STATUSES }
         )
-
-        materialFileIds.forEach { fileId ->
-            userFileService.deleteOwnedFile(user.id, fileId)
-        }
     }
 
     @Transactional(readOnly = true)
@@ -613,8 +618,6 @@ class StudentCourseService(
         val user = getValidatedStudentUser(principal)
         val course = getOwnedCourse(user.id, courseId)
         val material = getOwnedMaterial(course.id, materialId)
-        studentCourseMaterialVisualAssetRepository.deleteAllByMaterial_Id(material.id)
-        studentCourseMaterialRepository.delete(material)
         userFileService.deleteOwnedFile(user.id, material.userFile.id)
     }
 
@@ -740,21 +743,20 @@ class StudentCourseService(
             )
         }
 
-        val summarySources = collectSummarySources(user.id, selectedMaterials)
-        if (summarySources.isEmpty()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "요약본 생성에 사용할 강의자료 발췌가 부족합니다. 자료를 다시 분석해 주세요.")
-        }
-
-        logger.info(
-            "학생 강의자료 요약 생성 요청 courseId={} userId={} selectedMaterials={} sources={} snippets={}",
-            course.id,
-            user.id,
-            selectedMaterials.size,
-            summarySources.size,
-            summarySources.sumOf { it.snippets.size }
-        )
-
         val summary = userGeminiApiKeyService.withUserApiKey(user.id) {
+            val summarySources = collectSummarySources(user.id, course, selectedMaterials)
+            if (summarySources.isEmpty()) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "요약본 생성에 사용할 강의자료 발췌가 부족합니다. 자료를 다시 분석해 주세요.")
+            }
+
+            logger.info(
+                "학생 강의자료 요약 생성 요청 courseId={} userId={} selectedMaterials={} sources={} snippets={}",
+                course.id,
+                user.id,
+                selectedMaterials.size,
+                summarySources.size,
+                summarySources.sumOf { it.snippets.size }
+            )
             interviewAiOrchestrator.generateCourseMaterialSummary(
                 universityName = user.universityName!!.trim(),
                 departmentName = user.departmentName!!.trim(),
@@ -1417,6 +1419,7 @@ class StudentCourseService(
 
         val lectureSnippets = collectMaterialSnippets(
             userId = userId,
+            course = course,
             materials = lectureMaterials,
             totalLimit = maxOf(questionCount * 4, 18)
         )
@@ -1427,6 +1430,7 @@ class StudentCourseService(
         val styleSnippets = if (generationMode == StudentExamGenerationMode.PAST_EXAM) {
             collectStyleReferenceSnippets(
                 userId = userId,
+                course = course,
                 materials = styleReferenceMaterials
             )
         } else {
@@ -1602,18 +1606,39 @@ class StudentCourseService(
 
     private fun collectMaterialSnippets(
         userId: Long,
+        course: StudentCourse,
         materials: List<StudentCourseMaterial>,
         totalLimit: Int
     ): List<String> {
+        val queries = buildExamRetrievalQueries(course)
+        val queryEmbeddings = buildQueryEmbeddings(queries, RetrievalPurpose.EXAM)
         var loadedChunkCount = 0
         lateinit var snippets: List<String>
         val elapsedMs = measureTimeMillis {
             snippets = materials
                 .flatMap { material ->
                     val fileName = decodeDisplayMaterialFileName(material.userFile.fileName)
-                    val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
-                    loadedChunkCount += chunks.size
-                    buildExamGenerationSnippets(chunks).map { snippet -> "[$fileName] $snippet" }
+                    val semanticChunks = retrieveSemanticChunkExcerpts(
+                        userId = userId,
+                        material = material,
+                        queries = queries,
+                        queryEmbeddings = queryEmbeddings,
+                        perQueryLimit = 2,
+                        maxDistinct = maxOf(EXAM_SNIPPET_SAMPLE_SIZE * 2, 8),
+                        purpose = RetrievalPurpose.EXAM
+                    )
+                    if (semanticChunks.isNotEmpty()) {
+                        loadedChunkCount += semanticChunks.size
+                        buildExamGenerationSnippetsFromExcerpts(semanticChunks).map { snippet -> "[$fileName] $snippet" }
+                    } else {
+                        val chunks = loadAllChunksForFallback(
+                            userId = userId,
+                            material = material,
+                            purpose = RetrievalPurpose.EXAM
+                        )
+                        loadedChunkCount += chunks.size
+                        buildExamGenerationSnippets(chunks).map { snippet -> "[$fileName] $snippet" }
+                    }
                 }
                 .distinct()
                 .take(totalLimit)
@@ -1631,6 +1656,10 @@ class StudentCourseService(
     }
 
     private fun buildExamGenerationSnippets(chunks: List<DocChunkEmbedding>): List<String> {
+        return buildExamGenerationSnippetsFromExcerpts(chunks.map { ChunkExcerpt(it.chunkNo, it.chunkText) })
+    }
+
+    private fun buildExamGenerationSnippetsFromExcerpts(chunks: List<ChunkExcerpt>): List<String> {
         val normalizedChunks = chunks.mapNotNull { chunk ->
             val text = normalizeChunkText(chunk.chunkText)
             text.takeIf { it.length >= 80 }?.let { chunk.chunkNo to it }
@@ -1650,16 +1679,37 @@ class StudentCourseService(
 
     private fun collectSummarySources(
         userId: Long,
+        course: StudentCourse,
         materials: List<StudentCourseMaterial>
     ): List<CourseMaterialSummarySource> {
+        val queries = buildSummaryRetrievalQueries(course)
+        val queryEmbeddings = buildQueryEmbeddings(queries, RetrievalPurpose.SUMMARY)
         var loadedChunkCount = 0
         lateinit var sources: List<CourseMaterialSummarySource>
         val elapsedMs = measureTimeMillis {
             sources = materials.mapNotNull { material ->
                 val fileName = decodeDisplayMaterialFileName(material.userFile.fileName)
-                val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
-                loadedChunkCount += chunks.size
-                val snippets = buildSummarySnippets(chunks)
+                val semanticChunks = retrieveSemanticChunkExcerpts(
+                    userId = userId,
+                    material = material,
+                    queries = queries,
+                    queryEmbeddings = queryEmbeddings,
+                    perQueryLimit = 3,
+                    maxDistinct = maxOf(SUMMARY_SNIPPET_SAMPLE_SIZE * 2, 12),
+                    purpose = RetrievalPurpose.SUMMARY
+                )
+                val snippets = if (semanticChunks.isNotEmpty()) {
+                    loadedChunkCount += semanticChunks.size
+                    buildSummarySnippetsFromExcerpts(semanticChunks)
+                } else {
+                    val chunks = loadAllChunksForFallback(
+                        userId = userId,
+                        material = material,
+                        purpose = RetrievalPurpose.SUMMARY
+                    )
+                    loadedChunkCount += chunks.size
+                    buildSummarySnippets(chunks)
+                }
                 if (snippets.isEmpty()) {
                     null
                 } else {
@@ -1682,6 +1732,10 @@ class StudentCourseService(
     }
 
     private fun buildSummarySnippets(chunks: List<DocChunkEmbedding>): List<String> {
+        return buildSummarySnippetsFromExcerpts(chunks.map { ChunkExcerpt(it.chunkNo, it.chunkText) })
+    }
+
+    private fun buildSummarySnippetsFromExcerpts(chunks: List<ChunkExcerpt>): List<String> {
         val normalizedChunks = chunks.mapNotNull { chunk ->
             val text = normalizeChunkText(chunk.chunkText)
             text.takeIf { it.length >= 80 }?.let { chunk.chunkNo to it }
@@ -1702,6 +1756,131 @@ class StudentCourseService(
     private fun normalizeChunkText(text: String): String =
         normalizeDisplayText(text).replace(Regex("\\s+"), " ").trim()
 
+    private fun buildSummaryRetrievalQueries(course: StudentCourse): List<String> = listOf(
+        "${course.courseName} 핵심 개념 정의",
+        "${course.courseName} 중요한 주제 설명",
+        "${course.courseName} 시험 대비 핵심 내용",
+        "${course.courseName} 사례와 적용"
+    )
+
+    private fun buildExamRetrievalQueries(course: StudentCourse): List<String> = listOf(
+        "${course.courseName} 핵심 개념과 정의",
+        "${course.courseName} 시험 예상 포인트",
+        "${course.courseName} 비교와 차이",
+        "${course.courseName} 사례와 적용"
+    )
+
+    private fun buildStyleReferenceRetrievalQueries(course: StudentCourse): List<String> = listOf(
+        "${course.courseName} 시험 문제 문장",
+        "${course.courseName} 사례형 문제 표현",
+        "${course.courseName} 서술형 문제 형식"
+    )
+
+    private fun retrieveSemanticChunkExcerpts(
+        userId: Long,
+        material: StudentCourseMaterial,
+        queries: List<String>,
+        queryEmbeddings: Map<String, List<Double>>,
+        perQueryLimit: Int,
+        maxDistinct: Int,
+        purpose: RetrievalPurpose
+    ): List<ChunkExcerpt> {
+        if (queries.isEmpty() || maxDistinct <= 0) return emptyList()
+        val seenChunkNos = linkedSetOf<Int>()
+        val collected = mutableListOf<ChunkExcerpt>()
+
+        queries.forEach { query ->
+            val queryEmbedding = queryEmbeddings[query]
+            val semanticMatches = runCatching {
+                if (queryEmbedding.isNullOrEmpty()) {
+                    emptyList()
+                } else {
+                    docChunkEmbeddingRepository.findTopSemanticMatches(
+                        userId = userId,
+                        userFileId = material.userFile.id,
+                        queryVector = queryEmbedding.toVectorLiteral(),
+                        limit = perQueryLimit
+                    ).map { it.toChunkExcerpt() }
+                }
+            }.onFailure { ex ->
+                logger.warn(
+                    "student material semantic retrieval failed purpose={} fileId={} query='{}' reason={}",
+                    purpose.logLabel,
+                    material.userFile.id,
+                    query.take(80),
+                    ex.message
+                )
+            }.getOrNull().orEmpty()
+
+            semanticMatches.forEach { excerpt ->
+                if (seenChunkNos.add(excerpt.chunkNo)) {
+                    collected += excerpt
+                }
+            }
+            if (collected.size >= maxDistinct) {
+                return collected.take(maxDistinct)
+            }
+        }
+
+        return collected.take(maxDistinct)
+    }
+
+    private fun buildQueryEmbeddings(
+        queries: List<String>,
+        purpose: RetrievalPurpose
+    ): Map<String, List<Double>> {
+        val embeddings = linkedMapOf<String, List<Double>>()
+        queries.distinct().forEach { query ->
+            val queryEmbedding = runCatching {
+                embeddingProviderRouter.embedText(query).values
+            }.onFailure { ex ->
+                logger.warn(
+                    "student retrieval query embedding failed purpose={} query='{}' reason={}",
+                    purpose.logLabel,
+                    query.take(80),
+                    ex.message
+                )
+            }.getOrNull()
+            if (!queryEmbedding.isNullOrEmpty()) {
+                embeddings[query] = queryEmbedding
+            }
+        }
+        return embeddings
+    }
+
+    private fun loadAllChunksForFallback(
+        userId: Long,
+        material: StudentCourseMaterial,
+        purpose: RetrievalPurpose
+    ): List<DocChunkEmbedding> {
+        val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
+        logger.info(
+            "student material retrieval fallback purpose={} fileId={} loadedChunks={}",
+            purpose.logLabel,
+            material.userFile.id,
+            chunks.size
+        )
+        return chunks
+    }
+
+    private fun buildStyleReferenceSnippets(
+        material: StudentCourseMaterial,
+        extractionLabel: String,
+        chunks: List<ChunkExcerpt>
+    ): List<String> {
+        val fileName = decodeDisplayMaterialFileName(material.userFile.fileName)
+        return chunks
+            .mapNotNull { excerpt ->
+                val snippet = excerpt.chunkText.replace(Regex("\\s+"), " ").trim()
+                if (snippet.length < 24) {
+                    null
+                } else {
+                    "[자료명] $fileName\n[원문 유형] $extractionLabel\n$snippet"
+                }
+            }
+            .take(2)
+    }
+
     private fun normalizeDisplayText(text: String): String =
         Normalizer.normalize(text, Normalizer.Form.NFC)
 
@@ -1718,10 +1897,20 @@ class StudentCourseService(
         return sampled.toList()
     }
 
+    private fun List<Double>.toVectorLiteral(): String = joinToString(prefix = "[", postfix = "]") { it.toString() }
+
+    private fun ChunkSnippetProjection.toChunkExcerpt(): ChunkExcerpt = ChunkExcerpt(
+        chunkNo = chunkNo,
+        chunkText = chunkText
+    )
+
     private fun collectStyleReferenceSnippets(
         userId: Long,
+        course: StudentCourse,
         materials: List<StudentCourseMaterial>
     ): List<String> {
+        val queries = buildStyleReferenceRetrievalQueries(course)
+        val queryEmbeddings = buildQueryEmbeddings(queries, RetrievalPurpose.STYLE_REFERENCE)
         var loadedChunkCount = 0
         lateinit var snippets: List<String>
         val elapsedMs = measureTimeMillis {
@@ -1729,18 +1918,32 @@ class StudentCourseService(
                 .flatMap { material ->
                     val extractionMethod = extractExtractionMethod(material.latestIngestionJob()?.metadataJson)
                     val extractionLabel = if (extractionMethod == "OCR_TESSERACT") "OCR 추출 원문" else "문서 추출 원문"
-                    docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
-                        .also { loadedChunkCount += it.size }
-                        .map { embedding ->
-                            val snippet = embedding.chunkText.replace(Regex("\\s+"), " ").trim()
-                            if (snippet.length < 24) {
-                                null
-                            } else {
-                                "[자료명] ${decodeDisplayMaterialFileName(material.userFile.fileName)}\n[원문 유형] $extractionLabel\n$snippet"
-                            }
-                        }
-                        .filterNotNull()
-                        .take(2)
+                    val semanticChunks = retrieveSemanticChunkExcerpts(
+                        userId = userId,
+                        material = material,
+                        queries = queries,
+                        queryEmbeddings = queryEmbeddings,
+                        perQueryLimit = 2,
+                        maxDistinct = 4,
+                        purpose = RetrievalPurpose.STYLE_REFERENCE
+                    )
+                    val extractedSnippets = if (semanticChunks.isNotEmpty()) {
+                        loadedChunkCount += semanticChunks.size
+                        buildStyleReferenceSnippets(material, extractionLabel, semanticChunks)
+                    } else {
+                        val chunks = loadAllChunksForFallback(
+                            userId = userId,
+                            material = material,
+                            purpose = RetrievalPurpose.STYLE_REFERENCE
+                        )
+                        loadedChunkCount += chunks.size
+                        buildStyleReferenceSnippets(
+                            material,
+                            extractionLabel,
+                            chunks.map { ChunkExcerpt(it.chunkNo, it.chunkText) }
+                        )
+                    }
+                    extractedSnippets
                 }
                 .distinct()
                 .take(6)

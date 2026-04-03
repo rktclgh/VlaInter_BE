@@ -16,9 +16,10 @@ internal data class ClassifiedPromptSnippet(
     val text: String,
     val kind: DocumentSnippetKind
 ) {
-    fun toPromptBlock(index: Int): String = """
+    fun toPromptBlock(index: Int, allowedQuestionTypes: List<String>): String = """
         [문서 발췌 $index]
         kind=${kind.name}
+        allowedQuestionTypes=${allowedQuestionTypes.joinToString(" | ")}
         text=$text
     """.trimIndent()
 }
@@ -118,6 +119,31 @@ internal object DocumentQuestionGenerationPolicy {
                 text = snippet,
                 kind = classifySnippet(fileType, snippet)
             )
+        }
+    }
+
+    fun allowedQuestionTypes(fileType: FileType, kind: DocumentSnippetKind): List<String> {
+        return when (fileType) {
+            FileType.RESUME -> when (kind) {
+                DocumentSnippetKind.ACTUAL_EXPERIENCE -> listOf("RESUME_EXPERIENCE")
+                DocumentSnippetKind.PROJECT_OR_RESULT -> listOf("RESUME_RESULT")
+                DocumentSnippetKind.MOTIVATION_OR_ASPIRATION -> listOf("RESUME_MOTIVATION")
+                DocumentSnippetKind.VALUE_OR_ATTITUDE -> listOf("RESUME_VALUE")
+            }
+            FileType.INTRODUCE -> when (kind) {
+                DocumentSnippetKind.ACTUAL_EXPERIENCE,
+                DocumentSnippetKind.PROJECT_OR_RESULT -> listOf("INTRODUCE_EXPERIENCE")
+                DocumentSnippetKind.MOTIVATION_OR_ASPIRATION -> listOf("INTRODUCE_MOTIVATION", "INTRODUCE_FUTURE_PLAN")
+                DocumentSnippetKind.VALUE_OR_ATTITUDE -> listOf("INTRODUCE_VALUE")
+            }
+            FileType.PORTFOLIO -> when (kind) {
+                DocumentSnippetKind.ACTUAL_EXPERIENCE -> listOf("PORTFOLIO_PROJECT", "PORTFOLIO_DECISION")
+                DocumentSnippetKind.PROJECT_OR_RESULT -> listOf("PORTFOLIO_RESULT", "PORTFOLIO_PROJECT")
+                DocumentSnippetKind.MOTIVATION_OR_ASPIRATION,
+                DocumentSnippetKind.VALUE_OR_ATTITUDE -> listOf("PORTFOLIO_DECISION")
+            }
+            FileType.PROFILE_IMAGE -> listOf("INTRODUCE_VALUE")
+            FileType.COURSE_MATERIAL -> emptyList()
         }
     }
 
