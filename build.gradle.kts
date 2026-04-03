@@ -80,3 +80,11 @@ tasks.withType<Test> {
 	systemProperty("spring.jpa.hibernate.ddl-auto", "create-drop")
 	systemProperty("spring.jpa.show-sql", "false")
 }
+
+tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
+	// DevTools restart 환경에서 application.properties의 optional:file:.env import만으로는
+	// 로컬 .env 로딩이 불안정할 수 있어 bootRun 시 추가 위치를 명시한다.
+	if (file(".env").exists()) {
+		systemProperty("spring.config.additional-location", "file:./.env[.properties]")
+	}
+}

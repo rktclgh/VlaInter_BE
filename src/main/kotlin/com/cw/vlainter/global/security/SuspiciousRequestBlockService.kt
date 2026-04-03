@@ -64,7 +64,23 @@ class SuspiciousRequestBlockService(
 
     internal fun isSuspiciousRequest(method: String, requestUri: String): Boolean {
         val lowered = requestUri.lowercase()
-        if (".env" in lowered || ".git" in lowered || "phpmyadmin" in lowered) {
+        if (isWhitelistedPath(lowered)) {
+            return false
+        }
+        if (
+            ".env" in lowered ||
+            ".git" in lowered ||
+            "phpmyadmin" in lowered ||
+            "docker-compose" in lowered ||
+            "dockerfile" in lowered ||
+            "package.json" in lowered ||
+            "package-lock.json" in lowered ||
+            "yarn.lock" in lowered ||
+            "pnpm-lock.yaml" in lowered ||
+            "service-account.json" in lowered ||
+            "phpinfo" in lowered ||
+            "graphql-playground" in lowered
+        ) {
             return true
         }
         if (!docsEnabled && (lowered.startsWith("/swagger-ui") || lowered.startsWith("/v3/api-docs"))) {
@@ -74,14 +90,30 @@ class SuspiciousRequestBlockService(
             "settings.json" in lowered ||
             "fluent-mail" in lowered ||
             "wp-" in lowered ||
-            "wp/" in lowered
+            "wp/" in lowered ||
+            ".sql" in lowered ||
+            ".bak" in lowered ||
+            ".old" in lowered ||
+            ".swp" in lowered
         ) {
+            return true
+        }
+        if (SUSPICIOUS_CONFIG_PATH_REGEX.containsMatchIn(lowered)) {
+            return true
+        }
+        if (SUSPICIOUS_BACKUP_PATH_REGEX.containsMatchIn(lowered)) {
             return true
         }
         if (method.equals("POST", ignoreCase = true) && requestUri == "/") {
             return true
         }
         return false
+    }
+
+    private fun isWhitelistedPath(path: String): Boolean {
+        return SAFE_PATH_PREFIXES.any { safePath ->
+            path == safePath || path.startsWith("$safePath?")
+        }
     }
 
     private fun counterKey(clientIp: String): String = "security:probe:count:${SensitiveValueSanitizer.hash(clientIp)}"
@@ -113,5 +145,10 @@ class SuspiciousRequestBlockService(
         val BLOCK_WINDOW: Duration = Duration.ofMinutes(30)
         val BLOCKED_LOG_WINDOW: Duration = Duration.ofMinutes(5)
         val UNRESOLVED_LOG_WINDOW: Duration = Duration.ofMinutes(5)
+        val SAFE_PATH_PREFIXES = setOf(
+            "/api/users/backup-email"
+        )
+        val SUSPICIOUS_CONFIG_PATH_REGEX = Regex("""(?:^|/)[^/?#]+\.(?:yaml|yml)(?:$|[?#])""")
+        val SUSPICIOUS_BACKUP_PATH_REGEX = Regex("""(?:^|/)backup(?:$|/|\.[^/?#]+|[?#])""")
     }
 }
