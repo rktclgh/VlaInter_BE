@@ -62,6 +62,7 @@ import org.springframework.web.server.ResponseStatusException
 import java.security.MessageDigest
 import java.time.OffsetDateTime
 import kotlin.math.max
+import kotlin.system.measureTimeMillis
 
 @Service
 class InterviewPracticeService(
@@ -402,9 +403,19 @@ class InterviewPracticeService(
 
     @Transactional(readOnly = true)
     fun getSavedQuestions(principal: AuthPrincipal): List<SavedQuestionResponse> {
-        return savedQuestionRepository.findAllByUser_IdOrderByCreatedAtDesc(principal.userId)
-            .distinctBy { savedQuestionDedupKey(it) }
-            .map { toSavedQuestionResponse(it) }
+        lateinit var responses: List<SavedQuestionResponse>
+        val elapsedMs = measureTimeMillis {
+            responses = savedQuestionRepository.findAllByUser_IdOrderByCreatedAtDesc(principal.userId)
+                .distinctBy { savedQuestionDedupKey(it) }
+                .map { toSavedQuestionResponse(it) }
+        }
+        logger.info(
+            "saved question lookup timing userId={} resultCount={} elapsedMs={}",
+            principal.userId,
+            responses.size,
+            elapsedMs
+        )
+        return responses
     }
 
     @Transactional
@@ -440,64 +451,86 @@ class InterviewPracticeService(
         val session = interviewSessionRepository.findByIdAndUser_Id(sessionId, principal.userId)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "면접 세션을 찾을 수 없습니다.")
 
-        val turns = interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(session.id)
-            .map { turn ->
-                val evaluation = interviewTurnEvaluationRepository.findByTurn_Id(turn.id)
-                InterviewTurnResultResponse(
-                    turnId = turn.id,
-                    turnNo = turn.turnNo,
-                    questionId = turn.question?.id,
-                    documentQuestionId = turn.documentQuestion?.id,
-                    questionKind = if (turn.question != null) InterviewQuestionKind.TECH else InterviewQuestionKind.DOCUMENT,
-                    categoryId = turn.category?.id,
-                    questionText = turn.questionTextSnapshot,
-                    answerText = turn.userAnswer,
-                    category = turn.categorySnapshot,
-                    difficulty = turn.difficulty,
-                    sourceTag = normalizedTurnSourceTag(turn),
-                    tags = parseTags(turn.tagsJson),
-                    bookmarked = turn.isBookmarked,
-                    evaluation = evaluation?.let {
-                        val sessionLanguage = resolveInterviewLanguage(session.configJson)
-                        val turnContext = parseTurnRagContext(objectMapper, turn.ragContextJson)
-                        val resolved = resolveAnswerContent(
-                            rawModelAnswer = turnContext.localizedModelAnswerFor(sessionLanguage)
-                                ?: turn.question?.canonicalAnswer
-                                ?: turn.documentQuestion?.referenceAnswer,
-                            rawGuideText = it.bestPractice
-                        )
-                        TurnEvaluationResponse(
-                            score = it.totalScore,
-                            feedback = it.feedback,
-                            bestPractice = if (session.mode == InterviewMode.QUESTION_SET_PRACTICE) "" else (resolved.guideText ?: it.bestPractice),
-                            modelAnswer = resolved.modelAnswer,
-                            providerUsed = when {
-                                it.model.equals("heuristic", ignoreCase = true) -> "HEURISTIC"
-                                it.model?.contains("gemini", ignoreCase = true) == true -> "GEMINI"
-                                it.model?.contains("nova", ignoreCase = true) == true ||
-                                    it.model?.contains("bedrock", ignoreCase = true) == true -> "BEDROCK"
-                                else -> null
-                            }
-                        )
-                    }
-                )
-            }
+        lateinit var response: InterviewSessionResultsResponse
+        val elapsedMs = measureTimeMillis {
+            val turns = interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(session.id)
+                .map { turn ->
+                    val evaluation = interviewTurnEvaluationRepository.findByTurn_Id(turn.id)
+                    InterviewTurnResultResponse(
+                        turnId = turn.id,
+                        turnNo = turn.turnNo,
+                        questionId = turn.question?.id,
+                        documentQuestionId = turn.documentQuestion?.id,
+                        questionKind = if (turn.question != null) InterviewQuestionKind.TECH else InterviewQuestionKind.DOCUMENT,
+                        categoryId = turn.category?.id,
+                        questionText = turn.questionTextSnapshot,
+                        answerText = turn.userAnswer,
+                        category = turn.categorySnapshot,
+                        difficulty = turn.difficulty,
+                        sourceTag = normalizedTurnSourceTag(turn),
+                        tags = parseTags(turn.tagsJson),
+                        bookmarked = turn.isBookmarked,
+                        evaluation = evaluation?.let {
+                            val sessionLanguage = resolveInterviewLanguage(session.configJson)
+                            val turnContext = parseTurnRagContext(objectMapper, turn.ragContextJson)
+                            val resolved = resolveAnswerContent(
+                                rawModelAnswer = turnContext.localizedModelAnswerFor(sessionLanguage)
+                                    ?: turn.question?.canonicalAnswer
+                                    ?: turn.documentQuestion?.referenceAnswer,
+                                rawGuideText = it.bestPractice
+                            )
+                            TurnEvaluationResponse(
+                                score = it.totalScore,
+                                feedback = it.feedback,
+                                bestPractice = if (session.mode == InterviewMode.QUESTION_SET_PRACTICE) "" else (resolved.guideText ?: it.bestPractice),
+                                modelAnswer = resolved.modelAnswer,
+                                providerUsed = when {
+                                    it.model.equals("heuristic", ignoreCase = true) -> "HEURISTIC"
+                                    it.model?.contains("gemini", ignoreCase = true) == true -> "GEMINI"
+                                    it.model?.contains("nova", ignoreCase = true) == true ||
+                                        it.model?.contains("bedrock", ignoreCase = true) == true -> "BEDROCK"
+                                    else -> null
+                                }
+                            )
+                        }
+                    )
+                }
 
-        return InterviewSessionResultsResponse(
-            sessionId = session.id,
-            status = session.status.name,
-            mode = session.mode.name,
-            finishedAt = session.finishedAt,
-            turns = turns
+            response = InterviewSessionResultsResponse(
+                sessionId = session.id,
+                status = session.status.name,
+                mode = session.mode.name,
+                finishedAt = session.finishedAt,
+                turns = turns
+            )
+        }
+        logger.info(
+            "session results timing userId={} sessionId={} mode={} turnCount={} elapsedMs={}",
+            principal.userId,
+            session.id,
+            session.mode.name,
+            response.turns.size,
+            elapsedMs
         )
+        return response
     }
 
     @Transactional(readOnly = true)
     fun getTechSessionHistory(principal: AuthPrincipal): List<InterviewSessionHistoryResponse> {
-        return interviewSessionRepository
-            .findAllByUser_IdAndModeInOrderByCreatedAtDesc(principal.userId, listOf(InterviewMode.TECH))
-            .filter { shouldStoreHistory(it.configJson) }
-            .map { toSessionHistoryResponse(it) }
+        lateinit var responses: List<InterviewSessionHistoryResponse>
+        val elapsedMs = measureTimeMillis {
+            responses = interviewSessionRepository
+                .findAllByUser_IdAndModeInOrderByCreatedAtDesc(principal.userId, listOf(InterviewMode.TECH))
+                .filter { shouldStoreHistory(it.configJson) }
+                .map { toSessionHistoryResponse(it) }
+        }
+        logger.info(
+            "tech session history timing userId={} resultCount={} elapsedMs={}",
+            principal.userId,
+            responses.size,
+            elapsedMs
+        )
+        return responses
     }
 
     @Transactional(readOnly = true)
@@ -507,16 +540,28 @@ class InterviewPracticeService(
         size: Int
     ): InterviewSessionHistoryPageResponse {
         validateHistoryPageRequest(page, size)
-        val historySlice = collectTechHistoryPage(principal.userId, page, size)
-        val filtered = historySlice.items
-            .map { toSessionHistoryResponse(it) }
+        lateinit var response: InterviewSessionHistoryPageResponse
+        val elapsedMs = measureTimeMillis {
+            val historySlice = collectTechHistoryPage(principal.userId, page, size)
+            val filtered = historySlice.items
+                .map { toSessionHistoryResponse(it) }
 
-        return InterviewSessionHistoryPageResponse(
-            items = filtered,
-            page = page,
-            size = size,
-            hasNext = historySlice.hasNext
+            response = InterviewSessionHistoryPageResponse(
+                items = filtered,
+                page = page,
+                size = size,
+                hasNext = historySlice.hasNext
+            )
+        }
+        logger.info(
+            "tech session history page timing userId={} page={} size={} itemCount={} elapsedMs={}",
+            principal.userId,
+            page,
+            size,
+            response.items.size,
+            elapsedMs
         )
+        return response
     }
 
     @Transactional(readOnly = true)
@@ -542,17 +587,28 @@ class InterviewPracticeService(
             InterviewMode.TECH.name, null, "" -> listOf(InterviewMode.TECH)
             else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "유효하지 않은 sessionMode 입니다.")
         }
-        val latestSession = interviewSessionRepository
-            .findAllByUser_IdAndModeInOrderByUpdatedAtDescCreatedAtDesc(
-                userId = principal.userId,
-                modes = allowedModes
-            )
-            .firstOrNull()
-            ?: return null
-        if (latestSession.status != InterviewStatus.IN_PROGRESS) {
-            return null
+        var response: ResumeInterviewSessionResponse? = null
+        val elapsedMs = measureTimeMillis {
+            val latestSession = interviewSessionRepository
+                .findAllByUser_IdAndModeInOrderByUpdatedAtDescCreatedAtDesc(
+                    userId = principal.userId,
+                    modes = allowedModes
+                )
+                .firstOrNull()
+            response = if (latestSession == null || latestSession.status != InterviewStatus.IN_PROGRESS) {
+                null
+            } else {
+                toResumeSessionResponse(latestSession)
+            }
         }
-        return toResumeSessionResponse(latestSession)
+        logger.info(
+            "latest tech session timing userId={} modes={} found={} elapsedMs={}",
+            principal.userId,
+            allowedModes.joinToString(",") { it.name },
+            response != null,
+            elapsedMs
+        )
+        return response
     }
 
     @Transactional
@@ -695,6 +751,14 @@ class InterviewPracticeService(
             }
             collected += question
         }
+        logger.info(
+            "tech question generation persistence userId={} categoryId={} generatedCount={} persistedCount={} questionSetId={}",
+            owner.id,
+            category.id,
+            generated.size,
+            collected.size,
+            autoSet.id
+        )
         return collected
     }
 
@@ -1136,6 +1200,7 @@ class InterviewPracticeService(
         var remainingToSkip = page * size
         var sourcePage = 0
         val collected = mutableListOf<InterviewSession>()
+        var scannedSessionCount = 0
 
         while (true) {
             val slice = interviewSessionRepository.findAllByUser_IdAndModeInOrderByCreatedAtDesc(
@@ -1143,6 +1208,7 @@ class InterviewPracticeService(
                 listOf(InterviewMode.TECH),
                 org.springframework.data.domain.PageRequest.of(sourcePage, TECH_HISTORY_SCAN_BATCH_SIZE)
             )
+            scannedSessionCount += slice.content.size
             val visibleSessions = slice.content.filter { shouldStoreHistory(it.configJson) }
 
             if (remainingToSkip >= visibleSessions.size) {
@@ -1162,6 +1228,15 @@ class InterviewPracticeService(
             sourcePage += 1
         }
 
+        logger.info(
+            "tech history slice scan userId={} page={} size={} scannedSessions={} collectedSessions={} sourcePages={}",
+            userId,
+            page,
+            size,
+            scannedSessionCount,
+            collected.size,
+            sourcePage + 1
+        )
         return TechHistorySlice(
             items = collected.take(size),
             hasNext = collected.size > size

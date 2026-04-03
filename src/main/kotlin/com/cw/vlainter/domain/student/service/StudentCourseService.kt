@@ -96,6 +96,7 @@ import java.io.File
 import java.text.Normalizer
 import java.time.OffsetDateTime
 import java.util.concurrent.RejectedExecutionException
+import kotlin.system.measureTimeMillis
 
 @Service
 class StudentCourseService(
@@ -189,29 +190,42 @@ class StudentCourseService(
         val normalizedProfessorName = request.professorName?.trim()?.takeIf { it.isNotBlank() }
         val normalizedDescription = request.description?.trim()?.takeIf { it.isNotBlank() }
 
-        val duplicateExists = studentCourseRepository
-            .findAllByUserIdAndIsArchivedFalseOrderByUpdatedAtDesc(user.id)
-            .any { course ->
+        var scannedCourseCount = 0
+        lateinit var savedResponse: StudentCourseResponse
+        val elapsedMs = measureTimeMillis {
+            val existingCourses = studentCourseRepository
+                .findAllByUserIdAndIsArchivedFalseOrderByUpdatedAtDesc(user.id)
+            scannedCourseCount = existingCourses.size
+            val duplicateExists = existingCourses.any { course ->
                 course.universityName.equals(user.universityName, ignoreCase = true) &&
                     course.departmentName.equals(user.departmentName, ignoreCase = true) &&
                     course.courseName.equals(normalizedCourseName, ignoreCase = true) &&
                     normalizeProfessorName(course.professorName).equals(normalizeProfessorName(normalizedProfessorName), ignoreCase = true)
             }
-        if (duplicateExists) {
-            throw ResponseStatusException(HttpStatus.CONFLICT, "같은 과목이 이미 등록되어 있습니다.")
-        }
+            if (duplicateExists) {
+                throw ResponseStatusException(HttpStatus.CONFLICT, "같은 과목이 이미 등록되어 있습니다.")
+            }
 
-        val saved = studentCourseRepository.save(
-            StudentCourse(
-                userId = user.id,
-                universityName = user.universityName!!.trim(),
-                departmentName = user.departmentName!!.trim(),
-                courseName = normalizedCourseName,
-                professorName = normalizedProfessorName,
-                description = normalizedDescription
+            val saved = studentCourseRepository.save(
+                StudentCourse(
+                    userId = user.id,
+                    universityName = user.universityName!!.trim(),
+                    departmentName = user.departmentName!!.trim(),
+                    courseName = normalizedCourseName,
+                    professorName = normalizedProfessorName,
+                    description = normalizedDescription
+                )
             )
+            savedResponse = saved.toResponse()
+        }
+        logger.info(
+            "student course create timing userId={} scannedCourses={} courseName={} elapsedMs={}",
+            user.id,
+            scannedCourseCount,
+            normalizedCourseName,
+            elapsedMs
         )
-        return saved.toResponse()
+        return savedResponse
     }
 
     @Transactional
@@ -1591,14 +1605,29 @@ class StudentCourseService(
         materials: List<StudentCourseMaterial>,
         totalLimit: Int
     ): List<String> {
-        return materials
-            .flatMap { material ->
-                val fileName = decodeDisplayMaterialFileName(material.userFile.fileName)
-                val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
-                buildExamGenerationSnippets(chunks).map { snippet -> "[$fileName] $snippet" }
-            }
-            .distinct()
-            .take(totalLimit)
+        var loadedChunkCount = 0
+        lateinit var snippets: List<String>
+        val elapsedMs = measureTimeMillis {
+            snippets = materials
+                .flatMap { material ->
+                    val fileName = decodeDisplayMaterialFileName(material.userFile.fileName)
+                    val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
+                    loadedChunkCount += chunks.size
+                    buildExamGenerationSnippets(chunks).map { snippet -> "[$fileName] $snippet" }
+                }
+                .distinct()
+                .take(totalLimit)
+        }
+        logger.info(
+            "course material snippet timing userId={} materialCount={} loadedChunks={} resultCount={} totalLimit={} elapsedMs={}",
+            userId,
+            materials.size,
+            loadedChunkCount,
+            snippets.size,
+            totalLimit,
+            elapsedMs
+        )
+        return snippets
     }
 
     private fun buildExamGenerationSnippets(chunks: List<DocChunkEmbedding>): List<String> {
@@ -1623,19 +1652,33 @@ class StudentCourseService(
         userId: Long,
         materials: List<StudentCourseMaterial>
     ): List<CourseMaterialSummarySource> {
-        return materials.mapNotNull { material ->
-            val fileName = decodeDisplayMaterialFileName(material.userFile.fileName)
-            val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
-            val snippets = buildSummarySnippets(chunks)
-            if (snippets.isEmpty()) {
-                null
-            } else {
-                CourseMaterialSummarySource(
-                    fileName = fileName,
-                    snippets = snippets
-                )
+        var loadedChunkCount = 0
+        lateinit var sources: List<CourseMaterialSummarySource>
+        val elapsedMs = measureTimeMillis {
+            sources = materials.mapNotNull { material ->
+                val fileName = decodeDisplayMaterialFileName(material.userFile.fileName)
+                val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
+                loadedChunkCount += chunks.size
+                val snippets = buildSummarySnippets(chunks)
+                if (snippets.isEmpty()) {
+                    null
+                } else {
+                    CourseMaterialSummarySource(
+                        fileName = fileName,
+                        snippets = snippets
+                    )
+                }
             }
         }
+        logger.info(
+            "course summary source timing userId={} materialCount={} loadedChunks={} sourceCount={} elapsedMs={}",
+            userId,
+            materials.size,
+            loadedChunkCount,
+            sources.size,
+            elapsedMs
+        )
+        return sources
     }
 
     private fun buildSummarySnippets(chunks: List<DocChunkEmbedding>): List<String> {
@@ -1679,24 +1722,38 @@ class StudentCourseService(
         userId: Long,
         materials: List<StudentCourseMaterial>
     ): List<String> {
-        return materials
-            .flatMap { material ->
-                val extractionMethod = extractExtractionMethod(material.latestIngestionJob()?.metadataJson)
-                val extractionLabel = if (extractionMethod == "OCR_TESSERACT") "OCR 추출 원문" else "문서 추출 원문"
-                docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
-                    .map { embedding ->
-                        val snippet = embedding.chunkText.replace(Regex("\\s+"), " ").trim()
-                        if (snippet.length < 24) {
-                            null
-                        } else {
-                            "[자료명] ${decodeDisplayMaterialFileName(material.userFile.fileName)}\n[원문 유형] $extractionLabel\n$snippet"
+        var loadedChunkCount = 0
+        lateinit var snippets: List<String>
+        val elapsedMs = measureTimeMillis {
+            snippets = materials
+                .flatMap { material ->
+                    val extractionMethod = extractExtractionMethod(material.latestIngestionJob()?.metadataJson)
+                    val extractionLabel = if (extractionMethod == "OCR_TESSERACT") "OCR 추출 원문" else "문서 추출 원문"
+                    docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
+                        .also { loadedChunkCount += it.size }
+                        .map { embedding ->
+                            val snippet = embedding.chunkText.replace(Regex("\\s+"), " ").trim()
+                            if (snippet.length < 24) {
+                                null
+                            } else {
+                                "[자료명] ${decodeDisplayMaterialFileName(material.userFile.fileName)}\n[원문 유형] $extractionLabel\n$snippet"
+                            }
                         }
-                    }
-                    .filterNotNull()
-                    .take(2)
-            }
-            .distinct()
-            .take(6)
+                        .filterNotNull()
+                        .take(2)
+                }
+                .distinct()
+                .take(6)
+        }
+        logger.info(
+            "style reference snippet timing userId={} materialCount={} loadedChunks={} resultCount={} elapsedMs={}",
+            userId,
+            materials.size,
+            loadedChunkCount,
+            snippets.size,
+            elapsedMs
+        )
+        return snippets
     }
 
     private fun extractPastExamPracticeQuestionCandidates(
@@ -1704,45 +1761,60 @@ class StudentCourseService(
         materials: List<StudentCourseMaterial>,
         totalLimit: Int
     ): List<ExtractedPastExamQuestionCandidate> {
-        return materials
-            .flatMap { material ->
-                val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
-                val combinedText = mergeChunkTextsForQuestionExtraction(chunks.map { it.chunkText })
-                val extractionMethod = extractExtractionMethod(material.latestIngestionJob()?.metadataJson)
-                val sourceFileName = decodeDisplayMaterialFileName(material.userFile.fileName)
-                val regexCandidates = extractQuestionBlocksFromPastExam(combinedText)
-                val recoveredCandidates = if (regexCandidates.size >= minOf(totalLimit, 2)) {
-                    regexCandidates
-                } else {
-                    recoverQuestionBlocksFromPastExamWithAi(
-                        material = material,
-                        sourceFileName = sourceFileName,
-                        extractionMethod = extractionMethod,
-                        rawText = combinedText,
-                        expectedQuestionCount = totalLimit
-                    ).ifEmpty { regexCandidates }
-                }
-                logger.info(
-                    "족보 원문 문제 추출 fileId={} fileName={} extractionMethod={} chunkCount={} chars={} regexCount={} finalCount={}",
-                    material.userFile.id,
-                    sourceFileName,
-                    extractionMethod ?: "UNKNOWN",
-                    chunks.size,
-                    combinedText.length,
-                    regexCandidates.size,
-                    recoveredCandidates.size
-                )
-                recoveredCandidates.mapIndexed { index, block ->
-                        ExtractedPastExamQuestionCandidate(
-                            questionNo = index + 1,
-                            questionText = block,
+        var loadedChunkCount = 0
+        lateinit var candidates: List<ExtractedPastExamQuestionCandidate>
+        val elapsedMs = measureTimeMillis {
+            candidates = materials
+                .flatMap { material ->
+                    val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, material.userFile.id)
+                    loadedChunkCount += chunks.size
+                    val combinedText = mergeChunkTextsForQuestionExtraction(chunks.map { it.chunkText })
+                    val extractionMethod = extractExtractionMethod(material.latestIngestionJob()?.metadataJson)
+                    val sourceFileName = decodeDisplayMaterialFileName(material.userFile.fileName)
+                    val regexCandidates = extractQuestionBlocksFromPastExam(combinedText)
+                    val recoveredCandidates = if (regexCandidates.size >= minOf(totalLimit, 2)) {
+                        regexCandidates
+                    } else {
+                        recoverQuestionBlocksFromPastExamWithAi(
+                            material = material,
                             sourceFileName = sourceFileName,
-                            extractionMethod = extractionMethod
-                        )
+                            extractionMethod = extractionMethod,
+                            rawText = combinedText,
+                            expectedQuestionCount = totalLimit
+                        ).ifEmpty { regexCandidates }
                     }
-            }
-            .distinctBy { it.questionText.normalizeQuestionKey() }
-            .take(totalLimit)
+                    logger.info(
+                        "족보 원문 문제 추출 fileId={} fileName={} extractionMethod={} chunkCount={} chars={} regexCount={} finalCount={}",
+                        material.userFile.id,
+                        sourceFileName,
+                        extractionMethod ?: "UNKNOWN",
+                        chunks.size,
+                        combinedText.length,
+                        regexCandidates.size,
+                        recoveredCandidates.size
+                    )
+                    recoveredCandidates.mapIndexed { index, block ->
+                            ExtractedPastExamQuestionCandidate(
+                                questionNo = index + 1,
+                                questionText = block,
+                                sourceFileName = sourceFileName,
+                                extractionMethod = extractionMethod
+                            )
+                        }
+                }
+                .distinctBy { it.questionText.normalizeQuestionKey() }
+                .take(totalLimit)
+        }
+        logger.info(
+            "past exam candidate extraction timing userId={} materialCount={} loadedChunks={} resultCount={} totalLimit={} elapsedMs={}",
+            userId,
+            materials.size,
+            loadedChunkCount,
+            candidates.size,
+            totalLimit,
+            elapsedMs
+        )
+        return candidates
     }
 
     private fun extractQuestionBlocksFromPastExam(rawText: String): List<String> {

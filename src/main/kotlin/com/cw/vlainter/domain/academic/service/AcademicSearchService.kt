@@ -21,6 +21,7 @@ import org.springframework.web.util.HtmlUtils
 import java.time.OffsetDateTime
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.system.measureTimeMillis
 
 @Service
 class AcademicSearchService(
@@ -64,35 +65,54 @@ class AcademicSearchService(
         val normalizedKeyword = keyword.trim()
         if (normalizedKeyword.length < MIN_QUERY_LENGTH) return emptyList()
 
-        val localResults = academicUniversityRepository.searchByKeyword(normalizeKeyword(normalizedKeyword))
-            .map { it.toResponse() }
-            .take(MAX_RESULT_SIZE)
-        if (localResults.isNotEmpty()) return localResults
-        if (academyInfoServiceKey.isBlank()) {
-            return searchUniversitiesFromStandardData(normalizedKeyword)
-                .let(::upsertUniversities)
+        var source = "LOCAL"
+        lateinit var results: List<UniversitySearchItemResponse>
+        val elapsedMs = measureTimeMillis {
+            val localResults = academicUniversityRepository.searchByKeyword(normalizeKeyword(normalizedKeyword))
+                .map { it.toResponse() }
+                .take(MAX_RESULT_SIZE)
+            if (localResults.isNotEmpty()) {
+                results = localResults
+                return@measureTimeMillis
+            }
+            if (academyInfoServiceKey.isBlank()) {
+                source = "STANDARD_DATA"
+                results = searchUniversitiesFromStandardData(normalizedKeyword)
+                    .let(::upsertUniversities)
+                    .map { it.toResponse() }
+                    .filter { it.universityName.contains(normalizedKeyword, ignoreCase = true) }
+                    .take(MAX_RESULT_SIZE)
+                return@measureTimeMillis
+            }
+
+            val quickRemoteCandidates = requestUniversitySearch(
+                keyword = normalizedKeyword,
+                maxPages = QUICK_REMOTE_UNIVERSITY_PAGES
+            )
+                .mapNotNull { item -> item.toUniversityResponse() }
+                .distinctBy { normalizeKeyword(it.universityName) }
+            val remoteCandidates = if (quickRemoteCandidates.isNotEmpty()) {
+                source = "REMOTE_API"
+                quickRemoteCandidates
+            } else {
+                source = "STANDARD_DATA_FALLBACK"
+                searchUniversitiesFromStandardData(normalizedKeyword)
+            }
+            val remoteResults = upsertUniversities(remoteCandidates)
                 .map { it.toResponse() }
                 .filter { it.universityName.contains(normalizedKeyword, ignoreCase = true) }
                 .take(MAX_RESULT_SIZE)
+            triggerUniversityWarmAsync(normalizedKeyword)
+            results = mergeUniversityResults(localResults, remoteResults)
         }
-
-        val quickRemoteCandidates = requestUniversitySearch(
-            keyword = normalizedKeyword,
-            maxPages = QUICK_REMOTE_UNIVERSITY_PAGES
+        logger.info(
+            "academic university search timing keyword='{}' source={} resultCount={} elapsedMs={}",
+            normalizedKeyword,
+            source,
+            results.size,
+            elapsedMs
         )
-            .mapNotNull { item -> item.toUniversityResponse() }
-            .distinctBy { normalizeKeyword(it.universityName) }
-        val remoteCandidates = if (quickRemoteCandidates.isNotEmpty()) {
-            quickRemoteCandidates
-        } else {
-            searchUniversitiesFromStandardData(normalizedKeyword)
-        }
-        val remoteResults = upsertUniversities(remoteCandidates)
-            .map { it.toResponse() }
-            .filter { it.universityName.contains(normalizedKeyword, ignoreCase = true) }
-            .take(MAX_RESULT_SIZE)
-        triggerUniversityWarmAsync(normalizedKeyword)
-        return mergeUniversityResults(localResults, remoteResults)
+        return results
     }
 
     @Transactional
@@ -106,75 +126,105 @@ class AcademicSearchService(
             return emptyList()
         }
 
-        val localUniversity = resolveUniversityEntity(universityId, normalizedUniversityName)
-        val localResults = if (localUniversity != null) {
-            academicDepartmentRepository.searchByUniversityAndKeyword(
-                universityId = localUniversity.id,
-                keyword = normalizeKeyword(normalizedKeyword),
-                pageable = PageRequest.of(0, MAX_RESULT_SIZE)
-            ).map { it.toResponse() }
-        } else {
-            emptyList()
-        }
-        if (localResults.isNotEmpty()) return localResults
-        if (academyInfoServiceKey.isBlank()) {
-            val fallbackDepartments = searchDepartmentsFromStandardData(
-                universityName = normalizedUniversityName,
-                keyword = normalizedKeyword
-            )
-            if (fallbackDepartments.isEmpty()) return localResults
-            val fallbackUniversity = localUniversity ?: upsertUniversities(
-                listOf(UniversitySearchItemResponse(universityName = normalizedUniversityName))
-            ).first()
-            return upsertDepartments(fallbackUniversity, fallbackDepartments)
-                .map { it.toResponse() }
-                .take(MAX_RESULT_SIZE)
-        }
+        var source = "LOCAL"
+        lateinit var results: List<DepartmentSearchItemResponse>
+        val elapsedMs = measureTimeMillis {
+            val localUniversity = resolveUniversityEntity(universityId, normalizedUniversityName)
+            val localResults = if (localUniversity != null) {
+                academicDepartmentRepository.searchByUniversityAndKeyword(
+                    universityId = localUniversity.id,
+                    keyword = normalizeKeyword(normalizedKeyword),
+                    pageable = PageRequest.of(0, MAX_RESULT_SIZE)
+                ).map { it.toResponse() }
+            } else {
+                emptyList()
+            }
+            if (localResults.isNotEmpty()) {
+                results = localResults
+                return@measureTimeMillis
+            }
+            if (academyInfoServiceKey.isBlank()) {
+                source = "STANDARD_DATA"
+                val fallbackDepartments = searchDepartmentsFromStandardData(
+                    universityName = normalizedUniversityName,
+                    keyword = normalizedKeyword
+                )
+                if (fallbackDepartments.isEmpty()) {
+                    results = localResults
+                    return@measureTimeMillis
+                }
+                val fallbackUniversity = localUniversity ?: upsertUniversities(
+                    listOf(UniversitySearchItemResponse(universityName = normalizedUniversityName))
+                ).first()
+                results = upsertDepartments(fallbackUniversity, fallbackDepartments)
+                    .map { it.toResponse() }
+                    .take(MAX_RESULT_SIZE)
+                return@measureTimeMillis
+            }
 
-        val parsedItems = requestDepartmentSearch(
-            universityName = normalizedUniversityName,
-            maxPages = QUICK_REMOTE_DEPARTMENT_PAGES
-        )
-        if (parsedItems.isEmpty()) {
-            val fallbackDepartments = searchDepartmentsFromStandardData(
+            val parsedItems = requestDepartmentSearch(
                 universityName = normalizedUniversityName,
-                keyword = normalizedKeyword
+                maxPages = QUICK_REMOTE_DEPARTMENT_PAGES
             )
-            if (fallbackDepartments.isEmpty()) return localResults
-            val fallbackUniversity = localUniversity ?: upsertUniversities(
-                listOf(UniversitySearchItemResponse(universityName = normalizedUniversityName))
-            ).first()
-            val remoteResults = upsertDepartments(fallbackUniversity, fallbackDepartments)
+            if (parsedItems.isEmpty()) {
+                source = "STANDARD_DATA_FALLBACK"
+                val fallbackDepartments = searchDepartmentsFromStandardData(
+                    universityName = normalizedUniversityName,
+                    keyword = normalizedKeyword
+                )
+                if (fallbackDepartments.isEmpty()) {
+                    results = localResults
+                    return@measureTimeMillis
+                }
+                val fallbackUniversity = localUniversity ?: upsertUniversities(
+                    listOf(UniversitySearchItemResponse(universityName = normalizedUniversityName))
+                ).first()
+                val remoteResults = upsertDepartments(fallbackUniversity, fallbackDepartments)
+                    .map { it.toResponse() }
+                triggerDepartmentWarmAsync(normalizedUniversityName)
+                results = mergeDepartmentResults(localResults, remoteResults)
+                return@measureTimeMillis
+            }
+
+            source = "REMOTE_API"
+            val cachedUniversities = upsertUniversities(
+                parsedItems.mapNotNull { item -> item.toUniversityResponse() }
+                    .distinctBy { normalizeKeyword(it.universityName) }
+            )
+            val universityByName = cachedUniversities.associateBy { normalizeKeyword(it.name) }
+            val targetUniversity = localUniversity
+                ?: universityByName[normalizeKeyword(normalizedUniversityName)]
+                ?: run {
+                    results = localResults
+                    return@measureTimeMillis
+                }
+
+            val quickDepartmentItems = parsedItems
+                .mapNotNull { item ->
+                    val department = item.toDepartmentResponse() ?: return@mapNotNull null
+                    val responseUniversityName = item.valueOf("schlNm").ifBlank { normalizedUniversityName }
+                    val university = universityByName[normalizeKeyword(responseUniversityName)] ?: return@mapNotNull null
+                    if (university.id != targetUniversity.id) return@mapNotNull null
+                    if (!department.departmentName.contains(normalizedKeyword, ignoreCase = true)) return@mapNotNull null
+                    department
+                }
+                .distinctBy { normalizeKeyword(it.departmentName) }
+                .take(MAX_RESULT_SIZE)
+
+            val remoteResults = upsertDepartments(targetUniversity, quickDepartmentItems)
                 .map { it.toResponse() }
             triggerDepartmentWarmAsync(normalizedUniversityName)
-            return mergeDepartmentResults(localResults, remoteResults)
+            results = mergeDepartmentResults(localResults, remoteResults)
         }
-
-        val cachedUniversities = upsertUniversities(
-            parsedItems.mapNotNull { item -> item.toUniversityResponse() }
-                .distinctBy { normalizeKeyword(it.universityName) }
+        logger.info(
+            "academic department search timing university='{}' keyword='{}' source={} resultCount={} elapsedMs={}",
+            normalizedUniversityName,
+            normalizedKeyword,
+            source,
+            results.size,
+            elapsedMs
         )
-        val universityByName = cachedUniversities.associateBy { normalizeKeyword(it.name) }
-        val targetUniversity = localUniversity
-            ?: universityByName[normalizeKeyword(normalizedUniversityName)]
-            ?: return localResults
-
-        val quickDepartmentItems = parsedItems
-            .mapNotNull { item ->
-                val department = item.toDepartmentResponse() ?: return@mapNotNull null
-                val responseUniversityName = item.valueOf("schlNm").ifBlank { normalizedUniversityName }
-                val university = universityByName[normalizeKeyword(responseUniversityName)] ?: return@mapNotNull null
-                if (university.id != targetUniversity.id) return@mapNotNull null
-                if (!department.departmentName.contains(normalizedKeyword, ignoreCase = true)) return@mapNotNull null
-                department
-            }
-            .distinctBy { normalizeKeyword(it.departmentName) }
-            .take(MAX_RESULT_SIZE)
-
-        val remoteResults = upsertDepartments(targetUniversity, quickDepartmentItems)
-            .map { it.toResponse() }
-        triggerDepartmentWarmAsync(normalizedUniversityName)
-        return mergeDepartmentResults(localResults, remoteResults)
+        return results
     }
 
     @Transactional(readOnly = true)
