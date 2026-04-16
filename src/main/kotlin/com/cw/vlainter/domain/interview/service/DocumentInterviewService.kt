@@ -158,25 +158,35 @@ class DocumentInterviewService(
         val actor = loadActiveUser(principal.userId)
         lateinit var readyDocuments: List<ReadyDocumentResponse>
         val elapsedMs = measureTimeMillis {
-            readyDocuments = userFileRepository.findAllByUser_IdAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id)
-                .asSequence()
+            val interviewFiles = userFileRepository.findAllByUser_IdAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id)
                 .filter { it.fileType.isInterviewDocument() }
-                .mapNotNull { file ->
-                    val latestJob = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
-                        ?: return@mapNotNull null
-                    if (latestJob.status != DocumentIngestionStatus.READY) return@mapNotNull null
-                    ReadyDocumentResponse(
-                        fileId = file.id,
-                        fileName = file.originalFileName,
-                        fileType = file.fileType.name,
-                        status = latestJob.status,
-                        chunkCount = latestJob.chunkCount,
-                        extractionMethod = extractExtractionMethod(latestJob.metadataJson),
-                        ocrUsed = extractExtractionMethod(latestJob.metadataJson) == "OCR_TESSERACT",
-                        lastIngestedAt = latestJob.finishedAt
+            val latestJobsByFileId = if (interviewFiles.isEmpty()) {
+                emptyMap()
+            } else {
+                documentIngestionJobRepository
+                    .findAllByUserIdAndDocumentFileIdInOrderByDocumentFileIdAscRequestedAtDesc(
+                        actor.id,
+                        interviewFiles.map { it.id }
                     )
-                }
-                .toList()
+                    .groupBy { it.documentFileId }
+                    .mapValues { (_, jobs) -> jobs.first() }
+            }
+
+            readyDocuments = interviewFiles.mapNotNull { file ->
+                val latestJob = latestJobsByFileId[file.id] ?: return@mapNotNull null
+                if (latestJob.status != DocumentIngestionStatus.READY) return@mapNotNull null
+                val extractionMethod = extractExtractionMethod(latestJob.metadataJson)
+                ReadyDocumentResponse(
+                    fileId = file.id,
+                    fileName = file.originalFileName,
+                    fileType = file.fileType.name,
+                    status = latestJob.status,
+                    chunkCount = latestJob.chunkCount,
+                    extractionMethod = extractionMethod,
+                    ocrUsed = extractionMethod == "OCR_TESSERACT",
+                    lastIngestedAt = latestJob.finishedAt
+                )
+            }
         }
         logger.info(
             "ready document lookup userId={} resultCount={} elapsedMs={}",

@@ -23,6 +23,7 @@ import java.net.URI
 class OriginValidationFilter(
     corsProperties: CorsProperties,
     private val authCookieManager: AuthCookieManager,
+    private val clientIpResolver: ClientIpResolver,
     private val objectMapper: ObjectMapper
 ) : OncePerRequestFilter() {
     private val normalizedAllowedOrigins = corsProperties.allowedOrigins
@@ -96,10 +97,9 @@ class OriginValidationFilter(
             ?.firstOrNull()
             ?.trim()
             ?.takeIf { it.isNotBlank() }
-        val host = forwardedHost
-            ?: request.getHeader("Host")
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
+        val host = request.getHeader("Host")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
             ?: request.serverName
                 ?.takeIf { it.isNotBlank() }
                 ?.let { serverName ->
@@ -107,7 +107,21 @@ class OriginValidationFilter(
                 }
             ?: return null
 
-        return normalizeAuthority(host)
+        val authorityCandidates = buildList {
+            if (forwardedHost != null && isTrustedForwardedHost(request)) {
+                add(forwardedHost)
+            }
+            add(host)
+        }
+
+        for (candidate in authorityCandidates) {
+            normalizeAuthority(candidate)?.let { return it }
+        }
+        return null
+    }
+
+    private fun isTrustedForwardedHost(request: HttpServletRequest): Boolean {
+        return clientIpResolver.resolveDetail(request).trustedProxy
     }
 
     private fun isAllowedOrigin(origin: String, requestAuthority: String?): Boolean {
