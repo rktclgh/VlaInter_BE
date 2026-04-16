@@ -29,13 +29,10 @@ class OriginValidationFilterTests {
             refreshSecret = "abcdefghijklmnopqrstuvwxyz123456"
         )
     )
-    private val clientIpResolver = ClientIpResolver("127.0.0.1/32,::1/128", "X-Internal-Client-IP")
-
     private fun filter(): OriginValidationFilter {
         return OriginValidationFilter(
-            CorsProperties(listOf("http://localhost:5173")),
+            CorsProperties(listOf("http://localhost:5173", "https://vlainter.online")),
             authCookieManager,
-            clientIpResolver,
             jacksonObjectMapper()
         )
     }
@@ -45,8 +42,6 @@ class OriginValidationFilterTests {
         val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/users/me/service-mode").apply {
             addHeader("Origin", "https://vlainter.online")
-            addHeader("Host", "vlainter.online")
-            addHeader("X-Forwarded-Host", "vlainter.online")
             remoteAddr = "127.0.0.1"
             setCookies(Cookie("vlainter_at", "access-token"))
         }
@@ -62,8 +57,6 @@ class OriginValidationFilterTests {
         val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/users/me/service-mode").apply {
             addHeader("Origin", "https://evil.example")
-            addHeader("Host", "vlainter.online")
-            addHeader("X-Forwarded-Host", "vlainter.online")
             remoteAddr = "203.0.113.10"
             setCookies(Cookie("vlainter_at", "access-token"))
         }
@@ -80,8 +73,6 @@ class OriginValidationFilterTests {
         val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/auth/logout").apply {
             addHeader("Origin", "http://localhost:5173")
-            addHeader("Host", "localhost:8080")
-            addHeader("X-Forwarded-Host", "localhost:8080")
             remoteAddr = "127.0.0.1"
             setCookies(Cookie("vlainter_rt", "refresh-token"))
         }
@@ -96,8 +87,6 @@ class OriginValidationFilterTests {
     fun `protected request without origin or referer is blocked`() {
         val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/auth/refresh").apply {
-            addHeader("Host", "vlainter.online")
-            addHeader("X-Forwarded-Host", "vlainter.online")
             remoteAddr = "203.0.113.10"
             setCookies(Cookie("vlainter_rt", "refresh-token"))
         }
@@ -113,8 +102,6 @@ class OriginValidationFilterTests {
         val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/auth/logout").apply {
             addHeader("Referer", "http://localhost:5173/content/mypage")
-            addHeader("Host", "localhost:8080")
-            addHeader("X-Forwarded-Host", "localhost:8080")
             remoteAddr = "127.0.0.1"
             setCookies(Cookie("vlainter_rt", "refresh-token"))
         }
@@ -158,8 +145,6 @@ class OriginValidationFilterTests {
     fun `login endpoint is protected even without auth cookies`() {
         val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/auth/login").apply {
-            addHeader("Host", "vlainter.online")
-            addHeader("X-Forwarded-Host", "vlainter.online")
             remoteAddr = "203.0.113.10"
         }
         val response = MockHttpServletResponse()
@@ -181,7 +166,7 @@ class OriginValidationFilterTests {
     }
 
     @Test
-    fun `forwarded host from trusted proxy is honored`() {
+    fun `host headers alone do not grant same-origin access`() {
         val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/users/me/service-mode").apply {
             addHeader("Origin", "https://vlainter.online")
@@ -198,7 +183,7 @@ class OriginValidationFilterTests {
     }
 
     @Test
-    fun `spoofed forwarded host from untrusted client is ignored`() {
+    fun `spoofed host headers from untrusted client are ignored`() {
         val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/users/me/service-mode").apply {
             addHeader("Origin", "https://evil.example")

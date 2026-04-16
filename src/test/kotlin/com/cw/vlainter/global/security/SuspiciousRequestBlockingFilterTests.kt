@@ -140,6 +140,7 @@ class SuspiciousRequestBlockingFilterTests {
 
         then(filterChain).should().doFilter(request, response)
         then(suspiciousRequestBlockService).should().isSuspiciousRequest("GET", "/.env")
+        then(suspiciousRequestBlockService).should().shouldLogUnresolvedClientIp("172.18.0.5", "/.env")
         then(suspiciousRequestBlockService).shouldHaveNoMoreInteractions()
     }
 }

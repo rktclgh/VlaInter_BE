@@ -468,7 +468,7 @@ class InterviewPracticeService(
 
         lateinit var response: InterviewSessionResultsResponse
         val elapsedMs = measureTimeMillis {
-            val turns = interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(session.id)
+            val turns = interviewTurnRepository.findAllDetailedBySessionIdOrderByTurnNoAsc(session.id)
                 .map { turn ->
                     val evaluation = evaluationsByTurnId[turn.id]
                     InterviewTurnResultResponse(

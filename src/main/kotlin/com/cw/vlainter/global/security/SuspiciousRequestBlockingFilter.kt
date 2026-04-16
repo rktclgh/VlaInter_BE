@@ -27,14 +27,14 @@ class SuspiciousRequestBlockingFilter(
         val requestMethod = request.method
         val requestUri = request.requestURI
         val userAgent = request.getHeader("User-Agent")
+        if (isAlwaysAllowedPublicAsset(requestUri) || isPreviewBotAllowedRequest(requestMethod, requestUri, userAgent)) {
+            filterChain.doFilter(request, response)
+            return
+        }
         val suspiciousRequest = suspiciousRequestBlockService.isSuspiciousRequest(requestMethod, requestUri)
         val resolution = clientIpResolver.resolveDetail(request)
         val clientIp = resolution.clientIp
         if (!resolution.isReliableForSecurity) {
-            if (isAlwaysAllowedPublicAsset(requestUri) || isPreviewBotAllowedRequest(requestMethod, requestUri, userAgent)) {
-                filterChain.doFilter(request, response)
-                return
-            }
             if (suspiciousRequest && suspiciousRequestBlockService.shouldLogUnresolvedClientIp(clientIp, requestUri)) {
                 auditLogger.warn(
                     "Skipping suspicious request blocking due to unresolved client IP source={} ipHash={} method={} path={}",
@@ -58,11 +58,6 @@ class SuspiciousRequestBlockingFilter(
                     requestUri
                 )
             }
-            return
-        }
-
-        if (isAlwaysAllowedPublicAsset(requestUri) || isPreviewBotAllowedRequest(requestMethod, requestUri, userAgent)) {
-            filterChain.doFilter(request, response)
             return
         }
 

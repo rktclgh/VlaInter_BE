@@ -416,7 +416,7 @@ class InterviewPracticeServiceTests {
 
         given(interviewSessionRepository.findByIdAndUser_Id(session.id, user.id)).willReturn(session)
         given(interviewTurnEvaluationRepository.findAllByTurn_Session_Id(session.id)).willReturn(listOf(evaluation1, evaluation2))
-        given(interviewTurnRepository.findAllBySession_IdOrderByTurnNoAsc(session.id)).willReturn(listOf(turn1, turn2))
+        given(interviewTurnRepository.findAllDetailedBySessionIdOrderByTurnNoAsc(session.id)).willReturn(listOf(turn1, turn2))
 
         val result = service().getSessionResults(
             principal = AuthPrincipal(user.id, user.email, user.name, user.role),
@@ -427,6 +427,7 @@ class InterviewPracticeServiceTests {
         assertThat(result.turns[0].evaluation?.score).isEqualByComparingTo("8.5")
         assertThat(result.turns[1].evaluation?.providerUsed).isEqualTo("HEURISTIC")
         then(interviewTurnEvaluationRepository).should().findAllByTurn_Session_Id(session.id)
+        then(interviewTurnRepository).should().findAllDetailedBySessionIdOrderByTurnNoAsc(session.id)
         then(interviewTurnEvaluationRepository).should(never()).findByTurn_Id(anyLong())
     }
 

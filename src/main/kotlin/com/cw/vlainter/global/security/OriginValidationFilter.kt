@@ -17,13 +17,12 @@ import java.net.URI
  *
  * - GET/HEAD/OPTIONS 등 safe method는 제외
  * - 인증 쿠키가 실린 요청 또는 refresh/logout 요청만 검증
- * - same-origin 또는 명시적 allowlist origin만 허용
+ * - 명시적 allowlist origin만 허용
  */
 @Component
 class OriginValidationFilter(
     corsProperties: CorsProperties,
     private val authCookieManager: AuthCookieManager,
-    private val clientIpResolver: ClientIpResolver,
     private val objectMapper: ObjectMapper
 ) : OncePerRequestFilter() {
     private val normalizedAllowedOrigins = corsProperties.allowedOrigins
@@ -40,10 +39,8 @@ class OriginValidationFilter(
             return
         }
 
-        val requestAuthority = resolveRequestAuthority(request)
         val candidateOrigin = extractRequestOrigin(request)
-
-        if (candidateOrigin == null || !isAllowedOrigin(candidateOrigin, requestAuthority)) {
+        if (candidateOrigin == null || candidateOrigin !in normalizedAllowedOrigins) {
             writeForbiddenResponse(response, request.requestURI)
             return
         }
@@ -91,48 +88,6 @@ class OriginValidationFilter(
         }.getOrNull()
     }
 
-    private fun resolveRequestAuthority(request: HttpServletRequest): String? {
-        val forwardedHost = request.getHeader("X-Forwarded-Host")
-            ?.split(",")
-            ?.firstOrNull()
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-        val host = request.getHeader("Host")
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: request.serverName
-                ?.takeIf { it.isNotBlank() }
-                ?.let { serverName ->
-                    if (request.serverPort > 0) "$serverName:${request.serverPort}" else serverName
-                }
-            ?: return null
-
-        val authorityCandidates = buildList {
-            if (forwardedHost != null && isTrustedForwardedHost(request)) {
-                add(forwardedHost)
-            }
-            add(host)
-        }
-
-        for (candidate in authorityCandidates) {
-            normalizeAuthority(candidate)?.let { return it }
-        }
-        return null
-    }
-
-    private fun isTrustedForwardedHost(request: HttpServletRequest): Boolean {
-        return clientIpResolver.resolveDetail(request).trustedProxy
-    }
-
-    private fun isAllowedOrigin(origin: String, requestAuthority: String?): Boolean {
-        if (origin in normalizedAllowedOrigins) {
-            return true
-        }
-
-        val originAuthority = extractAuthority(origin) ?: return false
-        return requestAuthority != null && originAuthority == requestAuthority
-    }
-
     private fun normalizeOrigin(raw: String): String? {
         return runCatching {
             val uri = URI(raw.trim())
@@ -143,33 +98,6 @@ class OriginValidationFilter(
                 "$scheme://$host"
             } else {
                 "$scheme://$host:$port"
-            }
-        }.getOrNull()
-    }
-
-    private fun extractAuthority(origin: String): String? {
-        return runCatching {
-            val uri = URI(origin)
-            val scheme = uri.scheme?.lowercase()?.takeIf { it == "http" || it == "https" } ?: return null
-            val host = uri.host?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
-            val port = normalizePort(scheme, uri.port)
-            if (port == defaultPort(scheme)) {
-                host
-            } else {
-                "$host:$port"
-            }
-        }.getOrNull()
-    }
-
-    private fun normalizeAuthority(raw: String): String? {
-        return runCatching {
-            val uri = URI("http://${raw.trim()}")
-            val host = uri.host?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
-            val port = uri.port
-            if (port == -1 || port == 80 || port == 443) {
-                host
-            } else {
-                "$host:$port"
             }
         }.getOrNull()
     }
