@@ -1068,7 +1068,7 @@ class InterviewAiOrchestrator(
         val rules = buildList {
             add("- 총 ${questionCount}개 질문 생성")
             add("- 질문은 구체적이어야 하며 문서의 내용과 직접 연결되어야 함")
-            add("- 각 문서 발췌에는 kind=ACTUAL_EXPERIENCE | PROJECT_OR_RESULT | MOTIVATION_OR_ASPIRATION | VALUE_OR_ATTITUDE 라벨이 붙어 있으므로 반드시 이를 해석해 사용할 것")
+            add("- 각 문서 발췌에는 kind와 allowedQuestionTypes가 함께 주어지므로, questionType은 반드시 해당 발췌의 allowedQuestionTypes 중 하나를 사용")
             add("- 질문마다 primary evidence는 가능하면 서로 다른 문서 발췌를 사용하고, 같은 발췌를 재표현한 질문을 여러 개 만들지 말 것")
             add("- questionType은 문서 유형과 발췌 kind에 맞는 값만 사용")
             addAll(documentQuestionTypeRules(normalizedFileType))
@@ -2481,7 +2481,8 @@ class InterviewAiOrchestrator(
         val minTopicSize = minOf(existingTopicTokens.size, candidateTopicTokens.size)
         val strongTopicOverlap = overlap >= 4 && overlap * 100 >= minTopicSize * 65
         val sharedLeadNarrative = hasSharedQuestionLead(existingQuestion, candidateQuestion)
-        val sameTopic = isSameEvidenceSource(existingEvidence, candidateEvidence) || strongTopicOverlap || sharedLeadNarrative
+        val sameEvidenceSource = isSameEvidenceSource(existingEvidence, candidateEvidence)
+        val sameTopic = sameEvidenceSource || (strongTopicOverlap && sharedLeadNarrative)
         if (!sameTopic) return false
 
         val existingIntents = questionIntentSignals(existingQuestion)

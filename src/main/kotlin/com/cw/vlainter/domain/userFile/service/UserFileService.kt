@@ -266,18 +266,38 @@ class UserFileService(
     private fun deleteFileInternal(target: UserFile) {
         val deletionKey = resolveDeletionKey(target.storageKey, target.fileUrl)
         val targetOwnerId = target.user.id
+        val additionalDeletionKeys = mutableSetOf<String>()
 
         if (target.fileType.isInterviewDocument() || target.fileType == FileType.COURSE_MATERIAL) {
             // 문서 삭제 시 임베딩/ingestion 이력도 함께 정리한다.
             docChunkEmbeddingRepository.deleteAllByUserIdAndUserFileId(targetOwnerId, target.id)
             documentIngestionJobRepository.deleteAllByUserIdAndDocumentFileId(targetOwnerId, target.id)
-            studentCourseMaterialVisualAssetRepository.deleteAllByUserFile_Id(target.id)
-            studentCourseMaterialRepository.findByUserFile_Id(target.id)?.let { studentCourseMaterialRepository.delete(it) }
+        }
+
+        if (target.fileType == FileType.COURSE_MATERIAL) {
+            val linkedMaterial = studentCourseMaterialRepository.findByUserFile_Id(target.id)
+            if (linkedMaterial != null) {
+                val visualAssets = studentCourseMaterialVisualAssetRepository
+                    .findAllByMaterial_IdOrderByAssetOrderAsc(linkedMaterial.id)
+                additionalDeletionKeys += visualAssets
+                    .mapNotNull { resolveDeletionKey(it.storageKey, null) }
+                    .filter { it.isNotBlank() }
+                if (visualAssets.isNotEmpty()) {
+                    studentCourseMaterialVisualAssetRepository.deleteAllByMaterialId(linkedMaterial.id)
+                }
+            } else {
+                studentCourseMaterialVisualAssetRepository.deleteAllByUserFileId(target.id)
+            }
+            studentCourseMaterialRepository.deleteAllByUserFileId(target.id)
         }
 
         userFileRepository.delete(target)
         runAfterCommit {
             deleteObjectQuietly(deletionKey)
+            additionalDeletionKeys
+                .asSequence()
+                .filter { it != deletionKey }
+                .forEach(::deleteObjectQuietly)
         }
     }
 

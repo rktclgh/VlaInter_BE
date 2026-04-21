@@ -39,6 +39,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.ArgumentMatchers.eq
 import org.mockito.BDDMockito.given
 import org.mockito.BDDMockito.then
@@ -351,6 +352,83 @@ class InterviewPracticeServiceTests {
 
         assertThat(result.currentQuestion.questionId).isEqualTo(question.id)
         then(interviewAiOrchestrator).shouldHaveNoInteractions()
+    }
+
+    @Test
+    fun `getSessionResults loads evaluations in one batch`() {
+        val user = createUser()
+        val category = createCategory()
+        val question1 = createQuestion(id = 201L, category = category, text = "Spring DI를 설명해 주세요.")
+        val question2 = createQuestion(id = 202L, category = category, text = "Bean Scope를 설명해 주세요.")
+        val session = InterviewSession(
+            id = 501L,
+            user = user,
+            mode = com.cw.vlainter.domain.interview.entity.InterviewMode.TECH,
+            status = com.cw.vlainter.domain.interview.entity.InterviewStatus.DONE,
+            revealPolicy = com.cw.vlainter.domain.interview.entity.RevealPolicy.PER_TURN,
+            configJson = """{"meta":{"language":"KO"}}""",
+            finishedAt = java.time.OffsetDateTime.now()
+        )
+        val turn1 = InterviewTurn(
+            id = 701L,
+            session = session,
+            turnNo = 1,
+            sourceTag = com.cw.vlainter.domain.interview.entity.TurnSourceTag.SYSTEM,
+            question = question1,
+            questionTextSnapshot = question1.questionText,
+            categorySnapshot = question1.category.name,
+            jobSnapshot = question1.jobName,
+            skillSnapshot = question1.skillName,
+            category = question1.category,
+            difficulty = question1.difficulty.name,
+            tagsJson = question1.tagsJson
+        )
+        val turn2 = InterviewTurn(
+            id = 702L,
+            session = session,
+            turnNo = 2,
+            sourceTag = com.cw.vlainter.domain.interview.entity.TurnSourceTag.SYSTEM,
+            question = question2,
+            questionTextSnapshot = question2.questionText,
+            categorySnapshot = question2.category.name,
+            jobSnapshot = question2.jobName,
+            skillSnapshot = question2.skillName,
+            category = question2.category,
+            difficulty = question2.difficulty.name,
+            tagsJson = question2.tagsJson
+        )
+        val evaluation1 = com.cw.vlainter.domain.interview.entity.InterviewTurnEvaluation(
+            id = 801L,
+            turn = turn1,
+            totalScore = java.math.BigDecimal("8.5"),
+            feedback = "좋습니다.",
+            bestPractice = "핵심을 잘 짚었습니다.",
+            model = "gemini-1.5-flash"
+        )
+        val evaluation2 = com.cw.vlainter.domain.interview.entity.InterviewTurnEvaluation(
+            id = 802L,
+            turn = turn2,
+            totalScore = java.math.BigDecimal("6.0"),
+            feedback = "조금 더 구체화가 필요합니다.",
+            bestPractice = "Scope 별 차이를 설명해 주세요.",
+            model = "heuristic"
+        )
+
+        given(interviewSessionRepository.findByIdAndUser_Id(session.id, user.id)).willReturn(session)
+        given(interviewTurnEvaluationRepository.findAllByTurn_Session_Id(session.id)).willReturn(listOf(evaluation1, evaluation2))
+        given(interviewTurnRepository.findAllDetailedBySessionIdOrderByTurnNoAsc(session.id)).willReturn(listOf(turn1, turn2))
+
+        val result = service().getSessionResults(
+            principal = AuthPrincipal(user.id, user.email, user.name, user.role),
+            sessionId = session.id
+        )
+
+        assertThat(result.turns).hasSize(2)
+        assertThat(result.turns[0].evaluation?.score).isEqualByComparingTo("8.5")
+        assertThat(result.turns[1].evaluation?.providerUsed).isEqualTo("HEURISTIC")
+        then(interviewTurnEvaluationRepository).should().findAllByTurn_Session_Id(session.id)
+        then(interviewTurnRepository).should().findAllDetailedBySessionIdOrderByTurnNoAsc(session.id)
+        then(interviewTurnEvaluationRepository).should(never()).findByTurn_Id(anyLong())
     }
 
     private fun service() = InterviewPracticeService(

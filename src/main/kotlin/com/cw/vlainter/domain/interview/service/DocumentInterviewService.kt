@@ -4,6 +4,8 @@ import com.cw.vlainter.domain.interview.ai.AiRoutingContextHolder
 import com.cw.vlainter.domain.interview.ai.EmbeddingProviderRouter
 import com.cw.vlainter.domain.interview.ai.GeminiTransientException
 import com.cw.vlainter.domain.interview.ai.InterviewAiOrchestrator
+import com.cw.vlainter.domain.interview.ai.SnippetValidationResult
+import com.cw.vlainter.domain.interview.ai.ValidatedSnippet
 import com.cw.vlainter.domain.interview.dto.DocumentIngestionResponse
 import com.cw.vlainter.domain.interview.dto.InterviewHistoryDocumentResponse
 import com.cw.vlainter.domain.interview.dto.InterviewQuestionResponse
@@ -35,6 +37,7 @@ import com.cw.vlainter.domain.interview.entity.QuestionSourceTag
 import com.cw.vlainter.domain.interview.entity.RevealPolicy
 import com.cw.vlainter.domain.interview.entity.TurnSourceTag
 import com.cw.vlainter.domain.interview.repository.DocChunkEmbeddingRepository
+import com.cw.vlainter.domain.interview.repository.ChunkSnippetProjection
 import com.cw.vlainter.domain.interview.repository.DocumentIngestionJobRepository
 import com.cw.vlainter.domain.interview.repository.DocumentQuestionRepository
 import com.cw.vlainter.domain.interview.repository.DocumentQuestionSetRepository
@@ -155,25 +158,35 @@ class DocumentInterviewService(
         val actor = loadActiveUser(principal.userId)
         lateinit var readyDocuments: List<ReadyDocumentResponse>
         val elapsedMs = measureTimeMillis {
-            readyDocuments = userFileRepository.findAllByUser_IdAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id)
-                .asSequence()
+            val interviewFiles = userFileRepository.findAllByUser_IdAndDeletedAtIsNullOrderByCreatedAtDesc(actor.id)
                 .filter { it.fileType.isInterviewDocument() }
-                .mapNotNull { file ->
-                    val latestJob = documentIngestionJobRepository.findTopByUserIdAndDocumentFileIdOrderByRequestedAtDesc(actor.id, file.id)
-                        ?: return@mapNotNull null
-                    if (latestJob.status != DocumentIngestionStatus.READY) return@mapNotNull null
-                    ReadyDocumentResponse(
-                        fileId = file.id,
-                        fileName = file.originalFileName,
-                        fileType = file.fileType.name,
-                        status = latestJob.status,
-                        chunkCount = latestJob.chunkCount,
-                        extractionMethod = extractExtractionMethod(latestJob.metadataJson),
-                        ocrUsed = extractExtractionMethod(latestJob.metadataJson) == "OCR_TESSERACT",
-                        lastIngestedAt = latestJob.finishedAt
+            val latestJobsByFileId = if (interviewFiles.isEmpty()) {
+                emptyMap()
+            } else {
+                documentIngestionJobRepository
+                    .findAllByUserIdAndDocumentFileIdInOrderByDocumentFileIdAscRequestedAtDesc(
+                        actor.id,
+                        interviewFiles.map { it.id }
                     )
-                }
-                .toList()
+                    .groupBy { it.documentFileId }
+                    .mapValues { (_, jobs) -> jobs.first() }
+            }
+
+            readyDocuments = interviewFiles.mapNotNull { file ->
+                val latestJob = latestJobsByFileId[file.id] ?: return@mapNotNull null
+                if (latestJob.status != DocumentIngestionStatus.READY) return@mapNotNull null
+                val extractionMethod = extractExtractionMethod(latestJob.metadataJson)
+                ReadyDocumentResponse(
+                    fileId = file.id,
+                    fileName = file.originalFileName,
+                    fileType = file.fileType.name,
+                    status = latestJob.status,
+                    chunkCount = latestJob.chunkCount,
+                    extractionMethod = extractionMethod,
+                    ocrUsed = extractionMethod == "OCR_TESSERACT",
+                    lastIngestedAt = latestJob.finishedAt
+                )
+            }
         }
         logger.info(
             "ready document lookup userId={} resultCount={} elapsedMs={}",
@@ -647,10 +660,8 @@ class DocumentInterviewService(
             if (targetCount <= 0) return@forEachIndexed
             val snippetBudget = DocumentQuestionGenerationPolicy.snippetBudget(file.fileType, targetCount)
             val generationStartedAt = System.nanoTime()
-
-            val chunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(actor.id, file.id)
-                .map { it.chunkText }
-            if (chunks.isEmpty()) {
+            val chunkCount = docChunkEmbeddingRepository.countByUserIdAndUserFileId(actor.id, file.id).toInt()
+            if (chunkCount == 0) {
                 val reason = "문서 분석 결과 없음(fileId=${file.id}, name=${file.originalFileName})"
                 logger.warn("document question generation skipped: {}", reason)
                 skippedReasons += reason
@@ -658,15 +669,30 @@ class DocumentInterviewService(
             }
 
             val snippets = retrievePromptSnippets(actor.id, file, difficulty, targetCount)
-            val snippetValidation = interviewAiOrchestrator.validateEvidenceSnippets(
-                fileTypeLabel = file.fileType.toPromptLabel(),
-                snippets = snippets
-            )
+            val allChunkTexts by lazy(LazyThreadSafetyMode.NONE) {
+                docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(actor.id, file.id)
+                    .map { it.chunkText }
+            }
             val heuristicValidatedSnippets = snippets
                 .map(::sanitizePromptSnippet)
                 .filter { isUsablePromptSnippet(file.fileType, it) }
                 .distinct()
                 .take(snippetBudget)
+            val snippetValidation = if (shouldRunStrictSnippetValidation(file.fileType, heuristicValidatedSnippets, snippetBudget)) {
+                interviewAiOrchestrator.validateEvidenceSnippets(
+                    fileTypeLabel = file.fileType.toPromptLabel(),
+                    snippets = snippets
+                )
+            } else {
+                logger.info(
+                    "document snippet validation shortcut fileId={} fileType={} acceptedCount={} snippetBudget={}",
+                    file.id,
+                    file.fileType.name,
+                    heuristicValidatedSnippets.size,
+                    snippetBudget
+                )
+                heuristicSnippetValidationResult(snippets, heuristicValidatedSnippets)
+            }
             val strictValidatedSnippets = (snippetValidation.acceptedSnippets
                 .map(::sanitizePromptSnippet)
                 .filter { isUsablePromptSnippet(file.fileType, it) } + heuristicValidatedSnippets)
@@ -676,7 +702,7 @@ class DocumentInterviewService(
             val relaxedValidatedSnippets = if (strictValidatedSnippets.isNotEmpty()) {
                 strictValidatedSnippets
             } else {
-                (snippets + fallbackPromptSnippets(chunks, snippetBudget, file.fileType))
+                (snippets + fallbackPromptSnippets(allChunkTexts, snippetBudget, file.fileType))
                     .map(::sanitizePromptSnippet)
                     .filter { isUsablePromptSnippet(file.fileType, it) }
                     .distinct()
@@ -707,7 +733,10 @@ class DocumentInterviewService(
                     difficulty = difficulty,
                     questionCount = targetCount,
                     contextSnippets = classifiedSnippets.mapIndexed { snippetIndex, snippet ->
-                        snippet.toPromptBlock(snippetIndex + 1)
+                        snippet.toPromptBlock(
+                            index = snippetIndex + 1,
+                            allowedQuestionTypes = DocumentQuestionGenerationPolicy.allowedQuestionTypes(file.fileType, snippet.kind)
+                        )
                     },
                     language = language
                 )
@@ -791,7 +820,7 @@ class DocumentInterviewService(
                 file.id,
                 file.fileType.name,
                 targetCount,
-                chunks.size,
+                chunkCount,
                 snippetBudget,
                 persisted.size,
                 (System.nanoTime() - generationStartedAt) / 1_000_000
@@ -1008,18 +1037,31 @@ class DocumentInterviewService(
         )
         lateinit var selectedSnippets: List<String>
         val elapsedMs = measureTimeMillis {
-            val allChunks = docChunkEmbeddingRepository.findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, file.id)
             val seenChunkNos = linkedSetOf<Int>()
             val results = mutableListOf<String>()
+            var allChunks: List<DocChunkEmbedding>? = null
 
             retrievalQueries.forEach { query ->
-                val matches = runCatching {
+                val semanticMatches = runCatching {
                     val queryEmbedding = embeddingProviderRouter.embedText(query)
-                    semanticRetrieve(allChunks, queryEmbedding.values)
+                    semanticRetrieve(userId, file.id, queryEmbedding.values)
                 }.onFailure { ex ->
                     logger.warn("document retrieval embedding failed fileId={} query='{}' reason={}", file.id, query.take(80), ex.message)
-                }.getOrElse {
-                    lexicalRetrieve(allChunks, query)
+                }.getOrNull()
+                val matches = if (!semanticMatches.isNullOrEmpty()) {
+                    semanticMatches
+                } else {
+                    val loadedChunks = allChunks ?: docChunkEmbeddingRepository
+                        .findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, file.id)
+                        .also { allChunks = it }
+                    logger.info(
+                        "document retrieval fallback fileId={} query='{}' reason={} loadedChunks={}",
+                        file.id,
+                        query.take(80),
+                        if (semanticMatches == null) "semantic_error" else "semantic_empty",
+                        loadedChunks.size
+                    )
+                    lexicalRetrieve(loadedChunks, query)
                 }
 
                 matches.forEach { (chunkNo, chunkText) ->
@@ -1036,7 +1078,10 @@ class DocumentInterviewService(
                     .map { it.take(420) }
                     .take(snippetBudget)
             } else {
-                val chunks = allChunks.map { it.chunkText }
+                val chunks = (allChunks ?: docChunkEmbeddingRepository
+                    .findAllByUserIdAndUserFileIdOrderByChunkNoAsc(userId, file.id)
+                )
+                    .map { it.chunkText }
                 fallbackPromptSnippets(chunks, snippetBudget, file.fileType)
             }
         }
@@ -1053,18 +1098,15 @@ class DocumentInterviewService(
         return selectedSnippets
     }
 
-    private fun semanticRetrieve(chunks: List<DocChunkEmbedding>, queryVector: List<Double>): List<Pair<Int, String>> {
+    private fun semanticRetrieve(userId: Long, userFileId: Long, queryVector: List<Double>): List<Pair<Int, String>> {
         val limit = 2
-        if (chunks.isEmpty() || queryVector.isEmpty()) return emptyList()
-        return chunks
-            .mapNotNull { chunk ->
-                val chunkVector = parseVectorLiteral(chunk.embedding) ?: return@mapNotNull null
-                val score = cosineSimilarity(queryVector, chunkVector)
-                Triple(chunk.chunkNo, chunk.chunkText, score)
-            }
-            .sortedByDescending { it.third }
-            .take(limit)
-            .map { it.first to it.second }
+        if (queryVector.isEmpty()) return emptyList()
+        return docChunkEmbeddingRepository.findTopSemanticMatches(
+            userId = userId,
+            userFileId = userFileId,
+            queryVector = queryVector.toVectorLiteral(),
+            limit = limit
+        ).map { it.toChunkPair() }
     }
 
     private fun lexicalRetrieve(chunks: List<DocChunkEmbedding>, query: String): List<Pair<Int, String>> {
@@ -1088,6 +1130,37 @@ class DocumentInterviewService(
             .map { it.first to it.second }
     }
 
+    private fun shouldRunStrictSnippetValidation(
+        fileType: FileType,
+        heuristicValidatedSnippets: List<String>,
+        snippetBudget: Int
+    ): Boolean {
+        if (heuristicValidatedSnippets.isEmpty()) return true
+        val requiredSnippetCount = min(snippetBudget, if (fileType == FileType.INTRODUCE) 2 else 1)
+        if (heuristicValidatedSnippets.size < requiredSnippetCount) return true
+        return heuristicValidatedSnippets.any { !isHighConfidencePromptSnippet(fileType, it) }
+    }
+
+    private fun heuristicSnippetValidationResult(
+        originalSnippets: List<String>,
+        acceptedSnippets: List<String>
+    ): SnippetValidationResult {
+        val acceptedSet = acceptedSnippets.toSet()
+        return SnippetValidationResult(
+            acceptedSnippets = acceptedSnippets,
+            details = originalSnippets.mapIndexed { index, snippet ->
+                val normalizedSnippet = sanitizePromptSnippet(snippet)
+                val accepted = acceptedSet.contains(normalizedSnippet)
+                ValidatedSnippet(
+                    index = index,
+                    snippet = snippet,
+                    accepted = accepted,
+                    reason = if (accepted) "heuristic_confident" else "heuristic_reject"
+                )
+            }
+        )
+    }
+
     private fun tokenizeForRetrieval(text: String): Set<String> {
         return text.lowercase()
             .split(Regex("[^0-9a-zA-Z가-힣.+#]+"))
@@ -1096,29 +1169,9 @@ class DocumentInterviewService(
             .toSet()
     }
 
-    private fun parseVectorLiteral(raw: String): List<Double>? {
-        val normalized = raw.trim().removePrefix("[").removeSuffix("]")
-        if (normalized.isBlank()) return null
-        return runCatching {
-            normalized.split(",").map { it.trim().toDouble() }
-        }.getOrNull()
-    }
-
-    private fun cosineSimilarity(left: List<Double>, right: List<Double>): Double {
-        if (left.isEmpty() || right.isEmpty() || left.size != right.size) return Double.NEGATIVE_INFINITY
-        var dot = 0.0
-        var leftNorm = 0.0
-        var rightNorm = 0.0
-        for (index in left.indices) {
-            dot += left[index] * right[index]
-            leftNorm += left[index] * left[index]
-            rightNorm += right[index] * right[index]
-        }
-        if (leftNorm == 0.0 || rightNorm == 0.0) return Double.NEGATIVE_INFINITY
-        return dot / (kotlin.math.sqrt(leftNorm) * kotlin.math.sqrt(rightNorm))
-    }
-
     private fun List<Double>.toVectorLiteral(): String = joinToString(prefix = "[", postfix = "]") { it.toString() }
+
+    private fun ChunkSnippetProjection.toChunkPair(): Pair<Int, String> = chunkNo to chunkText
 
     private fun buildRetrievalQueries(
         fileType: FileType,
@@ -2142,6 +2195,24 @@ class DocumentInterviewService(
 
     private fun sanitizePromptSnippet(text: String): String =
         text.replace(Regex("\\s+"), " ").trim()
+
+    private fun isHighConfidencePromptSnippet(fileType: FileType, text: String): Boolean {
+        val normalized = sanitizePromptSnippet(text)
+        val minimumLength = if (fileType == FileType.INTRODUCE) 72 else 96
+        if (normalized.length < minimumLength) return false
+        val lettersOnly = normalized.filter { it.isLetter() }
+        if (lettersOnly.isEmpty()) return false
+        val uppercaseRatio = lettersOnly.count { it.isUpperCase() }.toDouble() / lettersOnly.length.toDouble()
+        val digitRatio = normalized.count(Char::isDigit).toDouble() / normalized.length.toDouble()
+        val longTokens = normalized.split(" ").count { it.length >= 4 }
+        val weirdTokenCount = normalized.split(" ").count { token ->
+            token.length >= 6 && token.count(Char::isUpperCase) >= 4
+        }
+        return uppercaseRatio < 0.45 &&
+            digitRatio < 0.18 &&
+            weirdTokenCount == 0 &&
+            longTokens >= if (fileType == FileType.INTRODUCE) 7 else 9
+    }
 
     private fun isUsablePromptSnippet(fileType: FileType, text: String): Boolean {
         val minimumLength = if (fileType == FileType.INTRODUCE) 28 else 40

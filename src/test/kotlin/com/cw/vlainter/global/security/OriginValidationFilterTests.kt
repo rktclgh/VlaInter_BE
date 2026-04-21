@@ -29,18 +29,20 @@ class OriginValidationFilterTests {
             refreshSecret = "abcdefghijklmnopqrstuvwxyz123456"
         )
     )
-
-    @Test
-    fun `same-origin authenticated post is allowed`() {
-        val filter = OriginValidationFilter(
-            CorsProperties(listOf("http://localhost:5173")),
+    private fun filter(): OriginValidationFilter {
+        return OriginValidationFilter(
+            CorsProperties(listOf("http://localhost:5173", "https://vlainter.online")),
             authCookieManager,
             jacksonObjectMapper()
         )
+    }
+
+    @Test
+    fun `same-origin authenticated post is allowed`() {
+        val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/users/me/service-mode").apply {
             addHeader("Origin", "https://vlainter.online")
-            addHeader("Host", "vlainter.online")
-            addHeader("X-Forwarded-Host", "vlainter.online")
+            remoteAddr = "127.0.0.1"
             setCookies(Cookie("vlainter_at", "access-token"))
         }
         val response = MockHttpServletResponse()
@@ -52,15 +54,10 @@ class OriginValidationFilterTests {
 
     @Test
     fun `cross-origin authenticated post is blocked`() {
-        val filter = OriginValidationFilter(
-            CorsProperties(listOf("http://localhost:5173")),
-            authCookieManager,
-            jacksonObjectMapper()
-        )
+        val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/users/me/service-mode").apply {
             addHeader("Origin", "https://evil.example")
-            addHeader("Host", "vlainter.online")
-            addHeader("X-Forwarded-Host", "vlainter.online")
+            remoteAddr = "203.0.113.10"
             setCookies(Cookie("vlainter_at", "access-token"))
         }
         val response = MockHttpServletResponse()
@@ -73,15 +70,10 @@ class OriginValidationFilterTests {
 
     @Test
     fun `configured cross-origin frontend is allowed`() {
-        val filter = OriginValidationFilter(
-            CorsProperties(listOf("http://localhost:5173")),
-            authCookieManager,
-            jacksonObjectMapper()
-        )
+        val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/auth/logout").apply {
             addHeader("Origin", "http://localhost:5173")
-            addHeader("Host", "localhost:8080")
-            addHeader("X-Forwarded-Host", "localhost:8080")
+            remoteAddr = "127.0.0.1"
             setCookies(Cookie("vlainter_rt", "refresh-token"))
         }
         val response = MockHttpServletResponse()
@@ -93,14 +85,9 @@ class OriginValidationFilterTests {
 
     @Test
     fun `protected request without origin or referer is blocked`() {
-        val filter = OriginValidationFilter(
-            CorsProperties(listOf("http://localhost:5173")),
-            authCookieManager,
-            jacksonObjectMapper()
-        )
+        val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/auth/refresh").apply {
-            addHeader("Host", "vlainter.online")
-            addHeader("X-Forwarded-Host", "vlainter.online")
+            remoteAddr = "203.0.113.10"
             setCookies(Cookie("vlainter_rt", "refresh-token"))
         }
         val response = MockHttpServletResponse()
@@ -112,15 +99,10 @@ class OriginValidationFilterTests {
 
     @Test
     fun `referer is used when origin header is missing`() {
-        val filter = OriginValidationFilter(
-            CorsProperties(listOf("http://localhost:5173")),
-            authCookieManager,
-            jacksonObjectMapper()
-        )
+        val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/auth/logout").apply {
             addHeader("Referer", "http://localhost:5173/content/mypage")
-            addHeader("Host", "localhost:8080")
-            addHeader("X-Forwarded-Host", "localhost:8080")
+            remoteAddr = "127.0.0.1"
             setCookies(Cookie("vlainter_rt", "refresh-token"))
         }
         val response = MockHttpServletResponse()
@@ -132,11 +114,7 @@ class OriginValidationFilterTests {
 
     @Test
     fun `safe methods are not protected even with auth cookie`() {
-        val filter = OriginValidationFilter(
-            CorsProperties(listOf("http://localhost:5173")),
-            authCookieManager,
-            jacksonObjectMapper()
-        )
+        val filter = filter()
 
         listOf("GET", "HEAD", "OPTIONS").forEach { method ->
             val request = MockHttpServletRequest(method, "/api/users/me/service-mode").apply {
@@ -152,11 +130,7 @@ class OriginValidationFilterTests {
 
     @Test
     fun `non api path is not protected`() {
-        val filter = OriginValidationFilter(
-            CorsProperties(listOf("http://localhost:5173")),
-            authCookieManager,
-            jacksonObjectMapper()
-        )
+        val filter = filter()
         val request = MockHttpServletRequest("POST", "/content/interview").apply {
             setCookies(Cookie("vlainter_at", "access-token"))
         }
@@ -169,14 +143,9 @@ class OriginValidationFilterTests {
 
     @Test
     fun `login endpoint is protected even without auth cookies`() {
-        val filter = OriginValidationFilter(
-            CorsProperties(listOf("http://localhost:5173")),
-            authCookieManager,
-            jacksonObjectMapper()
-        )
+        val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/auth/login").apply {
-            addHeader("Host", "vlainter.online")
-            addHeader("X-Forwarded-Host", "vlainter.online")
+            remoteAddr = "203.0.113.10"
         }
         val response = MockHttpServletResponse()
 
@@ -187,16 +156,46 @@ class OriginValidationFilterTests {
 
     @Test
     fun `public webhook without auth cookies is not protected`() {
-        val filter = OriginValidationFilter(
-            CorsProperties(listOf("http://localhost:5173")),
-            authCookieManager,
-            jacksonObjectMapper()
-        )
+        val filter = filter()
         val request = MockHttpServletRequest("POST", "/api/payments/portone/webhook")
         val response = MockHttpServletResponse()
 
         filter.doFilter(request, response, MockFilterChain())
 
         assertEquals(200, response.status)
+    }
+
+    @Test
+    fun `host headers alone do not grant same-origin access`() {
+        val filter = filter()
+        val request = MockHttpServletRequest("POST", "/api/users/me/service-mode").apply {
+            addHeader("Origin", "https://vlainter.online")
+            addHeader("Host", "internal-backend.local:8080")
+            addHeader("X-Forwarded-Host", "vlainter.online")
+            remoteAddr = "127.0.0.1"
+            setCookies(Cookie("vlainter_at", "access-token"))
+        }
+        val response = MockHttpServletResponse()
+
+        filter.doFilter(request, response, MockFilterChain())
+
+        assertEquals(200, response.status)
+    }
+
+    @Test
+    fun `spoofed host headers from untrusted client are ignored`() {
+        val filter = filter()
+        val request = MockHttpServletRequest("POST", "/api/users/me/service-mode").apply {
+            addHeader("Origin", "https://evil.example")
+            addHeader("Host", "vlainter.online")
+            addHeader("X-Forwarded-Host", "evil.example")
+            remoteAddr = "203.0.113.10"
+            setCookies(Cookie("vlainter_at", "access-token"))
+        }
+        val response = MockHttpServletResponse()
+
+        filter.doFilter(request, response, MockFilterChain())
+
+        assertEquals(403, response.status)
     }
 }
