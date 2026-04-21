@@ -1627,9 +1627,14 @@ class StudentCourseService(
                         maxDistinct = maxOf(EXAM_SNIPPET_SAMPLE_SIZE * 2, 8),
                         purpose = RetrievalPurpose.EXAM
                     )
-                    if (semanticChunks.isNotEmpty()) {
+                    val semanticSnippets = if (semanticChunks.isNotEmpty()) {
+                        buildExamGenerationSnippetsFromExcerpts(semanticChunks)
+                    } else {
+                        emptyList()
+                    }
+                    if (semanticSnippets.isNotEmpty()) {
                         loadedChunkCount += semanticChunks.size
-                        buildExamGenerationSnippetsFromExcerpts(semanticChunks).map { snippet -> "[$fileName] $snippet" }
+                        semanticSnippets.map { snippet -> "[$fileName] $snippet" }
                     } else {
                         val chunks = loadAllChunksForFallback(
                             userId = userId,
@@ -1698,9 +1703,14 @@ class StudentCourseService(
                     maxDistinct = maxOf(SUMMARY_SNIPPET_SAMPLE_SIZE * 2, 12),
                     purpose = RetrievalPurpose.SUMMARY
                 )
-                val snippets = if (semanticChunks.isNotEmpty()) {
-                    loadedChunkCount += semanticChunks.size
+                val semanticSnippets = if (semanticChunks.isNotEmpty()) {
                     buildSummarySnippetsFromExcerpts(semanticChunks)
+                } else {
+                    emptyList()
+                }
+                val snippets = if (semanticSnippets.isNotEmpty()) {
+                    loadedChunkCount += semanticChunks.size
+                    semanticSnippets
                 } else {
                     val chunks = loadAllChunksForFallback(
                         userId = userId,
@@ -1924,12 +1934,17 @@ class StudentCourseService(
                         queries = queries,
                         queryEmbeddings = queryEmbeddings,
                         perQueryLimit = 2,
-                        maxDistinct = 4,
-                        purpose = RetrievalPurpose.STYLE_REFERENCE
-                    )
-                    val extractedSnippets = if (semanticChunks.isNotEmpty()) {
-                        loadedChunkCount += semanticChunks.size
+                    maxDistinct = 4,
+                    purpose = RetrievalPurpose.STYLE_REFERENCE
+                )
+                    val semanticSnippets = if (semanticChunks.isNotEmpty()) {
                         buildStyleReferenceSnippets(material, extractionLabel, semanticChunks)
+                    } else {
+                        emptyList()
+                    }
+                    val extractedSnippets = if (semanticSnippets.isNotEmpty()) {
+                        loadedChunkCount += semanticChunks.size
+                        semanticSnippets
                     } else {
                         val chunks = loadAllChunksForFallback(
                             userId = userId,

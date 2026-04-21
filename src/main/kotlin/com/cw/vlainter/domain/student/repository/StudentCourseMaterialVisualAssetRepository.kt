@@ -10,6 +10,10 @@ interface StudentCourseMaterialVisualAssetRepository : JpaRepository<StudentCour
     fun findAllByMaterial_IdOrderByAssetOrderAsc(materialId: Long): List<StudentCourseMaterialVisualAsset>
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from StudentCourseMaterialVisualAsset asset where asset.material.id = :materialId")
+    fun deleteAllByMaterialId(@Param("materialId") materialId: Long): Int
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("delete from StudentCourseMaterialVisualAsset asset where asset.userFile.id = :userFileId")
     fun deleteAllByUserFileId(@Param("userFileId") userFileId: Long): Int
 }
