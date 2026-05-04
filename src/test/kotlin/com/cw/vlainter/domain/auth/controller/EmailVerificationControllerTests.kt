@@ -3,6 +3,7 @@ package com.cw.vlainter.domain.auth.controller
 import com.cw.vlainter.domain.auth.service.EmailVerificationService
 import com.cw.vlainter.domain.auth.service.SendVerificationResult
 import com.cw.vlainter.domain.auth.service.VerifyCodeResult
+import com.cw.vlainter.global.exception.GlobalExceptionHandler
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -14,6 +15,7 @@ import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.junit.jupiter.MockitoExtension
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
@@ -32,7 +34,10 @@ class EmailVerificationControllerTests {
     @BeforeEach
     fun setUp() {
         val controller = EmailVerificationController(emailVerificationService)
-        mockMvc = MockMvcBuilders.standaloneSetup(controller).build()
+        mockMvc = MockMvcBuilders.standaloneSetup(controller)
+            .setControllerAdvice(GlobalExceptionHandler())
+            .setMessageConverters(MappingJackson2HttpMessageConverter(jacksonObjectMapper()))
+            .build()
     }
 
     @Test

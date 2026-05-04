@@ -11,6 +11,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.ArgumentMatchers.anyString
+import org.mockito.ArgumentMatchers.isNull
 import org.mockito.ArgumentMatchers.nullable
 import org.mockito.BDDMockito.given
 import org.mockito.Mock
@@ -37,7 +38,7 @@ class InterviewAiOrchestratorTests {
     @Test
     fun `문서 답변 평가 프롬프트는 참고 답안을 보조 자료로만 사용하도록 안내한다`() {
         var capturedPrompt = ""
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willAnswer { invocation ->
             if (capturedPrompt.isBlank()) {
                 capturedPrompt = invocation.getArgument(0)
             }
@@ -76,7 +77,7 @@ class InterviewAiOrchestratorTests {
     @Test
     fun `문서 질문 생성 프롬프트는 STAR형 referenceAnswer를 요구한다`() {
         var capturedPrompt = ""
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willAnswer { invocation ->
             capturedPrompt = invocation.getArgument(0)
             LlmGenerationResult(
                 model = "gemini",
@@ -113,7 +114,7 @@ class InterviewAiOrchestratorTests {
     @Test
     fun `문서 질문 생성은 목표 개수보다 넉넉한 후보 수를 요청한다`() {
         var capturedPrompt = ""
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willAnswer { invocation ->
             if (capturedPrompt.isBlank()) {
                 capturedPrompt = invocation.getArgument(0)
             }
@@ -151,7 +152,7 @@ class InterviewAiOrchestratorTests {
     @Test
     fun `자기소개서 질문 생성 프롬프트는 포부성 문장을 경험처럼 단정하지 않도록 제한한다`() {
         var capturedPrompt = ""
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willAnswer { invocation ->
             capturedPrompt = invocation.getArgument(0)
             LlmGenerationResult(
                 model = "gemini",
@@ -194,7 +195,7 @@ class InterviewAiOrchestratorTests {
 
     @Test
     fun `문서 질문은 설명해 주세요로 끝나는 한국어 면접 문장도 허용한다`() {
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willReturn(
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willReturn(
             LlmGenerationResult(
                 model = "gemini",
                 modelVersion = "v1",
@@ -229,7 +230,7 @@ class InterviewAiOrchestratorTests {
 
     @Test
     fun `혼합형 이력서의 지원동기 질문도 resume 질문으로 허용한다`() {
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willReturn(
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willReturn(
             LlmGenerationResult(
                 model = "gemini",
                 modelVersion = "v1",
@@ -264,7 +265,7 @@ class InterviewAiOrchestratorTests {
 
     @Test
     fun `이력서에서 introduce 타입으로 생성돼도 resume 질문으로 재매핑해 허용한다`() {
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willReturn(
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willReturn(
             LlmGenerationResult(
                 model = "gemini",
                 modelVersion = "v1",
@@ -299,7 +300,7 @@ class InterviewAiOrchestratorTests {
 
     @Test
     fun `이력서에서 questionType이 비어 있어도 evidenceKind 기준으로 resume 동기 유형으로 정규화한다`() {
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willReturn(
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willReturn(
             LlmGenerationResult(
                 model = "gemini",
                 modelVersion = "v1",
@@ -334,7 +335,7 @@ class InterviewAiOrchestratorTests {
 
     @Test
     fun `문서 질문 생성은 일부만 통과해도 partial success로 반환한다`() {
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willReturn(
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willReturn(
             LlmGenerationResult(
                 model = "gemini",
                 modelVersion = "v1",
@@ -380,7 +381,7 @@ class InterviewAiOrchestratorTests {
 
     @Test
     fun `문서 질문 생성은 같은 source라도 다른 질문 축이면 함께 채택할 수 있다`() {
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willReturn(
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willReturn(
             LlmGenerationResult(
                 model = "gemini",
                 modelVersion = "v1",
@@ -423,7 +424,7 @@ class InterviewAiOrchestratorTests {
 
     @Test
     fun `문서 질문 생성은 같은 프로젝트에 대해 같은 질문 축을 재표현한 경우 중복 채택하지 않는다`() {
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willReturn(
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willReturn(
             LlmGenerationResult(
                 model = "gemini",
                 modelVersion = "v1",
@@ -467,7 +468,7 @@ class InterviewAiOrchestratorTests {
     @Test
     fun `영어 문서 답변 평가 프롬프트는 평가 출력은 한국어로 유지하고 영어 문법 기준을 명시한다`() {
         var capturedPrompt = ""
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willAnswer { invocation ->
             capturedPrompt = invocation.getArgument(0)
             LlmGenerationResult(
                 model = "gemini",
@@ -505,7 +506,7 @@ class InterviewAiOrchestratorTests {
     @Test
     fun `영어 기술 질문 생성 프롬프트는 질문과 모범답안을 영어로 요구한다`() {
         var capturedPrompt = ""
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willAnswer { invocation ->
             capturedPrompt = invocation.getArgument(0)
             LlmGenerationResult(
                 model = "gemini",
@@ -539,7 +540,7 @@ class InterviewAiOrchestratorTests {
     @Test
     fun `배치 평가 프롬프트는 모든 항목을 한 번에 평가하고 key를 유지한다`() {
         var capturedPrompt = ""
-        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java))).willAnswer { invocation ->
+        given(llmProviderRouter.generateJson(anyString(), nullable(Double::class.java), isNull())).willAnswer { invocation ->
             capturedPrompt = invocation.getArgument(0)
             LlmGenerationResult(
                 model = "gemini",

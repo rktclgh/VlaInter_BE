@@ -12,6 +12,19 @@ interface InterviewTurnRepository : JpaRepository<InterviewTurn, Long> {
 
     fun findAllBySession_IdOrderByTurnNoAsc(sessionId: Long): List<InterviewTurn>
 
+    @Query(
+        """
+        select t
+        from InterviewTurn t
+        left join fetch t.question
+        left join fetch t.documentQuestion
+        left join fetch t.category
+        where t.session.id = :sessionId
+        order by t.turnNo asc
+        """
+    )
+    fun findAllDetailedBySessionIdOrderByTurnNoAsc(@Param("sessionId") sessionId: Long): List<InterviewTurn>
+
     fun findByIdAndSession_User_Id(id: Long, userId: Long): InterviewTurn?
 
     @Modifying(flushAutomatically = true)

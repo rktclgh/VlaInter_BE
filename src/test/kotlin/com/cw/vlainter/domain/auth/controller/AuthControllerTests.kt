@@ -8,6 +8,7 @@ import com.cw.vlainter.domain.auth.service.AuthProviderType
 import com.cw.vlainter.domain.auth.service.KakaoAuthService
 import com.cw.vlainter.domain.auth.service.LoginResult
 import com.cw.vlainter.domain.user.entity.UserRole
+import com.cw.vlainter.global.exception.GlobalExceptionHandler
 import com.cw.vlainter.global.security.AuthCookieManager
 import com.cw.vlainter.global.security.ClientIpResolver
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -27,6 +28,7 @@ import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseCookie
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
@@ -69,7 +71,10 @@ class AuthControllerTests {
             clientIpResolver,
             directExecutor
         )
-        mockMvc = MockMvcBuilders.standaloneSetup(controller).build()
+        mockMvc = MockMvcBuilders.standaloneSetup(controller)
+            .setControllerAdvice(GlobalExceptionHandler())
+            .setMessageConverters(MappingJackson2HttpMessageConverter(jacksonObjectMapper()))
+            .build()
     }
 
     @Test
@@ -103,6 +108,7 @@ class AuthControllerTests {
         val result = mockMvc.perform(
             post("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Internal-Client-IP", "127.0.0.1")
                 .content(jacksonObjectMapper().writeValueAsString(request))
         )
             .andExpect(status().isOk)
@@ -140,6 +146,7 @@ class AuthControllerTests {
         mockMvc.perform(
             post("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Internal-Client-IP", "127.0.0.1")
                 .content("""{"email":"tester@vlainter.com"}""")
         )
             .andExpect(status().isBadRequest)
@@ -156,6 +163,7 @@ class AuthControllerTests {
         mockMvc.perform(
             post("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Internal-Client-IP", "127.0.0.1")
                 .content(jacksonObjectMapper().writeValueAsString(request))
         )
             .andExpect(status().isUnauthorized)
@@ -178,7 +186,10 @@ class AuthControllerTests {
             clientIpResolver,
             rejectingExecutor
         )
-        val localMockMvc = MockMvcBuilders.standaloneSetup(controller).build()
+        val localMockMvc = MockMvcBuilders.standaloneSetup(controller)
+            .setControllerAdvice(GlobalExceptionHandler())
+            .setMessageConverters(MappingJackson2HttpMessageConverter(jacksonObjectMapper()))
+            .build()
         val request = LoginRequest(email = "tester@vlainter.com", password = "Password123!")
         val loginResult = LoginResult(
             userId = 1L,
@@ -205,6 +216,7 @@ class AuthControllerTests {
         localMockMvc.perform(
             post("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Internal-Client-IP", "127.0.0.1")
                 .content(jacksonObjectMapper().writeValueAsString(request))
         )
             .andExpect(status().isOk)

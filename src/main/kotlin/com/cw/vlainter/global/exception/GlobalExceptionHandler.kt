@@ -3,6 +3,8 @@ package com.cw.vlainter.global.exception
 import com.cw.vlainter.domain.interview.ai.AiProviderAuthorizationException
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.validation.ConstraintViolationException
+import org.springframework.core.Ordered
+import org.springframework.core.annotation.Order
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.http.converter.HttpMessageNotReadableException
@@ -18,6 +20,7 @@ import org.springframework.web.servlet.resource.NoResourceFoundException
 import org.springframework.web.server.ResponseStatusException
 
 @RestControllerAdvice
+@Order(Ordered.HIGHEST_PRECEDENCE)
 class GlobalExceptionHandler {
     private val logger = LoggerFactory.getLogger(GlobalExceptionHandler::class.java)
     private val missingFieldRegex = Regex("missing (?:creator )?property '([^']+)'", RegexOption.IGNORE_CASE)

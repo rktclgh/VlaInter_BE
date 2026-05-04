@@ -111,19 +111,43 @@ class SuspiciousRequestBlockingFilterTests {
     }
 
     @Test
-    fun `allows blocked preview bot to fetch landing page`() {
+    fun `blocks previously blocked preview bot before bot allowlist`() {
         val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
         val request = MockHttpServletRequest("GET", "/").apply {
             remoteAddr = "127.0.0.1"
             addHeader("User-Agent", "facebookexternalhit/1.1")
         }
         val response = MockHttpServletResponse()
+        given(clientIpResolver.resolveDetail(request)).willReturn(
+            ClientIpResolver.Resolution("127.0.0.1", ClientIpResolver.Source.DIRECT_REMOTE_ADDR, trustedProxy = false)
+        )
+        given(suspiciousRequestBlockService.isBlocked("127.0.0.1")).willReturn(true)
+
+        filter.doFilter(request, response, filterChain)
+
+        assertEquals(429, response.status)
+        then(filterChain).shouldHaveNoInteractions()
+    }
+
+    @Test
+    fun `allows non-blocked preview bot to fetch landing page`() {
+        val filter = SuspiciousRequestBlockingFilter(suspiciousRequestBlockService, clientIpResolver, objectMapper)
+        val request = MockHttpServletRequest("GET", "/").apply {
+            remoteAddr = "127.0.0.1"
+            addHeader("User-Agent", "facebookexternalhit/1.1")
+        }
+        val response = MockHttpServletResponse()
+        given(clientIpResolver.resolveDetail(request)).willReturn(
+            ClientIpResolver.Resolution("127.0.0.1", ClientIpResolver.Source.DIRECT_REMOTE_ADDR, trustedProxy = false)
+        )
+        given(suspiciousRequestBlockService.isBlocked("127.0.0.1")).willReturn(false)
 
         filter.doFilter(request, response, filterChain)
 
         then(filterChain).should().doFilter(request, response)
-        then(clientIpResolver).shouldHaveNoInteractions()
-        then(suspiciousRequestBlockService).shouldHaveNoInteractions()
+        then(clientIpResolver).should().resolveDetail(request)
+        then(suspiciousRequestBlockService).should().isBlocked("127.0.0.1")
+        then(suspiciousRequestBlockService).shouldHaveNoMoreInteractions()
     }
 
     @Test
@@ -140,6 +164,7 @@ class SuspiciousRequestBlockingFilterTests {
 
         then(filterChain).should().doFilter(request, response)
         then(suspiciousRequestBlockService).should().isSuspiciousRequest("GET", "/.env")
+        then(suspiciousRequestBlockService).should().shouldLogUnresolvedClientIp("172.18.0.5", "/.env")
         then(suspiciousRequestBlockService).shouldHaveNoMoreInteractions()
     }
 }

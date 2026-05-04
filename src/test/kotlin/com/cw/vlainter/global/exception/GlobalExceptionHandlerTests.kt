@@ -3,6 +3,7 @@ package com.cw.vlainter.global.exception
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter
 import org.springframework.http.MediaType
 import org.springframework.http.HttpStatus
 import org.springframework.http.HttpMethod
@@ -28,6 +29,7 @@ class GlobalExceptionHandlerTests {
         mockMvc = MockMvcBuilders
             .standaloneSetup(TestExceptionController())
             .setControllerAdvice(GlobalExceptionHandler())
+            .setMessageConverters(MappingJackson2HttpMessageConverter(jacksonObjectMapper()))
             .build()
     }
 
